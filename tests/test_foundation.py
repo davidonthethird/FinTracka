@@ -73,7 +73,7 @@ def test_migrations_are_idempotent_and_install_core_constraints(tmp_path: Path) 
         } <= tables
         assert connection.execute(
             "SELECT COUNT(*) FROM schema_migrations"
-        ).fetchone()[0] == 1
+        ).fetchone()[0] == 2
 
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(

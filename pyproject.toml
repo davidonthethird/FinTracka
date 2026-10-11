@@ -10,6 +10,7 @@ readme = "PROJECT_SPEC.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.143,<0.144",
+    "openpyxl==3.1.5",
 ]
 
 [project.optional-dependencies]
@@ -31,4 +32,3 @@ fintracka = ["migrations/*.sql"]
 addopts = "-q"
 testpaths = ["tests"]
 pythonpath = ["src"]
-
