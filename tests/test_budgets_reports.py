@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from fintracka.budgets import (
+    envelope_budget,
+    set_envelope_allocation,
+    set_envelope_month,
+    set_tracking_target,
+    tracking_budget,
+    tracking_year,
+)
+from fintracka.db import connect, migrate
+from fintracka.ids import new_id
+from fintracka.ledger import confirm_transfer, update_transaction
+from fintracka.providers import NormalizedAccount, NormalizedTransaction, SyncBatch
+from fintracka.reports import cash_flow, overview, spending_by_category
+from fintracka.sync import apply_batch
+from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
+
+
+@pytest.fixture
+def ledger(tmp_path: Path) -> sqlite3.Connection:
+    connection = connect(tmp_path / "ledger.sqlite3")
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    apply_batch(connection, connection_id, synthetic_batches([connection_id])[connection_id])
+    yield connection
+    connection.close()
+
+
+def test_reports_exclude_transfers_and_non_usd_and_net_refunds(
+    ledger: sqlite3.Connection,
+) -> None:
+    income = _category(ledger, "Salary", "income", "income")
+    groceries = _category(ledger, "Groceries", "expense", "ordinary")
+    update_transaction(ledger, _transaction_id(ledger, "paycheck-1"), category_id=income)
+    update_transaction(ledger, _transaction_id(ledger, "groceries-1"), category_id=groceries)
+    connection_id = ledger.execute("SELECT id FROM provider_connections").fetchone()[0]
+    batch = SyncBatch(
+        accounts=(NormalizedAccount("euro-1", "Euro account", "depository", "checking", "asset", "EUR"),),
+        added=(
+            NormalizedTransaction("refund", "checking-1", "2026-10-05T12:00:00Z", 1_000, "USD", "Market refund"),
+            NormalizedTransaction("transfer-out", "checking-1", "2026-10-06T12:00:00Z", -20_000, "USD", "Transfer"),
+            NormalizedTransaction("transfer-in", "savings-1", "2026-10-06T13:00:00Z", 20_000, "USD", "Transfer"),
+            NormalizedTransaction("euro-income", "euro-1", "2026-10-07T12:00:00Z", 999_999, "EUR", "Euro income"),
+        ),
+        next_checkpoint="reports",
+    )
+    apply_batch(ledger, connection_id, batch)
+    update_transaction(ledger, _transaction_id(ledger, "refund"), category_id=groceries)
+    confirm_transfer(ledger, _transaction_id(ledger, "transfer-out"), _transaction_id(ledger, "transfer-in"))
+
+    flow = cash_flow(ledger, "2026-10")
+    assert (flow.income_minor, flow.spending_minor, flow.net_minor) == (325_000, 7_742, 317_258)
+    spending = spending_by_category(ledger, "2026-10")
+    assert spending == [{"category_id": groceries, "category": "Groceries", "amount_minor": 7_742}]
+
+
+def test_tracking_and_envelope_budgets_remain_independent(
+    ledger: sqlite3.Connection,
+) -> None:
+    groceries = _category(ledger, "Groceries", "expense", "ordinary")
+    update_transaction(ledger, _transaction_id(ledger, "groceries-1"), category_id=groceries)
+    connection_id = ledger.execute("SELECT id FROM provider_connections").fetchone()[0]
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(
+            added=(NormalizedTransaction("refund", "checking-1", "2026-10-05T12:00:00Z", 1_000, "USD", "Refund"),),
+            next_checkpoint="budget",
+        ),
+    )
+    update_transaction(ledger, _transaction_id(ledger, "refund"), category_id=groceries)
+
+    set_tracking_target(ledger, groceries, "2026-10", 10_000)
+    set_envelope_month(ledger, "2026-10", 20_000)
+    set_envelope_allocation(ledger, groceries, "2026-10", 9_000)
+    tracking = tracking_budget(ledger, "2026-10")
+    envelope = envelope_budget(ledger, "2026-10")
+
+    assert tracking[0].actual_minor == 7_742
+    assert tracking[0].variance_minor == 2_258
+    assert envelope.categories[0].allocated_minor == 9_000
+    assert envelope.categories[0].available_minor == 1_258
+    assert envelope.available_to_assign_minor == 11_000
+
+
+def test_year_rollup_and_envelope_carry_cross_year_boundary(
+    ledger: sqlite3.Connection,
+) -> None:
+    category_id = _category(ledger, "Utilities", "expense", "ordinary")
+    set_tracking_target(ledger, category_id, "2026-12", 12_000)
+    set_tracking_target(ledger, category_id, "2027-01", 13_000)
+    assert tracking_year(ledger, 2026)[0].target_minor == 12_000
+    assert tracking_year(ledger, 2027)[0].target_minor == 13_000
+
+    set_envelope_month(ledger, "2026-12", 20_000)
+    set_envelope_allocation(ledger, category_id, "2026-12", 5_000)
+    set_envelope_month(ledger, "2027-01", 15_000)
+    set_envelope_allocation(ledger, category_id, "2027-01", 1_000)
+    january = envelope_budget(ledger, "2027-01")
+    assert january.categories[0].available_minor == 6_000
+
+
+def test_overview_uses_latest_included_usd_balances(ledger: sqlite3.Connection) -> None:
+    result = overview(ledger, "2026-10")
+    assert result.cash_minor == 500_000
+    assert result.card_liabilities_minor == 42_000
+    assert result.net_position_minor == 458_000
+
+    ledger.execute("UPDATE accounts SET include_overview = 0 WHERE subtype = 'savings'")
+    assert overview(ledger, "2026-10").cash_minor == 250_000
+
+
+def _category(
+    connection: sqlite3.Connection,
+    name: str,
+    category_type: str,
+    reporting_behavior: str,
+) -> str:
+    category_id = new_id()
+    now = "2026-10-11T00:00:00Z"
+    connection.execute(
+        "INSERT INTO categories (id, name, category_type, reporting_behavior, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
+        (category_id, name, category_type, reporting_behavior, now, now),
+    )
+    return category_id
+
+
+def _transaction_id(connection: sqlite3.Connection, external_id: str) -> str:
+    return connection.execute(
+        "SELECT transaction_id FROM transaction_external_ids WHERE external_id = ?", (external_id,)
+    ).fetchone()[0]
