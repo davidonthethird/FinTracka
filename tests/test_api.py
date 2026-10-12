@@ -4,6 +4,7 @@ import base64
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Barrier
 
@@ -14,8 +15,52 @@ from fintracka.api import create_app
 from fintracka.db import connect, migrate
 from fintracka.ids import new_id
 from fintracka.jobs import recover_interrupted_jobs
+from fintracka.plaid_adapter import ConnectedItem, InstitutionInfo, LinkSession
+from fintracka.providers import NormalizedAccount, NormalizedBalance, NormalizedTransaction, SyncBatch
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
 from fintracka.sync import apply_batch
+
+
+@dataclass
+class FakePlaidAdapter:
+    environment: str = "production"
+    revoked: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.revoked is None:
+            self.revoked = []
+
+    def create_link_session(self) -> LinkSession:
+        return LinkSession("link-production", "2026-10-12T14:00:00Z", "production")
+
+    def complete_link(self, public_token: str, secret_reference: str) -> ConnectedItem:
+        assert public_token == "public-production"
+        return ConnectedItem("item-production", secret_reference)
+
+    def connection_info(self, secret_reference: str) -> InstitutionInfo:
+        assert secret_reference.startswith("plaid:production:connection:")
+        return InstitutionInfo("ins_1", "Example Bank")
+
+    def repair_connection(self, secret_reference: str) -> LinkSession:
+        assert secret_reference.startswith("plaid:production:connection:")
+        return LinkSession("link-repair", "2026-10-12T15:00:00Z", "production")
+
+    def fetch_updates(self, secret_reference: str, checkpoint: str | None) -> SyncBatch:
+        del secret_reference, checkpoint
+        account = NormalizedAccount("checking-1", "Everyday Checking", "depository", "checking", "asset", "USD", None)
+        return SyncBatch(
+            accounts=(account,),
+            balances=(NormalizedBalance("checking-1", "2026-10-12T12:00:00Z", 100_00, 90_00, "USD", "plaid"),),
+            added=(NormalizedTransaction("txn-1", "checking-1", "2026-10-12T12:00:00Z", -12_34, "USD", "Corner Store", "Corner Store", False),),
+            modified=(),
+            removed=(),
+            next_checkpoint="cursor-1",
+            raw_response_hashes=("hash-1",),
+        )
+
+    def revoke(self, secret_reference: str) -> None:
+        assert self.revoked is not None
+        self.revoked.append(secret_reference)
 
 
 def test_health_security_headers_and_strict_host(tmp_path: Path) -> None:
@@ -49,6 +94,87 @@ def test_bootstrap_cookie_csrf_and_origin_protect_mutations(tmp_path: Path) -> N
         assert client.post(
             "/api/v1/categories", json=_category_payload("Origin"), headers={**headers, "origin": "https://evil.example"}
         ).status_code == 403
+
+
+def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection.execute(
+        "INSERT INTO app_metadata (key, value) VALUES ('plaid.environment', 'production')"
+    )
+    connection.close()
+    adapter = FakePlaidAdapter()
+    app = create_app(path, bootstrap_token="bootstrap", plaid_adapter_factory=lambda _: adapter)
+
+    with TestClient(app) as client:
+        health = client.get("/api/v1/health")
+        csp = health.headers["content-security-policy"]
+        assert "https://cdn.plaid.com/link/v2/stable/link-initialize.js" in csp
+        assert "frame-src https://cdn.plaid.com/" in csp
+        assert "connect-src 'self' https://production.plaid.com/" in csp
+        assert "https://sandbox.plaid.com/" not in csp
+        assert "'nonce-" in csp
+
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+
+        assert client.post("/api/v1/connections/plaid/sessions", json={}).status_code == 403
+        session = client.post(
+            "/api/v1/connections/plaid/sessions", json={}, headers=headers
+        )
+        assert session.status_code == 200
+        assert session.json() == {
+            "link_token": "link-production",
+            "expires_at": "2026-10-12T14:00:00Z",
+            "environment": "production",
+        }
+
+        invalid = client.post(
+            "/api/v1/connections/plaid/complete",
+            json={"public_token": "public-production", "access_token": "must-not-be-accepted"},
+            headers=headers,
+        )
+        assert invalid.status_code == 422
+        completed = client.post(
+            "/api/v1/connections/plaid/complete",
+            json={"public_token": "public-production"},
+            headers=headers,
+        )
+        assert completed.status_code == 201
+        connection_payload = completed.json()
+        assert connection_payload["institution_name"] == "Example Bank"
+        assert connection_payload["environment"] == "production"
+        assert "access_token" not in str(connection_payload)
+        connection_id = connection_payload["id"]
+
+        listed = client.get("/api/v1/connections").json()
+        assert listed[0]["institution_name"] == "Example Bank"
+        assert listed[0]["environment"] == "production"
+        assert "keychain" not in str(listed).lower()
+        assert "token" not in str(listed).lower()
+
+        repair = client.post(
+            f"/api/v1/connections/{connection_id}/repair", json={}, headers=headers
+        )
+        assert repair.status_code == 200
+        assert repair.json() == {
+            "link_token": "link-repair",
+            "expires_at": "2026-10-12T15:00:00Z",
+            "environment": "production",
+        }
+
+        sync = client.post("/api/v1/sync-runs", json={}, headers=headers)
+        assert sync.status_code == 202
+        assert _wait_for_job(client, sync.json()["job_id"])["status"] == "succeeded"
+        transactions = client.get("/api/v1/transactions").json()["items"]
+        assert [item["description"] for item in transactions] == ["Corner Store"]
+
+        deleted = client.delete(f"/api/v1/connections/{connection_id}", headers=headers)
+        assert deleted.status_code == 204
+        assert adapter.revoked and adapter.revoked[0].startswith("plaid:production:connection:")
+        assert client.get("/api/v1/connections").json()[0]["status"] == "revoked"
 
 
 def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
