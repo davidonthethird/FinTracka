@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -65,6 +66,18 @@ def test_link_requests_transactions_only_and_completion_returns_no_token() -> No
     assert connected.external_connection_id == "item-1"
     assert not hasattr(connected, "access_token")
     assert secrets.get("connection:test") == "access-secret-token"
+
+
+def test_link_session_normalizes_sdk_datetime_expiration() -> None:
+    client = FakePlaidClient()
+    client.create_link_token = lambda _: {  # type: ignore[method-assign]
+        "link_token": "link-token",
+        "expiration": datetime(2026, 10, 13, tzinfo=timezone.utc),
+    }
+
+    session = PlaidAdapter(client, KeychainSecrets(FakeKeyring())).create_link_session()
+
+    assert session.expiration == "2026-10-13T00:00:00Z"
 
 
 def test_link_completion_revokes_item_when_keychain_write_fails() -> None:
