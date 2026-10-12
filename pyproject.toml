@@ -15,6 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 bank = [
+    "certifi==2026.7.22",
     "keyring==25.7.0",
     "plaid-python==45.0.0",
 ]

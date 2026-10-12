@@ -7,7 +7,28 @@ import pytest
 from fintracka.db import connect, migrate
 from fintracka.ids import new_id
 from fintracka.keychain import KeychainSecrets, store_secret_reference
-from fintracka.plaid_adapter import PlaidAdapter, PlaidError, ProviderActionRequired
+from fintracka.plaid_adapter import OfficialPlaidClient, PlaidAdapter, PlaidError, ProviderActionRequired
+
+
+def test_official_client_uses_certifi_ca_bundle(monkeypatch: pytest.MonkeyPatch) -> None:
+    import certifi
+    import plaid
+    from plaid.api import plaid_api
+
+    captured = None
+
+    def api_client(configuration):  # type: ignore[no-untyped-def]
+        nonlocal captured
+        captured = configuration
+        return object()
+
+    monkeypatch.setattr(plaid, "ApiClient", api_client)
+    monkeypatch.setattr(plaid_api, "PlaidApi", lambda _: object())
+
+    OfficialPlaidClient("client", "secret", "production")
+
+    assert captured is not None
+    assert captured.ssl_ca_cert == certifi.where()
 
 
 def test_keychain_keeps_secret_out_of_sqlite(tmp_path) -> None:
