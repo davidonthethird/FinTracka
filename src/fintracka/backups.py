@@ -27,12 +27,24 @@ def backup_database(source_path: str | Path, backup_directory: str | Path, *, ke
         _verify(temporary)
         temporary.chmod(0o600)
         os.replace(temporary, destination)
+        _sync_file(destination)
+        _sync_directory(backup_directory)
     finally:
         if temporary.exists():
             temporary.unlink()
     backups = sorted(backup_directory.glob("fintracka-*.sqlite3"), reverse=True)
-    for expired in backups[max(keep, 1) :]:
-        expired.unlink()
+    retained_days: set[str] = set()
+    expired: list[Path] = []
+    for backup in backups:
+        day = backup.name.removeprefix("fintracka-")[:8]
+        if day in retained_days or len(retained_days) >= max(keep, 1):
+            expired.append(backup)
+        else:
+            retained_days.add(day)
+    for expired_backup in expired:
+        expired_backup.unlink()
+    if expired:
+        _sync_directory(backup_directory)
     return destination
 
 
@@ -59,6 +71,8 @@ def restore_database(source_backup: str | Path, target_path: str | Path, *, veri
             _verify(temporary)
         temporary.chmod(0o600)
         os.replace(temporary, target_path)
+        _sync_file(target_path)
+        _sync_directory(target_path.parent)
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -74,3 +88,18 @@ def _verify(path: Path) -> None:
     if result != "ok":
         raise sqlite3.DatabaseError(f"backup integrity check failed: {result}")
 
+
+def _sync_file(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)

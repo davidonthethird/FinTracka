@@ -35,6 +35,22 @@ def seed_database(path: Path) -> None:
             next_checkpoint="browser-transfer-in",
         ),
     )
+    archive_rows = tuple(
+        NormalizedTransaction(
+            f"archive-{index}",
+            "checking-1",
+            f"2026-09-{(index % 28) + 1:02d}T{index % 24:02d}:00:00Z",
+            -100 - index,
+            "USD",
+            f"ARCHIVE FIXTURE {index:03d}",
+        )
+        for index in range(105)
+    )
+    apply_batch(
+        connection,
+        connection_ids[0],
+        SyncBatch(added=archive_rows, next_checkpoint="browser-archive"),
+    )
     connection.execute(
         "UPDATE provider_connections SET status = 'repair', last_error_code = 'ITEM_LOGIN_REQUIRED' WHERE id = ?",
         (connection_ids[2],),

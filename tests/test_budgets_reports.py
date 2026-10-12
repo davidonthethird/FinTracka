@@ -116,6 +116,58 @@ def test_overview_uses_latest_included_usd_balances(ledger: sqlite3.Connection) 
     assert overview(ledger, "2026-10").cash_minor == 250_000
 
 
+def test_overview_separates_cash_activity_and_confirmed_card_payments(
+    ledger: sqlite3.Connection,
+) -> None:
+    connection_id = ledger.execute("SELECT id FROM provider_connections").fetchone()[0]
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(
+            added=(
+                NormalizedTransaction("card-purchase", "card-1", "2026-10-06T12:00:00Z", -10_000, "USD", "Card purchase"),
+                NormalizedTransaction("card-payment-out", "checking-1", "2026-10-07T12:00:00Z", -20_000, "USD", "Card payment"),
+                NormalizedTransaction("card-payment-in", "card-1", "2026-10-07T12:05:00Z", 20_000, "USD", "Card payment"),
+            ),
+            next_checkpoint="cash-overview",
+        ),
+    )
+    confirm_transfer(
+        ledger,
+        _transaction_id(ledger, "card-payment-out"),
+        _transaction_id(ledger, "card-payment-in"),
+    )
+
+    result = overview(ledger, "2026-10")
+    assert result.spending_minor == 18_742
+    assert result.cash_spending_minor == 8_742
+    assert result.cash_transfer_minor == -20_000
+    assert result.opening_cash_minor is None
+
+
+def test_overview_accepts_only_exact_month_opening_balance_snapshots(
+    ledger: sqlite3.Connection,
+) -> None:
+    assets = [
+        row["id"]
+        for row in ledger.execute(
+            "SELECT id FROM accounts WHERE nature = 'asset' ORDER BY id"
+        )
+    ]
+    for account_id in assets:
+        ledger.execute(
+            "INSERT INTO account_balance_snapshots (id, account_id, observed_at, current_minor, currency, source) VALUES (?, ?, '2026-10-01T04:00:00Z', 100000, 'USD', 'opening-test')",
+            (new_id(), account_id),
+        )
+
+    assert overview(ledger, "2026-10").opening_cash_minor == len(assets) * 100_000
+
+    ledger.execute(
+        "UPDATE account_balance_snapshots SET observed_at = '2026-09-01T12:00:00Z' WHERE source = 'opening-test'"
+    )
+    assert overview(ledger, "2026-10").opening_cash_minor is None
+
+
 def _category(
     connection: sqlite3.Connection,
     name: str,

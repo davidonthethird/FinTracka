@@ -3,10 +3,13 @@ from __future__ import annotations
 import base64
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 from fastapi.testclient import TestClient
 
+import fintracka.api as api_module
 from fintracka.api import create_app
 from fintracka.db import connect, migrate
 from fintracka.ids import new_id
@@ -83,6 +86,43 @@ def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
         assert stale.status_code == 409
 
 
+def test_concurrent_account_edits_allow_only_one_expected_version(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    apply_batch(connection, connection_id, synthetic_batches([connection_id])[connection_id])
+    account = dict(connection.execute("SELECT id, updated_at FROM accounts LIMIT 1").fetchone())
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+    rendezvous = Barrier(2)
+
+    def simultaneous_now() -> str:
+        rendezvous.wait(timeout=5)
+        return "2026-10-12T13:00:00.000000Z"
+
+    monkeypatch.setattr(api_module, "_now", simultaneous_now)
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+
+        def update(nickname: str) -> int:
+            return client.patch(
+                f"/api/v1/accounts/{account['id']}",
+                json={"expected_updated_at": account["updated_at"], "nickname": nickname},
+                headers=headers,
+            ).status_code
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            statuses = sorted(executor.map(update, ("First", "Second")))
+
+    assert statuses == [200, 409]
+
+
 def test_running_jobs_are_marked_interrupted_on_startup(tmp_path: Path) -> None:
     connection = connect(tmp_path / "ledger.sqlite3")
     migrate(connection)
@@ -145,6 +185,14 @@ def test_rule_split_and_transfer_workflow_routes(tmp_path: Path) -> None:
             headers=headers,
         ).status_code == 200
 
+        invalid_rule = client.post(
+            "/api/v1/rules",
+            json={"name": "Broken", "priority": 11, "conditions": {"min_amount_minor": "oops"}, "category_id": category["id"]},
+            headers=headers,
+        )
+        assert invalid_rule.status_code == 422
+        assert client.post("/api/v1/rules/preview", json={}, headers=headers).status_code == 200
+
 
 def test_management_reports_reconciliation_and_local_operation_jobs(tmp_path: Path) -> None:
     path = tmp_path / "ledger.sqlite3"
@@ -199,6 +247,22 @@ def test_management_reports_reconciliation_and_local_operation_jobs(tmp_path: Pa
         assert client.post("/api/v1/imports/csv/commit", json=import_payload, headers=headers).status_code == 409
         assert client.get("/api/v1/reports/budget", params={"month": "2026-10"}).status_code == 200
         assert client.get("/api/v1/reports/balances").json()
+
+        category = client.get("/api/v1/categories").json()[0]
+        tracking = client.put(
+            "/api/v1/budgets/tracking/2026-11",
+            json={"category_id": category["id"], "amount_minor": 45_000},
+            headers=headers,
+        )
+        assert tracking.status_code == 200
+        assert any(row["target_minor"] == 45_000 for row in tracking.json())
+        envelope = client.put(
+            "/api/v1/budgets/envelope/2026-11",
+            json={"starting_pool_minor": 100_000, "category_id": category["id"], "allocation_minor": 30_000},
+            headers=headers,
+        )
+        assert envelope.status_code == 200
+        assert envelope.json()["available_to_assign_minor"] == 70_000
 
         reconciliation = client.post(
             "/api/v1/reconciliations",

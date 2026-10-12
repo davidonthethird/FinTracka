@@ -29,6 +29,7 @@ class EnvelopeRow:
 @dataclass(frozen=True)
 class EnvelopeBudget:
     month: str
+    starting_pool_minor: int
     available_to_assign_minor: int
     categories: list[EnvelopeRow]
 
@@ -153,8 +154,9 @@ def envelope_budget(connection: sqlite3.Connection, month: str) -> EnvelopeBudge
         (month,),
     ).fetchone()
     current_allocations = sum(row.allocated_minor for row in categories)
-    available_to_assign = (setting[0] if setting else 0) - current_allocations
-    return EnvelopeBudget(month, available_to_assign, categories)
+    starting_pool = setting[0] if setting else 0
+    available_to_assign = starting_pool - current_allocations
+    return EnvelopeBudget(month, starting_pool, available_to_assign, categories)
 
 
 def _expense_activity(connection: sqlite3.Connection, start: str, end: str) -> dict[str, int]:

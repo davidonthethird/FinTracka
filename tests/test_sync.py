@@ -46,6 +46,16 @@ def test_demo_fixture_includes_categorized_budget_data(ledger: sqlite3.Connectio
     ).fetchone()[0] == 2
 
 
+def test_demo_fixture_can_be_initialized_repeatedly(ledger: sqlite3.Connection) -> None:
+    first_ids = create_synthetic_ledger(ledger, count=1, demo=True)
+    second_ids = create_synthetic_ledger(ledger, count=1, demo=True)
+
+    assert second_ids == first_ids
+    assert ledger.execute("SELECT COUNT(*) FROM category_groups WHERE name = 'Everyday'").fetchone()[0] == 1
+    assert ledger.execute("SELECT COUNT(*) FROM categories").fetchone()[0] == 5
+    assert ledger.execute("SELECT COUNT(*) FROM categorization_rules").fetchone()[0] == 2
+
+
 def test_repeat_modify_and_remove_are_idempotent(ledger: sqlite3.Connection) -> None:
     connection_id = create_synthetic_ledger(ledger)[0]
     initial = synthetic_batches([connection_id])[connection_id]

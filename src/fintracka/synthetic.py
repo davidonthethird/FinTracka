@@ -103,11 +103,15 @@ def _seed_account(
 
 
 def _seed_demo_categories(connection: sqlite3.Connection, now: str) -> None:
-    group_id = new_id()
-    connection.execute(
-        "INSERT INTO category_groups (id, name, sort_order, created_at, updated_at) VALUES (?, 'Everyday', 10, ?, ?)",
-        (group_id, now, now),
-    )
+    group = connection.execute("SELECT id FROM category_groups WHERE name = 'Everyday'").fetchone()
+    if group is None:
+        group_id = new_id()
+        connection.execute(
+            "INSERT INTO category_groups (id, name, sort_order, created_at, updated_at) VALUES (?, 'Everyday', 10, ?, ?)",
+            (group_id, now, now),
+        )
+    else:
+        group_id = group["id"]
     definitions = [
         ("Salary", "income", "income", 10),
         ("Groceries", "expense", "ordinary", 20),
@@ -117,31 +121,38 @@ def _seed_demo_categories(connection: sqlite3.Connection, now: str) -> None:
     ]
     categories: dict[str, str] = {}
     for name, category_type, behavior, order in definitions:
-        category_id = new_id()
+        existing = connection.execute("SELECT id FROM categories WHERE name = ?", (name,)).fetchone()
+        category_id = existing["id"] if existing else new_id()
         categories[name] = category_id
-        connection.execute(
-            "INSERT INTO categories (id, group_id, name, category_type, reporting_behavior, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (category_id, group_id, name, category_type, behavior, order, now, now),
-        )
+        if existing is None:
+            connection.execute(
+                "INSERT INTO categories (id, group_id, name, category_type, reporting_behavior, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (category_id, group_id, name, category_type, behavior, order, now, now),
+            )
     rules = [
         ("Payroll", 10, '{"description_contains":"PAYROLL"}', categories["Salary"]),
         ("Market", 20, '{"description_contains":"MARKET"}', categories["Groceries"]),
     ]
     for name, priority, conditions, category_id in rules:
-        connection.execute(
-            "INSERT INTO categorization_rules (id, name, priority, conditions_json, category_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (new_id(), name, priority, conditions, category_id, now, now),
-        )
+        exists = connection.execute(
+            "SELECT 1 FROM categorization_rules WHERE name = ? OR priority = ?",
+            (name, priority),
+        ).fetchone()
+        if exists is None:
+            connection.execute(
+                "INSERT INTO categorization_rules (id, name, priority, conditions_json, category_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (new_id(), name, priority, conditions, category_id, now, now),
+            )
     targets = {"Groceries": 60_000, "Housing": 150_000, "Transport": 25_000, "Fun": 30_000}
     for name, amount in targets.items():
         connection.execute(
-            "INSERT INTO tracking_budget_targets (category_id, month, amount_minor, currency) VALUES (?, '2026-10', ?, 'USD')",
+            "INSERT OR IGNORE INTO tracking_budget_targets (category_id, month, amount_minor, currency) VALUES (?, '2026-10', ?, 'USD')",
             (categories[name], amount),
         )
         connection.execute(
-            "INSERT INTO envelope_allocations (category_id, month, amount_minor, currency) VALUES (?, '2026-10', ?, 'USD')",
+            "INSERT OR IGNORE INTO envelope_allocations (category_id, month, amount_minor, currency) VALUES (?, '2026-10', ?, 'USD')",
             (categories[name], amount),
         )
     connection.execute(
-        "INSERT INTO envelope_month_settings (month, starting_pool_minor, currency) VALUES ('2026-10', 300000, 'USD')"
+        "INSERT OR IGNORE INTO envelope_month_settings (month, starting_pool_minor, currency) VALUES ('2026-10', 300000, 'USD')"
     )

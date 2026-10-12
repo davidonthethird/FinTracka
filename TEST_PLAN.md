@@ -28,6 +28,7 @@ Three institutions containing checking, savings, and two credit cards; income, o
 - Google/Excel repeat, update, deletion, stale-tail clearing, formula escaping, and failure recovery.
 - Backup restore into an empty directory.
 - Malicious Host/Origin, missing CSRF, unexpected JSON fields, oversized CSV, and log-secret scans.
+- Concurrent edits using one expected version, invalid rule condition types, more than 100 matching register rows, non-USD currency exponents, and the New York month boundary.
 
 ## Acceptance criteria
 
@@ -54,9 +55,9 @@ Three institutions containing checking, savings, and two credit cards; income, o
 - Foundation: exact minor units, timezone dates, UUIDv7 shape, migration idempotency, constraints, `0600` database permissions, and FastAPI worker-thread handoff.
 - Synchronization: three institutions, idempotent repeat, modification/removal, pending-to-posted preservation, rollback, checkpoint atomicity, and demo categorization.
 - Financial integrity: ordered rules, exact splits, transfers, reporting exclusions, CSV repeat/overlap, refunds, reversals, and one-cent reconciliation failure.
-- API/security: one-use bootstrap, cookie flags, Host/Origin/CSRF rejection, strict bodies, optimistic conflicts, pagination, atomic bulk edits, reports, reconciliation, jobs, and production static fallback.
+- API/security: one-use bootstrap, cookie flags, Host/Origin/CSRF rejection, strict bodies, a deterministic concurrent optimistic-lock race, typed rule conditions, pagination, atomic bulk edits, reports, reconciliation, jobs, and production static fallback.
 - Providers: transactions-only Plaid Link requests, Keychain references, pagination mutation restart, bounded retry, consent repair, and revoke with fake clients only.
 - Operations: Excel stable IDs/update/deletion/formula escaping, fake Google bounded replacement, verified backup/restore/retention, process locking, and launchd plist generation.
-- Browser: secure onboarding, overview, account editing, filtering, atomic bulk categorization, splitting, transfer confirmation, both budgets, reports, rule preview, visible repair state, Excel export, backup, dark mode, keyboard focus, HTTP failures, and console errors.
+- Browser: secure onboarding, overview, account editing, filtering, 105-row cursor pagination, atomic bulk categorization, splitting, transfer confirmation, editing both budgets, reports, rule preview/creation, visible repair state, Excel export, backup, dark mode, keyboard focus, HTTP failures, console errors, and page errors.
 
 The latest verification run is recorded in Git history rather than treated as permanent evidence; rerun `scripts/verify.sh` for the current checkout before release.

@@ -2,7 +2,7 @@
 
 ## Current evidence and design status
 
-The synthetic-data release is implemented and verified as of 2026-10-11. This document now distinguishes implemented controls from live-rollout gates. No production provider or Google credential has been used.
+The synthetic-data release is implemented and verified as of 2026-10-12. This document now distinguishes implemented controls from live-rollout gates. No production provider or Google credential has been used.
 
 Implemented evidence:
 
@@ -12,6 +12,7 @@ Implemented evidence:
 - `keychain.KeychainSecrets` and `connection_secret_refs` keep provider token values outside SQLite. Plaid tests verify that completion responses do not expose access tokens.
 - `exports.export_excel` validates a temporary workbook before atomic replacement, applies formula-injection escaping, and sets `0600`. Google export remains behind a fake-tested narrow gateway.
 - `backups.backup_database` uses SQLite online backup, `integrity_check`, atomic replacement, `0600`, and retention. API exports and backups use fixed application-owned directories rather than caller-supplied paths.
+- Optimistic version checks, mutations, and audit rows share one `BEGIN IMMEDIATE` transaction; a concurrent-request regression proves that only one writer can consume an expected version.
 - The React client does not store ledger data or secrets in browser storage; only the theme preference is persistent. The session cookie is HttpOnly and SameSite-Strict.
 - Python, TypeScript, browser, dependency, and real-Uvicorn checks are collected by `scripts/verify.sh` and the test suites; release review also runs a tracked-file secret-pattern scan.
 
@@ -69,7 +70,7 @@ Allowed fields: local run/job ID, provider name, operation, sanitized error code
 
 ## Backups and deletion
 
-Use SQLite online backup, `integrity_check`, fsync, and atomic replace. Keep 30 daily local backups. Provider disconnect preserves records. Permanent erasure requires a separately confirmed operation that deletes database rows, backups selected by the user, exports, and Keychain items.
+Use SQLite online backup, `integrity_check`, file/directory fsync, and atomic replace. Keep the newest verified backup for each of the latest 30 UTC days. Provider disconnect preserves records. Permanent erasure requires a separately confirmed operation that deletes database rows, backups selected by the user, exports, and Keychain items.
 
 ## Residual risk
 

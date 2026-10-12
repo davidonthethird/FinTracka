@@ -13,6 +13,10 @@ class IntegrityError(ValueError):
     pass
 
 
+class ConflictError(IntegrityError):
+    pass
+
+
 @dataclass(frozen=True)
 class TransferCandidate:
     transaction_a: str
@@ -66,21 +70,25 @@ def set_splits(
     connection: sqlite3.Connection,
     transaction_id: str,
     splits: list[tuple[int, str | None, str | None]],
+    *,
+    expected_updated_at: str | None = None,
 ) -> None:
-    parent = connection.execute(
-        "SELECT amount_minor FROM transactions WHERE id = ?", (transaction_id,)
-    ).fetchone()
-    if parent is None:
-        raise IntegrityError("transaction not found")
     if len(splits) < 2:
         raise IntegrityError("a split requires at least two children")
     if any(amount == 0 for amount, _, _ in splits):
         raise IntegrityError("split amounts cannot be zero")
-    if sum(amount for amount, _, _ in splits) != parent[0]:
-        raise IntegrityError("split children must sum exactly to the parent")
     now = _now()
     try:
         connection.execute("BEGIN IMMEDIATE")
+        parent = connection.execute(
+            "SELECT amount_minor, updated_at FROM transactions WHERE id = ?", (transaction_id,)
+        ).fetchone()
+        if parent is None:
+            raise IntegrityError("transaction not found")
+        if expected_updated_at is not None and parent["updated_at"] != expected_updated_at:
+            raise ConflictError("transaction changed; refresh and retry")
+        if sum(amount for amount, _, _ in splits) != parent["amount_minor"]:
+            raise IntegrityError("split children must sum exactly to the parent")
         connection.execute("DELETE FROM transaction_splits WHERE parent_transaction_id = ?", (transaction_id,))
         connection.executemany(
             "INSERT INTO transaction_splits (id, parent_transaction_id, amount_minor, category_id, notes, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -103,9 +111,7 @@ def create_rule(
     conditions: dict[str, Any],
     category_id: str,
 ) -> str:
-    allowed = {"description_contains", "merchant_contains", "min_amount_minor", "max_amount_minor", "account_id", "pending"}
-    if not conditions or not set(conditions) <= allowed:
-        raise IntegrityError("unsupported or empty rule conditions")
+    _validate_rule_conditions(conditions)
     rule_id = new_id()
     now = _now()
     connection.execute(
@@ -114,6 +120,24 @@ def create_rule(
     )
     _audit(connection, "user", "rule_create", "categorization_rule", rule_id, now)
     return rule_id
+
+
+def _validate_rule_conditions(conditions: dict[str, Any]) -> None:
+    allowed = {"description_contains", "merchant_contains", "min_amount_minor", "max_amount_minor", "account_id", "pending"}
+    if not conditions or not set(conditions) <= allowed:
+        raise IntegrityError("unsupported or empty rule conditions")
+    for key in ("description_contains", "merchant_contains", "account_id"):
+        if key in conditions and (not isinstance(conditions[key], str) or not conditions[key].strip()):
+            raise IntegrityError(f"{key} must be a non-empty string")
+    for key in ("min_amount_minor", "max_amount_minor"):
+        if key in conditions and (not isinstance(conditions[key], int) or isinstance(conditions[key], bool)):
+            raise IntegrityError(f"{key} must be an integer")
+    if "pending" in conditions and not isinstance(conditions["pending"], bool):
+        raise IntegrityError("pending must be a boolean")
+    minimum = conditions.get("min_amount_minor")
+    maximum = conditions.get("max_amount_minor")
+    if isinstance(minimum, int) and isinstance(maximum, int) and minimum > maximum:
+        raise IntegrityError("minimum amount must not exceed maximum amount")
 
 
 def apply_rules(connection: sqlite3.Connection, *, reprocess: bool = False) -> int:

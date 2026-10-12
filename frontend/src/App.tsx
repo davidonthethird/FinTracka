@@ -1,18 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import { ColumnDef, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { api } from "./api";
-import { currentMonth, formatMoney, movementWidths } from "./format";
+import { currentMonth, currencyStep, formatMoney, majorInputToMinor, minorToMajorInput, movementWidths, totalsByCurrency } from "./format";
 
-type OverviewData = { cash_minor: number; card_liabilities_minor: number; net_position_minor: number; income_minor: number; spending_minor: number };
+type OverviewData = { cash_minor: number; card_liabilities_minor: number; net_position_minor: number; income_minor: number; spending_minor: number; cash_income_minor: number; cash_spending_minor: number; cash_transfer_minor: number; opening_cash_minor: number | null };
 type Account = { id: string; name: string; nickname?: string; nature: string; subtype?: string; currency: string; status: string; balance_minor?: number; include_overview: number; include_budget: number; include_net: number; include_export: number; updated_at: string };
 type Transaction = { id: string; account_id: string; local_date: string; amount_minor: number; currency: string; description: string; merchant?: string; category_id?: string; category?: string; notes?: string; pending: boolean; updated_at: string };
 type Category = { id: string; name: string; category_type: string; reporting_behavior: string };
 type TrackingRow = { category_id: string; category: string; target_minor: number; actual_minor: number; variance_minor: number };
 type EnvelopeRow = { category_id: string; category: string; allocated_minor: number; activity_minor: number; available_minor: number };
-type EnvelopeData = { month: string; available_to_assign_minor: number; categories: EnvelopeRow[] };
+type EnvelopeData = { month: string; starting_pool_minor: number; available_to_assign_minor: number; categories: EnvelopeRow[] };
 type Rule = { id: string; name: string; priority: number; enabled: number; conditions_json: string; category_id: string; category?: string };
 type RulePreview = { rule_id: string; name: string; priority: number; match_count: number };
 type TransferCandidate = { transaction_a: string; transaction_b: string; external_a: string; external_b: string; confidence: string };
@@ -59,12 +59,14 @@ function OverviewPage() {
   if (overview.error || transactions.error) return <PageState error text={overview.error || transactions.error || "Unable to load overview"} />;
   const data = overview.data!;
   const closing = data.cash_minor;
-  const opening = closing - data.income_minor + data.spending_minor;
-  const movement = [opening, data.income_minor, data.spending_minor, 0, closing];
+  const opening = data.opening_cash_minor;
+  const movement = [opening ?? 0, data.cash_income_minor, data.cash_spending_minor, data.cash_transfer_minor, closing];
   const widths = movementWidths(movement);
-  const trend = [
-    { label: "Opening", value: opening }, { label: "Income", value: opening + data.income_minor },
-    { label: "Spending", value: closing }, { label: "Closing", value: closing },
+  const movementPath = opening === null ? [] : [
+    { label: "Opening", value: opening },
+    { label: "Income", value: opening + data.cash_income_minor },
+    { label: "Spending", value: opening + data.cash_income_minor - data.cash_spending_minor },
+    { label: "Transfers", value: opening + data.cash_income_minor - data.cash_spending_minor + data.cash_transfer_minor },
   ];
   return <Page title="Overview" note={`Position for ${month}`}>
     <section className="metric-line">
@@ -74,11 +76,11 @@ function OverviewPage() {
       <Metric label="Month net" value={formatMoney(data.income_minor - data.spending_minor)} tone={data.income_minor >= data.spending_minor ? "teal" : "red"} />
     </section>
     <section className="instrument-panel cash-panel">
-      <div className="section-heading"><div><p className="eyebrow">Cash movement</p><h2>From opening to closing</h2></div><span>Transfers net to zero</span></div>
-      <div className="cash-strip">{["Opening cash", "Income", "Spending", "Transfers", "Closing cash"].map((label, index) => <div className={`cash-segment segment-${index}`} style={{ flexGrow: widths[index] }} key={label}><span>{label}</span><strong>{formatMoney(movement[index])}</strong></div>)}</div>
+      <div className="section-heading"><div><p className="eyebrow">Cash movement</p><h2>Observed opening and cash-account activity</h2></div><span>{opening === null ? "Opening balance history unavailable" : "Opening balance observed"}</span></div>
+      <div className="cash-strip">{["Opening cash", "Cash income", "Cash spending", "Transfers", "Latest cash"].map((label, index) => <div className={`cash-segment segment-${index}`} style={{ flexGrow: widths[index] }} key={label}><span>{label}</span><strong>{index === 0 && opening === null ? "Unavailable" : formatMoney(movement[index])}</strong></div>)}</div>
     </section>
     <div className="two-column">
-      <section className="instrument-panel"><div className="section-heading"><h2>Cash trend</h2><span>This month</span></div><div className="chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={trend}><defs><linearGradient id="cashFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="var(--teal)" stopOpacity={0.25}/><stop offset="95%" stopColor="var(--teal)" stopOpacity={0}/></linearGradient></defs><CartesianGrid vertical={false} stroke="var(--line)"/><XAxis dataKey="label" tickLine={false} axisLine={false}/><YAxis hide/><Tooltip formatter={(value) => formatMoney(Number(value))}/><Area type="monotone" dataKey="value" stroke="var(--teal)" fill="url(#cashFill)" strokeWidth={2}/></AreaChart></ResponsiveContainer></div></section>
+      <section className="instrument-panel"><div className="section-heading"><h2>Cash movement path</h2><span>This month</span></div>{movementPath.length ? <div className="chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={movementPath}><defs><linearGradient id="cashFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="var(--teal)" stopOpacity={0.25}/><stop offset="95%" stopColor="var(--teal)" stopOpacity={0}/></linearGradient></defs><CartesianGrid vertical={false} stroke="var(--line)"/><XAxis dataKey="label" tickLine={false} axisLine={false}/><YAxis hide/><Tooltip formatter={(value) => formatMoney(Number(value))}/><Area type="monotone" dataKey="value" stroke="var(--teal)" fill="url(#cashFill)" strokeWidth={2}/></AreaChart></ResponsiveContainer></div> : <Empty title="Opening balance unavailable" text="The movement path will appear after balance history covers the start of this month." />}</section>
       <section className="instrument-panel"><div className="section-heading"><h2>Recent activity</h2><NavLink to="/transactions">View register</NavLink></div><div className="compact-list">{transactions.data!.items.map((item) => <div key={item.id}><span><strong>{item.merchant || item.description}</strong><small>{item.local_date} · {item.category || "Uncategorized"}</small></span><b className={item.amount_minor < 0 ? "negative" : "positive"}>{formatMoney(item.amount_minor, item.currency)}</b></div>)}</div></section>
     </div>
   </Page>;
@@ -89,17 +91,18 @@ function AccountsPage() {
   const [selected, setSelected] = useState<Account>();
   const result = useData<Account[]>("/accounts", refresh);
   return <Page title="Accounts" note="Balances and reporting scope"><DataBoundary result={result}>{(accounts) => <>
-    {["asset", "liability"].map((nature) => <section className="instrument-panel account-group" key={nature}><div className="section-heading"><h2>{nature === "asset" ? "Cash accounts" : "Credit accounts"}</h2><strong>{formatMoney(accounts.filter((a) => a.nature === nature).reduce((sum, a) => sum + (a.balance_minor || 0), 0))}</strong></div>{accounts.filter((a) => a.nature === nature).map((account) => <div className="account-row" key={account.id}><span className="account-mark">{account.name.slice(0, 2).toUpperCase()}</span><span><strong>{account.nickname || account.name}</strong><small>{account.subtype?.replace("_", " ")} · {account.status}</small></span><span className="scope-flags"><i className={account.include_budget ? "on" : ""}>Budget</i><i className={account.include_net ? "on" : ""}>Net</i><i className={account.include_export ? "on" : ""}>Export</i></span><b>{formatMoney(account.balance_minor || 0, account.currency)}</b><button className="quiet-button" onClick={() => setSelected(account)}>Edit</button></div>)}</section>)}{selected && <AccountEditor account={selected} onClose={() => setSelected(undefined)} onSaved={() => { setSelected(undefined); setRefresh((value) => value + 1); }} />}</>}</DataBoundary></Page>;
+    {["asset", "liability"].map((nature) => { const group = accounts.filter((account) => account.nature === nature); return <section className="instrument-panel account-group" key={nature}><div className="section-heading"><h2>{nature === "asset" ? "Cash accounts" : "Credit accounts"}</h2><span className="account-totals">{totalsByCurrency(group).map((total) => <strong key={total.currency}>{formatMoney(total.minor, total.currency)}</strong>)}</span></div>{group.map((account) => <div className="account-row" key={account.id}><span className="account-mark">{account.name.slice(0, 2).toUpperCase()}</span><span><strong>{account.nickname || account.name}</strong><small>{account.subtype?.replace("_", " ")} · {account.status}</small></span><span className="scope-flags"><i className={account.include_budget ? "on" : ""}>Budget</i><i className={account.include_net ? "on" : ""}>Net</i><i className={account.include_export ? "on" : ""}>Export</i></span><b>{formatMoney(account.balance_minor || 0, account.currency)}</b><button className="quiet-button" onClick={() => setSelected(account)}>Edit</button></div>)}</section>; })}{selected && <AccountEditor account={selected} onClose={() => setSelected(undefined)} onSaved={() => { setSelected(undefined); setRefresh((value) => value + 1); }} />}</>}</DataBoundary></Page>;
 }
 
 function TransactionsPage() {
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
+  const [pageRevision, setPageRevision] = useState(0);
   const [refresh, setRefresh] = useState(0);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [splitTransaction, setSplitTransaction] = useState<Transaction>();
   const [message, setMessage] = useState("");
-  const transactions = useData<{ items: Transaction[]; next_cursor?: string }>(`/transactions?limit=100${query ? `&search=${encodeURIComponent(query)}` : ""}`, refresh);
+  const transactions = useTransactionPages(query, `${refresh}:${pageRevision}`);
   const categories = useData<Category[]>("/categories", refresh);
   const transfers = useData<TransferCandidate[]>("/transfers/candidates", refresh);
   const columns = useMemo<ColumnDef<Transaction>[]>(() => [
@@ -123,24 +126,48 @@ function TransactionsPage() {
   }
   const selectedRows = (transactions.data?.items || []).filter((row) => selected[row.id]);
   return <Page title="Transactions" note="Provider facts stay separate from your edits">
-    <div className="sticky-tools"><form onSubmit={(event) => { event.preventDefault(); setQuery(search); }}><input aria-label="Search transactions" placeholder="Search merchant or description" value={search} onChange={(event) => setSearch(event.target.value)} /><button>Search</button></form><select aria-label="Categorize selected" defaultValue="" onChange={(event) => event.target.value && categorize(event.target.value)}><option value="">Categorize selected…</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><button disabled={selectedRows.length !== 1} onClick={() => setSplitTransaction(selectedRows[0])}>Split</button><span>{selectedRows.length} selected</span></div>
+    <div className="sticky-tools"><form onSubmit={(event) => { event.preventDefault(); transactions.cancelPending(); setQuery(search); setPageRevision((value) => value + 1); }}><input aria-label="Search transactions" placeholder="Search merchant or description" value={search} onChange={(event) => setSearch(event.target.value)} /><button>Search</button></form><select aria-label="Categorize selected" defaultValue="" onChange={(event) => event.target.value && categorize(event.target.value)}><option value="">Categorize selected…</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><button disabled={selectedRows.length !== 1} onClick={() => setSplitTransaction(selectedRows[0])}>Split</button><span>{selectedRows.length} selected</span></div>
     {message && <div className="notice success" role="status"><strong>Ledger updated.</strong><span>{message}</span></div>}
     {transfers.data && transfers.data.length > 0 && <section className="review-strip"><div><p className="eyebrow">Review</p><strong>{transfers.data.length} possible transfer{transfers.data.length === 1 ? "" : "s"}</strong></div>{transfers.data.slice(0, 3).map((candidate) => <div key={`${candidate.transaction_a}-${candidate.transaction_b}`}><span>{candidate.external_a} ↔ {candidate.external_b}<small>{candidate.confidence} confidence</small></span><button onClick={() => confirmTransfer(candidate)}>Confirm transfer</button></div>)}</section>}
-    {transactions.loading ? <PageState text="Loading register…" /> : transactions.error ? <PageState error text={transactions.error} /> : <div className="table-wrap"><table className="register"><thead>{table.getHeaderGroups().map((group) => <tr key={group.id}>{group.headers.map((header) => <th key={header.id}>{flexRender(header.column.columnDef.header, header.getContext())}</th>)}</tr>)}</thead><tbody>{table.getRowModel().rows.map((row) => <tr key={row.id}>{row.getVisibleCells().map((cell) => <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}</tr>)}</tbody></table>{!table.getRowModel().rows.length && <PageState text="No transactions match these filters." />}</div>}
+    {transactions.loading ? <PageState text="Loading register…" /> : transactions.error ? <PageState error text={transactions.error} /> : <div className="table-wrap"><table className="register"><thead>{table.getHeaderGroups().map((group) => <tr key={group.id}>{group.headers.map((header) => <th key={header.id}>{flexRender(header.column.columnDef.header, header.getContext())}</th>)}</tr>)}</thead><tbody>{table.getRowModel().rows.map((row) => <tr key={row.id}>{row.getVisibleCells().map((cell) => <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}</tr>)}</tbody></table>{!table.getRowModel().rows.length && <PageState text="No transactions match these filters." />}{transactions.data?.next_cursor && <div className="load-more"><button disabled={transactions.loadingMore} onClick={transactions.loadMore}>{transactions.loadingMore ? "Loading…" : "Load older transactions"}</button></div>}</div>}
     {splitTransaction && <SplitEditor transaction={splitTransaction} categories={categories.data || []} onClose={() => setSplitTransaction(undefined)} onSaved={() => { setSplitTransaction(undefined); setSelected({}); setRefresh((value) => value + 1); }} />}
   </Page>;
 }
 
 function TrackingBudgetPage() {
   const [month, setMonth] = useState(currentMonth());
-  const result = useData<TrackingRow[]>(`/budgets/tracking/${month}`);
-  return <BudgetPage title="Tracking budget" month={month} setMonth={setMonth}><DataBoundary result={result}>{(rows) => rows.length ? <div className="budget-grid"><div className="budget-head"><span>Category</span><span>Target</span><span>Actual</span><span>Variance</span></div>{rows.map((row) => <div className="budget-row" key={row.category_id}><strong>{row.category}</strong><span>{formatMoney(row.target_minor)}</span><span>{formatMoney(row.actual_minor)}</span><b className={row.variance_minor < 0 ? "negative" : "positive"}>{formatMoney(row.variance_minor)}</b><div className="budget-bar"><i style={{ width: `${Math.min(100, row.target_minor ? (row.actual_minor / row.target_minor) * 100 : 0)}%` }}/></div></div>)}</div> : <Empty title="No targets for this month" text="Add tracking targets through the API while the editing controls are being configured." />}</DataBoundary></BudgetPage>;
+  const [refresh, setRefresh] = useState(0);
+  const [message, setMessage] = useState("");
+  const result = useData<TrackingRow[]>(`/budgets/tracking/${month}`, refresh);
+  const categories = useData<Category[]>("/categories");
+  async function save(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    try {
+      await api(`/budgets/tracking/${month}`, { method: "PUT", body: JSON.stringify({ category_id: form.get("category"), amount_minor: Math.round(Number(form.get("amount")) * 100) }) });
+      formElement.reset(); setMessage("Tracking target saved."); setRefresh((value) => value + 1);
+    } catch (caught) { setMessage(caught instanceof Error ? caught.message : "Unable to save tracking target"); }
+  }
+  return <BudgetPage title="Tracking budget" month={month} setMonth={setMonth}><BudgetEditor onSubmit={save} message={message}><label>Category<select required name="category" defaultValue=""><option value="" disabled>Select category…</option>{categories.data?.filter((category) => category.category_type === "expense").map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select></label><label>Monthly target<input required name="amount" type="number" min="0" step="0.01" placeholder="0.00" /></label><button>Save target</button></BudgetEditor><DataBoundary result={result}>{(rows) => rows.length ? <div className="budget-grid"><div className="budget-head"><span>Category</span><span>Target</span><span>Actual</span><span>Variance</span></div>{rows.map((row) => <div className="budget-row" key={row.category_id}><strong>{row.category}</strong><span>{formatMoney(row.target_minor)}</span><span>{formatMoney(row.actual_minor)}</span><b className={row.variance_minor < 0 ? "negative" : "positive"}>{formatMoney(row.variance_minor)}</b><div className="budget-bar"><i style={{ width: `${Math.min(100, row.target_minor ? (row.actual_minor / row.target_minor) * 100 : 0)}%` }}/></div></div>)}</div> : <Empty title="No targets for this month" text="Choose an expense category and save its monthly target above." />}</DataBoundary></BudgetPage>;
 }
 
 function EnvelopeBudgetPage() {
   const [month, setMonth] = useState(currentMonth());
-  const result = useData<EnvelopeData>(`/budgets/envelope/${month}`);
-  return <BudgetPage title="Envelope budget" month={month} setMonth={setMonth}><DataBoundary result={result}>{(data) => <><div className="assign-pool"><span>Available to assign</span><strong>{formatMoney(data.available_to_assign_minor)}</strong></div>{data.categories.length ? <div className="budget-grid"><div className="budget-head"><span>Category</span><span>Allocated</span><span>Activity</span><span>Available</span></div>{data.categories.map((row) => <div className="budget-row" key={row.category_id}><strong>{row.category}</strong><span>{formatMoney(row.allocated_minor)}</span><span>{formatMoney(row.activity_minor)}</span><b className={row.available_minor < 0 ? "negative" : "positive"}>{formatMoney(row.available_minor)}</b></div>)}</div> : <Empty title="No envelopes yet" text="Allocations will appear here without changing the tracking budget." />}</>}</DataBoundary></BudgetPage>;
+  const [refresh, setRefresh] = useState(0);
+  const [message, setMessage] = useState("");
+  const result = useData<EnvelopeData>(`/budgets/envelope/${month}`, refresh);
+  const categories = useData<Category[]>("/categories");
+  async function save(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    try {
+      await api(`/budgets/envelope/${month}`, { method: "PUT", body: JSON.stringify({ starting_pool_minor: Math.round(Number(form.get("pool")) * 100), category_id: form.get("category"), allocation_minor: Math.round(Number(form.get("allocation")) * 100) }) });
+      setMessage("Envelope allocation saved."); setRefresh((value) => value + 1);
+    } catch (caught) { setMessage(caught instanceof Error ? caught.message : "Unable to save envelope allocation"); }
+  }
+  return <BudgetPage title="Envelope budget" month={month} setMonth={setMonth}><BudgetEditor key={`${month}-${result.data?.starting_pool_minor ?? "loading"}`} onSubmit={save} message={message}><label>Month pool<input required name="pool" type="number" step="0.01" defaultValue={result.data ? (result.data.starting_pool_minor / 100).toFixed(2) : "0.00"} /></label><label>Category<select required name="category" defaultValue=""><option value="" disabled>Select category…</option>{categories.data?.filter((category) => category.category_type === "expense").map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select></label><label>Allocation<input required name="allocation" type="number" step="0.01" placeholder="0.00" /></label><button>Save allocation</button></BudgetEditor><DataBoundary result={result}>{(data) => <><div className="assign-pool"><span>Available to assign</span><strong>{formatMoney(data.available_to_assign_minor)}</strong></div>{data.categories.length ? <div className="budget-grid"><div className="budget-head"><span>Category</span><span>Allocated</span><span>Activity</span><span>Available</span></div>{data.categories.map((row) => <div className="budget-row" key={row.category_id}><strong>{row.category}</strong><span>{formatMoney(row.allocated_minor)}</span><span>{formatMoney(row.activity_minor)}</span><b className={row.available_minor < 0 ? "negative" : "positive"}>{formatMoney(row.available_minor)}</b></div>)}</div> : <Empty title="No envelopes yet" text="Set the month's pool and allocate an expense category above." />}</>}</DataBoundary></BudgetPage>;
 }
 
 function ReportsPage() {
@@ -158,9 +185,12 @@ function RulesPage() {
   const categories = useData<Category[]>("/categories");
   async function create(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    await api("/rules", { method: "POST", body: JSON.stringify({ name: form.get("name"), priority: Number(form.get("priority")), conditions: { description_contains: form.get("contains") }, category_id: form.get("category") }) });
-    event.currentTarget.reset(); setMessage("Rule created. Existing transactions were not changed."); setRefresh((value) => value + 1);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    try {
+      await api("/rules", { method: "POST", body: JSON.stringify({ name: form.get("name"), priority: Number(form.get("priority")), conditions: { description_contains: form.get("contains") }, category_id: form.get("category") }) });
+      formElement.reset(); setMessage("Rule created. Existing transactions were not changed."); setRefresh((value) => value + 1);
+    } catch (caught) { setMessage(caught instanceof Error ? caught.message : "Unable to create rule"); }
   }
   async function previewRules() {
     const rows = await api<RulePreview[]>("/rules/preview", { method: "POST", body: "{}" });
@@ -210,6 +240,7 @@ function Metric({ label, value, tone = "" }: { label: string; value: string; ton
 function Empty({ title, text }: { title: string; text: string }) { return <div className="empty"><strong>{title}</strong><p>{text}</p></div>; }
 function PageState({ text, error = false }: { text: string; error?: boolean }) { return <div className={`page-state ${error ? "error" : ""}`}>{text}</div>; }
 function Setting({ label, text, children }: { label: string; text: string; children: React.ReactNode }) { return <div><span><strong>{label}</strong><small>{text}</small></span>{children}</div>; }
+function BudgetEditor({ onSubmit, message, children }: { onSubmit: (event: React.FormEvent<HTMLFormElement>) => void | Promise<void>; message: string; children: React.ReactNode }) { return <section className="instrument-panel budget-editor"><form onSubmit={onSubmit}>{children}</form>{message && <p className="inline-message" role="status">{message}</p>}</section>; }
 
 function AccountEditor({ account, onClose, onSaved }: { account: Account; onClose: () => void; onSaved: () => void }) {
   const [error, setError] = useState("");
@@ -238,7 +269,7 @@ function SplitEditor({ transaction, categories, onClose, onSaved }: { transactio
       onSaved();
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to save split"); }
   }
-  return <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="split-title"><div className="section-heading"><div><p className="eyebrow">Exact-sum editor</p><h2 id="split-title">Split {transaction.merchant || transaction.description}</h2></div><button className="quiet-button" onClick={onClose}>Close</button></div><form onSubmit={save}><p className="split-total">Parent total <strong>{formatMoney(transaction.amount_minor, transaction.currency)}</strong></p><label>First amount<input aria-label="First split amount" type="number" step="0.01" value={(firstMinor / 100).toFixed(2)} onChange={(event) => setFirstMinor(Math.round(Number(event.target.value) * 100))} /></label><label>First category<select value={firstCategory} onChange={(event) => setFirstCategory(event.target.value)}><option value="">Uncategorized</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><label>Remaining amount<input aria-label="Remaining split amount" readOnly value={(secondMinor / 100).toFixed(2)} /></label><label>Remaining category<select value={secondCategory} onChange={(event) => setSecondCategory(event.target.value)}><option value="">Uncategorized</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="quiet-button" onClick={onClose}>Cancel</button><button>Save exact split</button></div></form></section></div>;
+  return <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="split-title"><div className="section-heading"><div><p className="eyebrow">Exact-sum editor</p><h2 id="split-title">Split {transaction.merchant || transaction.description}</h2></div><button className="quiet-button" onClick={onClose}>Close</button></div><form onSubmit={save}><p className="split-total">Parent total <strong>{formatMoney(transaction.amount_minor, transaction.currency)}</strong></p><label>First amount<input aria-label="First split amount" type="number" step={currencyStep(transaction.currency)} value={minorToMajorInput(firstMinor, transaction.currency)} onChange={(event) => setFirstMinor(majorInputToMinor(event.target.value, transaction.currency))} /></label><label>First category<select value={firstCategory} onChange={(event) => setFirstCategory(event.target.value)}><option value="">Uncategorized</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><label>Remaining amount<input aria-label="Remaining split amount" readOnly value={minorToMajorInput(secondMinor, transaction.currency)} /></label><label>Remaining category<select value={secondCategory} onChange={(event) => setSecondCategory(event.target.value)}><option value="">Uncategorized</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="quiet-button" onClick={onClose}>Cancel</button><button>Save exact split</button></div></form></section></div>;
 }
 
 function describeRule(source: string): string {
@@ -254,4 +285,56 @@ function useData<T>(path: string, refresh = 0): DataResult<T> {
   const [result, setResult] = useState<DataResult<T>>({ loading: true });
   useEffect(() => { let current = true; setResult({ loading: true }); api<T>(path).then((data) => current && setResult({ data, loading: false })).catch((error: Error) => current && setResult({ loading: false, error: error.message })); return () => { current = false; }; }, [path, refresh]);
   return result;
+}
+
+function useTransactionPages(query: string, refresh: string): DataResult<{ items: Transaction[]; next_cursor?: string }> & { loadingMore: boolean; loadMore: () => Promise<void>; cancelPending: () => void } {
+  type PageResult = DataResult<{ items: Transaction[]; next_cursor?: string }> & { generation: number };
+  const [result, setResult] = useState<PageResult>({ loading: true, generation: 0 });
+  const [loadingMore, setLoadingMore] = useState(false);
+  const basePath = `/transactions?limit=100${query ? `&search=${encodeURIComponent(query)}` : ""}`;
+  const generation = useRef(0);
+  const loadMoreController = useRef<AbortController | undefined>(undefined);
+  useEffect(() => {
+    let current = true;
+    const effectGeneration = ++generation.current;
+    loadMoreController.current?.abort();
+    setLoadingMore(false);
+    setResult({ loading: true, generation: effectGeneration });
+    api<{ items: Transaction[]; next_cursor?: string }>(basePath)
+      .then((data) => current && setResult((previous) => previous.generation === effectGeneration ? { data, loading: false, generation: effectGeneration } : previous))
+      .catch((error: Error) => current && setResult((previous) => previous.generation === effectGeneration ? { loading: false, error: error.message, generation: effectGeneration } : previous));
+    return () => { current = false; };
+  }, [basePath, refresh]);
+  async function loadMore() {
+    const cursor = result.data?.next_cursor;
+    if (!cursor || loadingMore) return;
+    const pageGeneration = result.generation;
+    const controller = new AbortController();
+    loadMoreController.current?.abort();
+    loadMoreController.current = controller;
+    setLoadingMore(true);
+    try {
+      const page = await api<{ items: Transaction[]; next_cursor?: string }>(`${basePath}&cursor=${encodeURIComponent(cursor)}`, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      setResult((previous) => previous.generation === pageGeneration ? {
+          loading: false,
+          generation: pageGeneration,
+          data: {
+            items: [...(previous.data?.items || []), ...page.items],
+            next_cursor: page.next_cursor,
+          },
+        } : previous);
+    } catch (caught) {
+      if (!controller.signal.aborted) setResult((previous) => previous.generation === pageGeneration ? { ...previous, error: caught instanceof Error ? caught.message : "Unable to load older transactions" } : previous);
+    } finally {
+      if (!controller.signal.aborted && generation.current === pageGeneration) setLoadingMore(false);
+    }
+  }
+  function cancelPending() {
+    loadMoreController.current?.abort();
+    const nextGeneration = ++generation.current;
+    setLoadingMore(false);
+    setResult({ loading: true, generation: nextGeneration });
+  }
+  return { ...result, loadingMore, loadMore, cancelPending };
 }

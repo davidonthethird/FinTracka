@@ -16,7 +16,6 @@ export async function bootstrapSession(): Promise<void> {
   if (!response.ok) throw new Error("Open FinTracka from the startup link shown in Terminal.");
   csrfToken = (await response.json()).csrf_token;
 }
-
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body) headers.set("Content-Type", "application/json");
@@ -29,4 +28,3 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
-

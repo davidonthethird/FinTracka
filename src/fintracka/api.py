@@ -3,19 +3,26 @@ import binascii
 import secrets
 import sqlite3
 from collections.abc import Iterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, model_validator
 
 from fintracka.backups import backup_database
-from fintracka.budgets import envelope_budget, tracking_budget, tracking_year
+from fintracka.budgets import (
+    envelope_budget,
+    set_envelope_allocation,
+    set_envelope_month,
+    set_tracking_target,
+    tracking_budget,
+    tracking_year,
+)
 from fintracka.db import connect, migrate
 from fintracka.exports import export_excel
 from fintracka.ids import new_id
@@ -23,6 +30,7 @@ from fintracka.imports import DuplicateImportError, ImportError as CSVImportErro
 from fintracka.jobs import JobRunner, recover_interrupted_jobs
 from fintracka.locks import ProcessLock
 from fintracka.ledger import (
+    ConflictError,
     IntegrityError,
     apply_rules,
     confirm_transfer,
@@ -102,10 +110,30 @@ class TransactionPage(StrictModel):
     next_cursor: str | None
 
 
+class RuleConditions(StrictModel):
+    description_contains: StrictStr | None = Field(default=None, min_length=1, max_length=300)
+    merchant_contains: StrictStr | None = Field(default=None, min_length=1, max_length=300)
+    min_amount_minor: StrictInt | None = None
+    max_amount_minor: StrictInt | None = None
+    account_id: StrictStr | None = Field(default=None, min_length=1, max_length=100)
+    pending: StrictBool | None = None
+
+    @model_validator(mode="after")
+    def validate_conditions(self):  # type: ignore[no-untyped-def]
+        values = self.model_dump(exclude_none=True)
+        if not values:
+            raise ValueError("at least one rule condition is required")
+        minimum = values.get("min_amount_minor")
+        maximum = values.get("max_amount_minor")
+        if minimum is not None and maximum is not None and minimum > maximum:
+            raise ValueError("minimum amount must not exceed maximum amount")
+        return self
+
+
 class RuleCreate(StrictModel):
     name: str = Field(min_length=1, max_length=120)
     priority: int
-    conditions: dict[str, str | int | bool]
+    conditions: RuleConditions
     category_id: str
 
 
@@ -136,6 +164,17 @@ class ReconciliationCreate(StrictModel):
     opening_minor: int
     closing_minor: int
     cleared_cutoff: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class TrackingTargetUpdate(StrictModel):
+    category_id: str
+    amount_minor: int = Field(ge=0)
+
+
+class EnvelopeUpdate(StrictModel):
+    starting_pool_minor: int
+    category_id: str
+    allocation_minor: int
 
 
 class ExportRequest(StrictModel):
@@ -268,21 +307,22 @@ def create_app(
 
     @app.patch("/api/v1/accounts/{account_id}")
     def patch_account(account_id: str, payload: AccountPatch, database: Database) -> dict[str, object]:
-        current = database.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
-        if current is None:
-            raise HTTPException(status_code=404, detail="account not found")
-        if current["updated_at"] != payload.expected_updated_at:
-            raise HTTPException(status_code=409, detail="account changed; refresh and retry")
         supplied = payload.model_fields_set - {"expected_updated_at"}
-        if not supplied:
-            return dict(current)
         values: dict[str, object] = {}
         for field in supplied:
             value = getattr(payload, field)
-            values[field] = int(value) if field.startswith("include_") and value is not None else value
+            if field.startswith("include_") and value is None:
+                raise HTTPException(status_code=422, detail=f"{field} cannot be null")
+            values[field] = int(value) if field.startswith("include_") else value
         now = _now()
-        try:
-            database.execute("BEGIN IMMEDIATE")
+        with _write_transaction(database):
+            current = database.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            if current is None:
+                raise HTTPException(status_code=404, detail="account not found")
+            if current["updated_at"] != payload.expected_updated_at:
+                raise HTTPException(status_code=409, detail="account changed; refresh and retry")
+            if not supplied:
+                return dict(current)
             assignments = ", ".join(f"{field} = ?" for field in values)
             database.execute(
                 f"UPDATE accounts SET {assignments}, updated_at = ? WHERE id = ?",
@@ -292,10 +332,6 @@ def create_app(
                 "INSERT INTO audit_events (id, actor, action, entity_type, entity_id, occurred_at) VALUES (?, 'user', 'account_update', 'account', ?, ?)",
                 (new_id(), account_id, now),
             )
-            database.commit()
-        except Exception:
-            database.rollback()
-            raise
         return dict(database.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone())
 
     @app.get("/api/v1/accounts/{account_id}/balances")
@@ -354,19 +390,20 @@ def create_app(
 
     @app.patch("/api/v1/transactions/{transaction_id}", response_model=TransactionResponse)
     def patch_transaction(transaction_id: str, payload: TransactionPatch, database: Database) -> TransactionResponse:
-        current = database.execute(
-            "SELECT updated_at FROM transactions WHERE id = ?", (transaction_id,)
-        ).fetchone()
-        if current is None:
-            raise HTTPException(status_code=404, detail="transaction not found")
-        if current["updated_at"] != payload.expected_updated_at:
-            raise HTTPException(status_code=409, detail="transaction changed; refresh and retry")
         supplied = payload.model_fields_set - {"expected_updated_at"}
-        update_transaction(
-            database,
-            transaction_id,
-            **{field: getattr(payload, field) for field in supplied},
-        )
+        with _write_transaction(database):
+            current = database.execute(
+                "SELECT updated_at FROM transactions WHERE id = ?", (transaction_id,)
+            ).fetchone()
+            if current is None:
+                raise HTTPException(status_code=404, detail="transaction not found")
+            if current["updated_at"] != payload.expected_updated_at:
+                raise HTTPException(status_code=409, detail="transaction changed; refresh and retry")
+            update_transaction(
+                database,
+                transaction_id,
+                **{field: getattr(payload, field) for field in supplied},
+            )
         row = _transaction(database, transaction_id)
         return TransactionResponse(**{**dict(row), "pending": bool(row["pending"])})
 
@@ -375,19 +412,18 @@ def create_app(
         identifiers = [item.id for item in payload.items]
         if len(identifiers) != len(set(identifiers)):
             raise HTTPException(status_code=422, detail="bulk items must be unique")
-        current = {
-            row["id"]: row["updated_at"]
-            for row in database.execute(
-                f"SELECT id, updated_at FROM transactions WHERE id IN ({','.join('?' for _ in identifiers)})",
-                identifiers,
-            )
-        }
-        if set(current) != set(identifiers):
-            raise HTTPException(status_code=404, detail="transaction not found")
-        if any(current[item.id] != item.expected_updated_at for item in payload.items):
-            raise HTTPException(status_code=409, detail="transaction changed; refresh and retry")
-        try:
-            database.execute("BEGIN IMMEDIATE")
+        with _write_transaction(database):
+            current = {
+                row["id"]: row["updated_at"]
+                for row in database.execute(
+                    f"SELECT id, updated_at FROM transactions WHERE id IN ({','.join('?' for _ in identifiers)})",
+                    identifiers,
+                )
+            }
+            if set(current) != set(identifiers):
+                raise HTTPException(status_code=404, detail="transaction not found")
+            if any(current[item.id] != item.expected_updated_at for item in payload.items):
+                raise HTTPException(status_code=409, detail="transaction changed; refresh and retry")
             for item in payload.items:
                 supplied = item.model_fields_set - {"id", "expected_updated_at"}
                 update_transaction(
@@ -395,10 +431,6 @@ def create_app(
                     item.id,
                     **{field: getattr(item, field) for field in supplied},
                 )
-            database.commit()
-        except Exception:
-            database.rollback()
-            raise
         return [
             TransactionResponse(**{**dict(row), "pending": bool(row["pending"])})
             for row in (_transaction(database, identifier) for identifier in identifiers)
@@ -406,19 +438,15 @@ def create_app(
 
     @app.post("/api/v1/transactions/{transaction_id}/split", response_model=TransactionResponse)
     def split_transaction(transaction_id: str, payload: SplitRequest, database: Database) -> TransactionResponse:
-        current = database.execute(
-            "SELECT updated_at FROM transactions WHERE id = ?", (transaction_id,)
-        ).fetchone()
-        if current is None:
-            raise HTTPException(status_code=404, detail="transaction not found")
-        if current["updated_at"] != payload.expected_updated_at:
-            raise HTTPException(status_code=409, detail="transaction changed; refresh and retry")
         try:
             set_splits(
                 database,
                 transaction_id,
                 [(item.amount_minor, item.category_id, item.notes) for item in payload.splits],
+                expected_updated_at=payload.expected_updated_at,
             )
+        except ConflictError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         except IntegrityError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         row = _transaction(database, transaction_id)
@@ -434,9 +462,12 @@ def create_app(
         payload: TransferConfirmRequest,
         database: Database,
     ) -> dict[str, str]:
-        del candidate_id
+        if candidate_id != payload.transaction_a:
+            raise HTTPException(status_code=404, detail="transfer candidate not found")
         try:
-            return {"id": confirm_transfer(database, payload.transaction_a, payload.transaction_b)}
+            with _write_transaction(database):
+                link_id = confirm_transfer(database, payload.transaction_a, payload.transaction_b)
+            return {"id": link_id}
         except IntegrityError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
@@ -473,16 +504,17 @@ def create_app(
         category_id = new_id()
         now = _now()
         try:
-            database.execute(
-                "INSERT INTO categories (id, group_id, name, category_type, reporting_behavior, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (category_id, payload.group_id, payload.name, payload.category_type, payload.reporting_behavior, payload.sort_order, now, now),
-            )
+            with _write_transaction(database):
+                database.execute(
+                    "INSERT INTO categories (id, group_id, name, category_type, reporting_behavior, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (category_id, payload.group_id, payload.name, payload.category_type, payload.reporting_behavior, payload.sort_order, now, now),
+                )
+                database.execute(
+                    "INSERT INTO audit_events (id, actor, action, entity_type, entity_id, occurred_at) VALUES (?, 'user', 'category_create', 'category', ?, ?)",
+                    (new_id(), category_id, now),
+                )
         except sqlite3.IntegrityError as error:
             raise HTTPException(status_code=409, detail="category conflicts with existing data") from error
-        database.execute(
-            "INSERT INTO audit_events (id, actor, action, entity_type, entity_id, occurred_at) VALUES (?, 'user', 'category_create', 'category', ?, ?)",
-            (new_id(), category_id, now),
-        )
         return dict(database.execute("SELECT * FROM categories WHERE id = ?", (category_id,)).fetchone())
 
     @app.get("/api/v1/rules")
@@ -497,13 +529,14 @@ def create_app(
     @app.post("/api/v1/rules", status_code=201)
     def create_rule_route(payload: RuleCreate, database: Database) -> dict[str, object]:
         try:
-            rule_id = create_rule(
-                database,
-                payload.name,
-                payload.priority,
-                payload.conditions,
-                payload.category_id,
-            )
+            with _write_transaction(database):
+                rule_id = create_rule(
+                    database,
+                    payload.name,
+                    payload.priority,
+                    payload.conditions.model_dump(exclude_none=True),
+                    payload.category_id,
+                )
         except (IntegrityError, sqlite3.IntegrityError) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         return dict(
@@ -521,10 +554,12 @@ def create_app(
     @app.post("/api/v1/rules/reprocess")
     def reprocess_rules_route(payload: EmptyRequest, database: Database) -> dict[str, int]:
         del payload
-        return {"applied_count": apply_rules(database, reprocess=True)}
+        with _write_transaction(database):
+            applied = apply_rules(database, reprocess=True)
+        return {"applied_count": applied}
 
     @app.get("/api/v1/overview")
-    def overview_route(database: Database, month: str) -> dict[str, int]:
+    def overview_route(database: Database, month: str) -> dict[str, int | None]:
         return asdict(overview(database, month))
 
     @app.get("/api/v1/reports/cash-flow")
@@ -562,6 +597,19 @@ def create_app(
     def tracking_route(month: str, database: Database) -> list[dict[str, object]]:
         return [asdict(row) for row in tracking_budget(database, month)]
 
+    @app.put("/api/v1/budgets/tracking/{month}")
+    def update_tracking_route(
+        month: str,
+        payload: TrackingTargetUpdate,
+        database: Database,
+    ) -> list[dict[str, object]]:
+        try:
+            with _write_transaction(database):
+                set_tracking_target(database, payload.category_id, month, payload.amount_minor)
+            return [asdict(row) for row in tracking_budget(database, month)]
+        except (ValueError, sqlite3.IntegrityError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
     @app.get("/api/v1/budgets/tracking/{year}/year")
     def tracking_year_route(year: int, database: Database) -> list[dict[str, object]]:
         return [asdict(row) for row in tracking_year(database, year)]
@@ -569,6 +617,20 @@ def create_app(
     @app.get("/api/v1/budgets/envelope/{month}")
     def envelope_route(month: str, database: Database) -> dict[str, object]:
         return asdict(envelope_budget(database, month))
+
+    @app.put("/api/v1/budgets/envelope/{month}")
+    def update_envelope_route(
+        month: str,
+        payload: EnvelopeUpdate,
+        database: Database,
+    ) -> dict[str, object]:
+        try:
+            with _write_transaction(database):
+                set_envelope_month(database, month, payload.starting_pool_minor)
+                set_envelope_allocation(database, payload.category_id, month, payload.allocation_minor)
+            return asdict(envelope_budget(database, month))
+        except (ValueError, sqlite3.IntegrityError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
     @app.get("/api/v1/sync-runs")
     def sync_runs(database: Database) -> list[dict[str, object]]:
@@ -608,11 +670,19 @@ def create_app(
 
     @app.post("/api/v1/reconciliations", status_code=201)
     def create_reconciliation(payload: ReconciliationCreate, database: Database) -> dict[str, object]:
-        if payload.period_start > payload.period_end:
-            raise HTTPException(status_code=422, detail="period start must not follow period end")
         try:
-            return asdict(
-                reconcile(
+            period_start = date.fromisoformat(payload.period_start)
+            period_end = date.fromisoformat(payload.period_end)
+            cleared_cutoff = date.fromisoformat(payload.cleared_cutoff)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="reconciliation dates must be valid ISO dates") from error
+        if period_start > period_end:
+            raise HTTPException(status_code=422, detail="period start must not follow period end")
+        if not period_start <= cleared_cutoff <= period_end:
+            raise HTTPException(status_code=422, detail="cleared cutoff must fall within the statement period")
+        try:
+            with _write_transaction(database):
+                result = reconcile(
                     database,
                     payload.account_id,
                     payload.period_start,
@@ -621,7 +691,7 @@ def create_app(
                     payload.closing_minor,
                     payload.cleared_cutoff,
                 )
-            )
+            return asdict(result)
         except sqlite3.IntegrityError as error:
             raise HTTPException(status_code=422, detail="reconciliation data is invalid") from error
 
@@ -698,6 +768,17 @@ def _transaction(connection: sqlite3.Connection, transaction_id: str) -> sqlite3
     if row is None:
         raise HTTPException(status_code=404, detail="transaction not found")
     return row
+
+
+@contextmanager
+def _write_transaction(connection: sqlite3.Connection) -> Iterator[None]:
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
 
 
 def _secured(response: Response) -> Response:

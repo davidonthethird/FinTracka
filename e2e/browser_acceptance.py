@@ -9,11 +9,13 @@ from playwright.sync_api import expect, sync_playwright
 def main() -> None:
     screenshot = Path(sys.argv[1] if len(sys.argv) > 1 else "/tmp/fintracka-overview.png")
     console_errors: list[str] = []
+    page_errors: list[str] = []
     response_errors: list[str] = []
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         page.on("console", lambda message: console_errors.append(message.text) if message.type == "error" else None)
+        page.on("pageerror", lambda error: page_errors.append(str(error)))
         page.on("response", lambda response: response_errors.append(f"{response.status} {response.url}") if response.status >= 400 else None)
 
         page.goto("http://127.0.0.1:8787/#bootstrap=browser-test-token")
@@ -26,7 +28,7 @@ def main() -> None:
 
         page.get_by_role("link", name="Transactions").click()
         page.wait_for_load_state("networkidle")
-        expect(page.locator("tbody tr")).to_have_count(8)
+        expect(page.locator("tbody tr")).to_have_count(100)
         expect(page.get_by_text("1 possible transfer")).to_be_visible()
         page.get_by_role("button", name="Confirm transfer").click()
         expect(page.get_by_role("status")).to_contain_text("Transfer confirmed")
@@ -71,6 +73,7 @@ def main() -> None:
 
         assert not response_errors, f"HTTP errors: {response_errors}"
         assert not console_errors, f"browser console errors: {console_errors}"
+        assert not page_errors, f"browser page errors: {page_errors}"
         browser.close()
 
 

@@ -1,8 +1,8 @@
 # Implementation Roadmap
 
-## Current delivery status — 2026-10-11
+## Current delivery status — 2026-10-12
 
-Phases 0–2, 4, and the local portions of 5–6 are implemented and verified with synthetic data. The Plaid transactions-only adapter, Keychain boundary, pagination recovery, repair, and revoke behavior are fake-tested, but the UI intentionally does not create a live or production connection. Excel export is complete; Google Sheets has a deterministic, bounded, fake-tested gateway contract but production OAuth is not enabled. Local backup/restore, launchd plist generation, localhost security, the React dashboard, and real-Uvicorn Playwright coverage are implemented.
+Phases 0–2, 4, and the local portions of 5–6 are implemented and verified with synthetic data. The Plaid transactions-only adapter, Keychain boundary, pagination recovery, repair, and revoke behavior are fake-tested, but the UI intentionally does not create a live or production connection. Excel export is complete; Google Sheets has a deterministic, bounded, fake-tested gateway contract but production OAuth is not enabled. Local backup/restore, launchd plist generation, localhost security, editable Tracking and Envelope budgets, cursor-complete registers, and real-Uvicorn Playwright coverage are implemented.
 
 Phase 7 remains outside current execution authority. The Python 3.14, FileVault, encrypted-backup, current provider review, explicit approval, and one-institution observation gates are unchanged.
 
