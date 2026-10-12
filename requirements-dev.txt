@@ -3,4 +3,4 @@ fastapi[standard]==0.143.0
 playwright==1.63.0
 pip-audit==2.10.1
 pytest==9.1.1
-setuptools==83.0.0
+setuptools==84.0.0
