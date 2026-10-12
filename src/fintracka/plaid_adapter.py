@@ -37,6 +37,7 @@ class OfficialPlaidClient:
     """Narrow wrapper around the generated official SDK used by the tested adapter."""
 
     def __init__(self, client_id: str, secret: str, environment: Literal["sandbox", "production"]) -> None:
+        import certifi
         import plaid
         from plaid.api import plaid_api
 
@@ -45,6 +46,7 @@ class OfficialPlaidClient:
             host=hosts[environment],
             api_key={"clientId": client_id, "secret": secret},
         )
+        configuration.ssl_ca_cert = certifi.where()
         self._api = plaid_api.PlaidApi(plaid.ApiClient(configuration))
 
     def create_link_token(self, request: dict[str, object]) -> dict[str, object]:
