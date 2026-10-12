@@ -8,8 +8,10 @@ from pathlib import Path
 from fintracka.api import create_app
 from fintracka.backups import backup_database, restore_database
 from fintracka.db import connect, migrate
-from fintracka.exports import export_excel
+from fintracka.exports import export_excel, export_google
+from fintracka.google_sheets import build_google_gateway, configure_google
 from fintracka.keychain import KeychainSecrets
+from fintracka.launchd import install_schedule, remove_schedule, schedule_status
 from fintracka.locks import ProcessLock
 from fintracka.plaid_service import build_plaid_adapter, configure_plaid, sync_plaid_connections
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
@@ -59,6 +61,19 @@ def main(argv: list[str] | None = None) -> int:
                 connection.close()
         print(f"Plaid {args.environment} credentials stored in macOS Keychain.")
         return 0
+    if args.command == "configure" and args.provider == "google":
+        client_configuration = sys.stdin.read().strip()
+        if not client_configuration:
+            parser.error("Google desktop OAuth client JSON must be provided on stdin")
+        with ProcessLock(lock_path):
+            connection = connect(database_path)
+            try:
+                migrate(connection)
+                configure_google(connection, KeychainSecrets(), client_configuration)
+            finally:
+                connection.close()
+        print("Google desktop OAuth configuration stored in macOS Keychain.")
+        return 0
     if args.command == "sync":
         with ProcessLock(lock_path):
             connection = connect(database_path)
@@ -71,11 +86,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Completed {len(runs)} Plaid connection sync(s).")
         return 0
     if args.command == "export" and args.export_type == "excel":
+        if args.output is None:
+            parser.error("Excel export requires --output")
         with ProcessLock(lock_path):
             connection = connect(database_path)
             migrate(connection)
             export_excel(connection, args.output)
             connection.close()
+        return 0
+    if args.command == "export" and args.export_type in {"sheets", "google_sheets"}:
+        with ProcessLock(lock_path):
+            connection = connect(database_path)
+            try:
+                migrate(connection)
+                export_google(connection, build_google_gateway(connection, KeychainSecrets()))
+            finally:
+                connection.close()
         return 0
     if args.command == "backup":
         with ProcessLock(lock_path):
@@ -84,6 +110,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "restore":
         with ProcessLock(lock_path):
             restore_database(args.backup, database_path, verify=args.verify)
+        return 0
+    if args.command == "schedule":
+        destination = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.sync.plist"
+        if args.schedule_action == "install":
+            install_schedule(destination, Path(sys.executable), data_directory)
+            print("Daily sync schedule installed for 06:17 local time and login.")
+        elif args.schedule_action == "status":
+            status = schedule_status(destination)
+            words = "installed" if status["installed"] else "not installed"
+            words += " and loaded" if status["loaded"] else " and not loaded"
+            print(f"Daily sync schedule is {words}.")
+        else:
+            remove_schedule(destination)
+            print("Daily sync schedule removed.")
         return 0
     parser.error("unsupported command")
     return 2
@@ -104,12 +144,15 @@ def _parser() -> argparse.ArgumentParser:
     plaid.add_argument("--environment", choices=["sandbox", "production"], required=True)
     plaid.add_argument("--client-id", required=True)
     plaid.add_argument("--secret-stdin", action="store_true", required=True)
+    google = configure_subparsers.add_parser("google")
+    google.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    google.add_argument("--client-json-stdin", action="store_true", required=True)
     sync = subparsers.add_parser("sync")
     sync.add_argument("--data-dir", type=Path, default=_default_data_directory())
     export = subparsers.add_parser("export")
-    export.add_argument("export_type", choices=["excel"])
+    export.add_argument("export_type", choices=["excel", "sheets", "google_sheets"])
     export.add_argument("--data-dir", type=Path, default=_default_data_directory())
-    export.add_argument("--output", type=Path, required=True)
+    export.add_argument("--output", type=Path)
     backup = subparsers.add_parser("backup")
     backup.add_argument("--data-dir", type=Path, default=_default_data_directory())
     backup.add_argument("--output-dir", type=Path, required=True)
@@ -117,6 +160,9 @@ def _parser() -> argparse.ArgumentParser:
     restore.add_argument("backup", type=Path)
     restore.add_argument("--data-dir", type=Path, default=_default_data_directory())
     restore.add_argument("--verify", action="store_true")
+    schedule = subparsers.add_parser("schedule")
+    schedule.add_argument("schedule_action", choices=["install", "status", "remove"])
+    schedule.add_argument("--data-dir", type=Path, default=_default_data_directory())
     return parser
 
 

@@ -18,6 +18,11 @@ bank = [
     "keyring==25.7.0",
     "plaid-python==45.0.0",
 ]
+google = [
+    "google-api-python-client==2.201.0",
+    "google-auth-httplib2==0.4.4",
+    "google-auth-oauthlib==1.5.0",
+]
 dev = [
     "httpx>=0.28,<0.29",
     "pytest>=9.1,<10",

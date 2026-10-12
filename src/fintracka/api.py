@@ -2,12 +2,13 @@ import base64
 import binascii
 import secrets
 import sqlite3
+import sys
 from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Annotated, Callable, Literal
+from typing import Annotated, Any, Callable, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
@@ -24,12 +25,18 @@ from fintracka.budgets import (
     tracking_year,
 )
 from fintracka.db import connect, migrate
-from fintracka.exports import export_excel
+from fintracka.exports import export_excel, export_google
+from fintracka.google_sheets import (
+    authorize_google,
+    build_google_gateway,
+    google_status,
+)
 from fintracka.ids import new_id
 from fintracka.imports import DuplicateImportError, ImportError as CSVImportError, commit_csv, preview_csv
 from fintracka.jobs import JobRunner, recover_interrupted_jobs
 from fintracka.keychain import KeychainSecrets, SecretStoreUnavailable
 from fintracka.locks import ProcessLock
+from fintracka.launchd import install_schedule, remove_schedule, schedule_status
 from fintracka.ledger import (
     ConflictError,
     IntegrityError,
@@ -192,7 +199,7 @@ class EnvelopeUpdate(StrictModel):
 
 
 class ExportRequest(StrictModel):
-    target: Literal["excel"]
+    target: Literal["excel", "google_sheets"]
 
 
 class CSVImportRequest(StrictModel):
@@ -207,6 +214,13 @@ def create_app(
     bootstrap_token: str | None = None,
     static_directory: str | Path | None = None,
     plaid_adapter_factory: Callable[[sqlite3.Connection], PlaidAdapter] | None = None,
+    google_secrets_factory: Callable[[], KeychainSecrets] = KeychainSecrets,
+    google_authorizer: Callable[[dict[str, Any], list[str]], str] | None = None,
+    google_authorization_gateway_factory: Callable[[str], Any] | None = None,
+    google_export_gateway_factory: Callable[[sqlite3.Connection, KeychainSecrets], Any] | None = None,
+    schedule_installer: Callable[[Path, Path, Path], Any] = install_schedule,
+    schedule_remover: Callable[[Path], Any] = remove_schedule,
+    schedule_status_reader: Callable[[Path], dict[str, bool]] = schedule_status,
 ) -> FastAPI:
     path = Path(database_path)
     initial = connect(path)
@@ -216,6 +230,7 @@ def create_app(
     initial.close()
     sessions = LocalSessions(bootstrap_token or secrets.token_urlsafe(32))
     jobs = JobRunner(path)
+    launch_agent = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.sync.plist"
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):  # type: ignore[no-untyped-def]
@@ -288,13 +303,29 @@ def create_app(
         return {"csrf_token": session.csrf_token}
 
     @app.get("/api/v1/settings")
-    def settings() -> dict[str, str | bool]:
+    def settings(database: Database) -> dict[str, str | bool]:
+        google = google_status(database)
+        scheduler = schedule_status_reader(launch_agent)
         return {
             "reporting_currency": "USD",
             "reporting_timezone": "America/New_York",
             "localhost_only": True,
             "live_data_ready": False,
+            "google_configured": bool(google["configured"]),
+            "google_authorized": bool(google["authorized"]),
+            "schedule_installed": scheduler["installed"],
+            "schedule_loaded": scheduler["loaded"],
         }
+
+    @app.post("/api/v1/settings/schedule")
+    def install_sync_schedule(payload: EmptyRequest) -> dict[str, bool]:
+        del payload
+        schedule_installer(launch_agent, Path(sys.executable), path.parent)
+        return schedule_status_reader(launch_agent)
+
+    @app.delete("/api/v1/settings/schedule", status_code=204)
+    def remove_sync_schedule() -> None:
+        schedule_remover(launch_agent)
 
     @app.get("/api/v1/providers")
     def providers(database: Database) -> list[dict[str, str | bool]]:
@@ -797,19 +828,58 @@ def create_app(
     @app.post("/api/v1/exports", status_code=202)
     def start_export(payload: ExportRequest) -> dict[str, str]:
         destination = path.parent / "exports" / "FinTracka.xlsx"
+
         def work(connection: sqlite3.Connection) -> None:
             with ProcessLock(path.parent / "fintracka.lock"):
-                export_excel(connection, destination)
+                if payload.target == "excel":
+                    export_excel(connection, destination)
+                else:
+                    secrets_store = google_secrets_factory()
+                    gateway = (
+                        google_export_gateway_factory(connection, secrets_store)
+                        if google_export_gateway_factory
+                        else build_google_gateway(connection, secrets_store)
+                    )
+                    export_google(connection, gateway)
 
-        job_id = jobs.submit("excel_export", work)
+        if payload.target == "google_sheets":
+            status_connection = connect(path)
+            try:
+                status = google_status(status_connection)
+            finally:
+                status_connection.close()
+            if not status["authorized"]:
+                raise HTTPException(status_code=409, detail="Google Sheets is not authorized")
+        job_id = jobs.submit(f"{payload.target}_export", work)
         return {"job_id": job_id}
+
+    @app.post("/api/v1/exports/google/authorize", status_code=202)
+    def start_google_authorization(payload: EmptyRequest) -> dict[str, str]:
+        del payload
+
+        def work(connection: sqlite3.Connection) -> None:
+            with ProcessLock(path.parent / "fintracka.lock"):
+                authorize_google(
+                    connection,
+                    google_secrets_factory(),
+                    oauth_authorizer=google_authorizer,
+                    gateway_factory=google_authorization_gateway_factory,
+                )
+
+        check = connect(path)
+        try:
+            if not google_status(check)["configured"]:
+                raise HTTPException(status_code=409, detail="Google desktop OAuth is not configured")
+        finally:
+            check.close()
+        return {"job_id": jobs.submit("google_authorize", work)}
 
     @app.get("/api/v1/exports")
     def export_jobs(database: Database) -> list[dict[str, object]]:
         return [
             dict(row)
             for row in database.execute(
-                "SELECT * FROM jobs WHERE kind = 'excel_export' ORDER BY created_at DESC, id DESC LIMIT 100"
+                "SELECT * FROM jobs WHERE kind IN ('excel_export', 'google_sheets_export', 'google_authorize') ORDER BY created_at DESC, id DESC LIMIT 100"
             )
         ]
 

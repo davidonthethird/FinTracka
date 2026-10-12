@@ -295,18 +295,29 @@ function PlaidLinkLauncher({ session, onSuccess, onExit }: { session: LinkSessio
 
 function SettingsPage({ dark, setDark }: { dark: boolean; setDark: (value: boolean) => void }) {
   const [operation, setOperation] = useState("");
-  const settings = useData<Record<string, string | boolean>>("/settings");
-  async function run(kind: "export" | "backup") {
-    setOperation(`${kind === "export" ? "Export" : "Backup"} queued…`);
-    const result = await api<{ job_id: string }>(kind === "export" ? "/exports" : "/backups", { method: "POST", body: kind === "export" ? JSON.stringify({ target: "excel" }) : "{}" });
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, 100));
+  const [refresh, setRefresh] = useState(0);
+  const settings = useData<Record<string, string | boolean>>("/settings", refresh);
+  async function run(kind: "excel" | "backup" | "google_authorize" | "google_export") {
+    const labels = { excel: "Excel export", backup: "Backup", google_authorize: "Google authorization", google_export: "Google export" };
+    setOperation(`${labels[kind]} queued…`);
+    const paths = { excel: "/exports", backup: "/backups", google_authorize: "/exports/google/authorize", google_export: "/exports" };
+    const bodies = { excel: JSON.stringify({ target: "excel" }), backup: "{}", google_authorize: "{}", google_export: JSON.stringify({ target: "google_sheets" }) };
+    const result = await api<{ job_id: string }>(paths[kind], { method: "POST", body: bodies[kind] });
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
       const job = await api<{ status: string }>(`/jobs/${result.job_id}`);
-      if (!['queued', 'running'].includes(job.status)) { setOperation(`${kind === "export" ? "Export" : "Backup"} ${job.status}.`); return; }
+      if (!['queued', 'running'].includes(job.status)) { setOperation(`${labels[kind]} ${job.status}.`); setRefresh((value) => value + 1); return; }
     }
-    setOperation(`${kind === "export" ? "Export" : "Backup"} is still running.`);
+    setOperation(`${labels[kind]} is still running.`);
   }
-  return <Page title="Settings" note="Security and local automation"><DataBoundary result={settings}>{(data) => <div className="settings-list"><Setting label="Theme" text="Stored in this browser"><button onClick={() => setDark(!dark)}>{dark ? "Use light" : "Use dark"}</button></Setting><Setting label="Reporting" text={`${data.reporting_currency} · ${data.reporting_timezone}`}><span>Fixed for release 1</span></Setting><Setting label="Network" text="Dashboard listens only on 127.0.0.1"><span className="good">Local only</span></Setting><Setting label="Live-data readiness" text="Python 3.14, FileVault, encrypted backup, and approval are required"><span className="warning">Not ready</span></Setting><Setting label="Daily sync" text="06:17 local time and at login"><span>Mac must be awake</span></Setting><Setting label="Excel snapshot" text="Writes an atomic app-owned workbook"><button onClick={() => run("export")}>Export now</button></Setting><Setting label="Verified backup" text="SQLite online backup with integrity check"><button onClick={() => run("backup")}>Back up now</button></Setting>{operation && <div className="operation-status" role="status"><strong>Operation</strong><span>{operation}</span></div>}</div>}</DataBoundary></Page>;
+  async function changeSchedule(installed: boolean) {
+    setOperation(installed ? "Installing daily sync…" : "Removing daily sync…");
+    try {
+      await api("/settings/schedule", { method: installed ? "POST" : "DELETE", body: installed ? "{}" : undefined });
+      setOperation(installed ? "Daily sync installed." : "Daily sync removed."); setRefresh((value) => value + 1);
+    } catch (caught) { setOperation(caught instanceof Error ? caught.message : "Unable to change daily sync"); }
+  }
+  return <Page title="Settings" note="Security and local automation"><DataBoundary result={settings}>{(data) => <div className="settings-list"><Setting label="Theme" text="Stored in this browser"><button onClick={() => setDark(!dark)}>{dark ? "Use light" : "Use dark"}</button></Setting><Setting label="Reporting" text={`${data.reporting_currency} · ${data.reporting_timezone}`}><span>Fixed for release 1</span></Setting><Setting label="Network" text="Dashboard listens only on 127.0.0.1"><span className="good">Local only</span></Setting><Setting label="Live-data readiness" text="Python 3.14, FileVault, verified local backup, and provider credentials are required"><span className="warning">Checks pending</span></Setting><Setting label="Daily sync" text="06:17 local time and at login; the Mac must be awake"><button onClick={() => changeSchedule(!data.schedule_installed)}>{data.schedule_installed ? "Remove schedule" : "Install schedule"}</button></Setting><Setting label="Google Sheets" text="One-way export with access only to the workbook FinTracka creates">{data.google_authorized ? <button onClick={() => run("google_export")}>Export to Google</button> : <button disabled={!data.google_configured} onClick={() => run("google_authorize")}>{data.google_configured ? "Authorize Google" : "Not configured"}</button>}</Setting><Setting label="Excel snapshot" text="Writes an atomic app-owned workbook"><button onClick={() => run("excel")}>Export now</button></Setting><Setting label="Verified backup" text="SQLite online backup with integrity check"><button onClick={() => run("backup")}>Back up now</button></Setting>{operation && <div className="operation-status" role="status"><strong>Operation</strong><span>{operation}</span></div>}</div>}</DataBoundary></Page>;
 }
 
 function Page({ title, note, children }: { title: string; note: string; children: React.ReactNode }) { return <div className="page"><header className="page-title"><div><p className="eyebrow">FinTracka</p><h1>{title}</h1></div><p>{note}</p></header>{children}</div>; }

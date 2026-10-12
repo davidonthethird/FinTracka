@@ -110,7 +110,7 @@ test("synthetic finance workflow", async ({ page }) => {
   await page.getByRole("button", { name: "Use dark" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await page.getByRole("button", { name: "Export now" }).click();
-  await expect(page.getByRole("status")).toContainText("Export succeeded", { timeout: 15_000 });
+  await expect(page.getByRole("status")).toContainText("Excel export succeeded", { timeout: 15_000 });
   await page.getByRole("button", { name: "Back up now" }).click();
   await expect(page.getByRole("status")).toContainText("Backup succeeded", { timeout: 15_000 });
   await page.getByRole("link", { name: "Overview", exact: true }).focus();

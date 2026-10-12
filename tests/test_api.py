@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +16,8 @@ from fintracka.api import create_app
 from fintracka.db import connect, migrate
 from fintracka.ids import new_id
 from fintracka.jobs import recover_interrupted_jobs
+from fintracka.google_sheets import configure_google
+from fintracka.keychain import KeychainSecrets
 from fintracka.plaid_adapter import ConnectedItem, InstitutionInfo, LinkSession
 from fintracka.providers import NormalizedAccount, NormalizedBalance, NormalizedTransaction, SyncBatch
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
@@ -61,6 +64,36 @@ class FakePlaidAdapter:
     def revoke(self, secret_reference: str) -> None:
         assert self.revoked is not None
         self.revoked.append(secret_reference)
+
+
+class FakeKeyring:
+    def __init__(self) -> None:
+        self.values: dict[tuple[str, str], str] = {}
+
+    def set_password(self, service: str, account: str, password: str) -> None:
+        self.values[(service, account)] = password
+
+    def get_password(self, service: str, account: str) -> str | None:
+        return self.values.get((service, account))
+
+    def delete_password(self, service: str, account: str) -> None:
+        self.values.pop((service, account), None)
+
+
+class FakeGoogleGateway:
+    def __init__(self) -> None:
+        self.sheets: dict[str, list[list[object]]] = {}
+
+    def create_workbook(self, names: tuple[str, ...]) -> str:
+        assert "Transactions" in names
+        return "google-workbook"
+
+    def replace_sheet(self, name: str, rows: list[list[object]], batch_size: int) -> None:
+        assert batch_size <= 500
+        self.sheets[name] = rows
+
+    def protect_sheet(self, name: str, warning: str) -> None:
+        assert name in self.sheets and "overwritten" in warning
 
 
 def test_health_security_headers_and_strict_host(tmp_path: Path) -> None:
@@ -175,6 +208,90 @@ def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_pa
         assert deleted.status_code == 204
         assert adapter.revoked and adapter.revoked[0].startswith("plaid:production:connection:")
         assert client.get("/api/v1/connections").json()[0]["status"] == "revoked"
+
+
+def test_google_authorization_and_export_run_as_persisted_jobs(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    create_synthetic_ledger(connection, count=1)
+    keychain = KeychainSecrets(FakeKeyring())
+    configure_google(
+        connection,
+        keychain,
+        json.dumps(
+            {
+                "installed": {
+                    "client_id": "desktop.apps.googleusercontent.com",
+                    "client_secret": "secret-local",
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": ["http://localhost"],
+                }
+            }
+        ),
+    )
+    connection.close()
+    gateway = FakeGoogleGateway()
+    app = create_app(
+        path,
+        bootstrap_token="bootstrap",
+        google_secrets_factory=lambda: keychain,
+        google_authorizer=lambda config, scopes: json.dumps(
+            {"refresh_token": "refresh-local", "client_id": config["installed"]["client_id"]}
+        ),
+        google_authorization_gateway_factory=lambda credentials: gateway,
+        google_export_gateway_factory=lambda connection, secrets: gateway,
+    )
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+
+        authorization = client.post(
+            "/api/v1/exports/google/authorize", json={}, headers=headers
+        )
+        assert authorization.status_code == 202
+        assert _wait_for_job(client, authorization.json()["job_id"])["status"] == "succeeded"
+        google_export = client.post(
+            "/api/v1/exports", json={"target": "google_sheets"}, headers=headers
+        )
+        assert google_export.status_code == 202
+        assert _wait_for_job(client, google_export.json()["job_id"])["status"] == "succeeded"
+        assert "Transactions" in gateway.sheets
+        assert "refresh-local" not in str(client.get("/api/v1/exports").json())
+
+
+def test_schedule_is_changed_only_by_explicit_csrf_protected_actions(tmp_path: Path) -> None:
+    state = {"installed": False, "loaded": False}
+
+    def install(destination: Path, python: Path, data: Path) -> None:
+        del destination, python, data
+        state.update(installed=True, loaded=True)
+
+    def remove(destination: Path) -> None:
+        del destination
+        state.update(installed=False, loaded=False)
+
+    app = create_app(
+        tmp_path / "ledger.sqlite3",
+        bootstrap_token="bootstrap",
+        schedule_installer=install,
+        schedule_remover=remove,
+        schedule_status_reader=lambda destination: dict(state),
+    )
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+
+        assert client.get("/api/v1/settings").json()["schedule_installed"] is False
+        assert client.post("/api/v1/settings/schedule", json={}).status_code == 403
+        assert client.post("/api/v1/settings/schedule", json={}, headers=headers).json()["loaded"] is True
+        assert client.get("/api/v1/settings").json()["schedule_installed"] is True
+        assert client.delete("/api/v1/settings/schedule", headers=headers).status_code == 204
+        assert state == {"installed": False, "loaded": False}
 
 
 def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
