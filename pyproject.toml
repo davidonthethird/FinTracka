@@ -14,6 +14,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+bank = [
+    "keyring==25.7.0",
+    "plaid-python==45.0.0",
+]
 dev = [
     "httpx>=0.28,<0.29",
     "pytest>=9.1,<10",

@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from fintracka.db import connect, migrate
+from fintracka.ids import new_id
+from fintracka.keychain import KeychainSecrets, store_secret_reference
+from fintracka.plaid_adapter import PlaidAdapter, PlaidError, ProviderActionRequired
+
+
+def test_keychain_keeps_secret_out_of_sqlite(tmp_path) -> None:
+    connection = connect(tmp_path / "ledger.sqlite3")
+    migrate(connection)
+    connection_id = _connection(connection)
+    backend = FakeKeyring()
+    secrets = KeychainSecrets(backend)
+    reference = f"connection:{connection_id}"
+    secrets.put(reference, "access-secret-token")
+    store_secret_reference(connection, connection_id, secrets.service, reference)
+
+    assert secrets.get(reference) == "access-secret-token"
+    dump = "\n".join(connection.iterdump())
+    assert "access-secret-token" not in dump
+    assert reference in dump
+    secrets.delete(reference)
+    assert secrets.get(reference) is None
+    connection.close()
+
+
+def test_link_requests_transactions_only_and_completion_returns_no_token() -> None:
+    client = FakePlaidClient()
+    secrets = KeychainSecrets(FakeKeyring())
+    adapter = PlaidAdapter(client, secrets, sleep=lambda _: None)
+
+    session = adapter.create_link_session()
+    connected = adapter.complete_link("public-sandbox-token", "connection:test")
+
+    assert session.link_token == "link-token"
+    assert client.link_requests[0]["products"] == ["transactions"]
+    assert "auth" not in json.dumps(client.link_requests[0]).lower()
+    assert connected.external_connection_id == "item-1"
+    assert not hasattr(connected, "access_token")
+    assert secrets.get("connection:test") == "access-secret-token"
+
+
+def test_paginated_sync_normalizes_amounts_and_restarts_after_mutation() -> None:
+    client = FakePlaidClient(
+        sync_results=[
+            _page("c1", has_more=True, external_id="first"),
+            PlaidError("TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION"),
+            _page("c1", has_more=True, external_id="first"),
+            _page("c2", has_more=False, external_id="second"),
+        ]
+    )
+    secrets = KeychainSecrets(FakeKeyring())
+    secrets.put("connection:test", "access-secret-token")
+    adapter = PlaidAdapter(client, secrets, sleep=lambda _: None)
+
+    batch = adapter.fetch_updates("connection:test", None)
+
+    assert client.sync_cursors == [None, "c1", None, "c1"]
+    assert [transaction.external_id for transaction in batch.added] == ["first", "second"]
+    assert [transaction.amount_minor for transaction in batch.added] == [-1234, -1234]
+    assert batch.next_checkpoint == "c2"
+
+
+def test_transient_failures_retry_but_consent_errors_require_repair() -> None:
+    transient = FakePlaidClient(
+        sync_results=[PlaidError("RATE_LIMIT_EXCEEDED"), _page("c1", has_more=False)]
+    )
+    secrets = KeychainSecrets(FakeKeyring())
+    secrets.put("connection:test", "access-secret-token")
+    batch = PlaidAdapter(transient, secrets, sleep=lambda _: None).fetch_updates("connection:test", None)
+    assert batch.next_checkpoint == "c1" and len(transient.sync_cursors) == 2
+
+    expired = FakePlaidClient(sync_results=[PlaidError("ITEM_LOGIN_REQUIRED")])
+    with pytest.raises(ProviderActionRequired, match="repair"):
+        PlaidAdapter(expired, secrets, sleep=lambda _: None).fetch_updates("connection:test", None)
+
+
+def test_repair_and_revoke_use_stored_secret() -> None:
+    client = FakePlaidClient()
+    secrets = KeychainSecrets(FakeKeyring())
+    secrets.put("connection:test", "access-secret-token")
+    adapter = PlaidAdapter(client, secrets, sleep=lambda _: None)
+
+    adapter.repair_connection("connection:test")
+    adapter.revoke("connection:test")
+    assert client.link_requests[-1]["access_token"] == "access-secret-token"
+    assert client.removed == ["access-secret-token"]
+    assert secrets.get("connection:test") is None
+
+
+class FakeKeyring:
+    def __init__(self) -> None:
+        self.values: dict[tuple[str, str], str] = {}
+
+    def set_password(self, service: str, account: str, password: str) -> None:
+        self.values[(service, account)] = password
+
+    def get_password(self, service: str, account: str) -> str | None:
+        return self.values.get((service, account))
+
+    def delete_password(self, service: str, account: str) -> None:
+        self.values.pop((service, account), None)
+
+
+class FakePlaidClient:
+    def __init__(self, sync_results=None) -> None:
+        self.link_requests: list[dict[str, object]] = []
+        self.sync_results = list(sync_results or [])
+        self.sync_cursors: list[str | None] = []
+        self.removed: list[str] = []
+
+    def create_link_token(self, request: dict[str, object]) -> dict[str, str]:
+        self.link_requests.append(request)
+        return {"link_token": "link-token", "expiration": "2026-10-11T01:00:00Z"}
+
+    def exchange_public_token(self, public_token: str) -> dict[str, str]:
+        assert public_token == "public-sandbox-token"
+        return {"access_token": "access-secret-token", "item_id": "item-1"}
+
+    def sync(self, access_token: str, cursor: str | None) -> dict[str, object]:
+        assert access_token == "access-secret-token"
+        self.sync_cursors.append(cursor)
+        result = self.sync_results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def remove_item(self, access_token: str) -> None:
+        self.removed.append(access_token)
+
+
+def _page(cursor: str, *, has_more: bool, external_id: str = "txn") -> dict[str, object]:
+    return {
+        "accounts": [
+            {
+                "account_id": "checking-1",
+                "name": "Checking",
+                "type": "depository",
+                "subtype": "checking",
+                "mask": "1234",
+                "balances": {"current": 1000.0, "available": 900.0, "iso_currency_code": "USD"},
+            }
+        ],
+        "added": [
+            {
+                "transaction_id": external_id,
+                "account_id": "checking-1",
+                "datetime": "2026-10-10T12:00:00Z",
+                "amount": "12.34",
+                "iso_currency_code": "USD",
+                "name": "Merchant",
+                "merchant_name": "Merchant",
+                "pending": False,
+            }
+        ],
+        "modified": [],
+        "removed": [],
+        "has_more": has_more,
+        "next_cursor": cursor,
+        "request_id": "redacted-by-hash",
+    }
+
+
+def _connection(connection) -> str:
+    now = "2026-10-11T00:00:00Z"
+    institution_id = new_id()
+    connection_id = new_id()
+    connection.execute(
+        "INSERT INTO institutions (id, provider, external_id, name, created_at) VALUES (?, 'plaid', 'ins_1', 'Sandbox', ?)",
+        (institution_id, now),
+    )
+    connection.execute(
+        "INSERT INTO provider_connections (id, provider, external_connection_id, institution_id, status, created_at, updated_at) VALUES (?, 'plaid', 'item-1', ?, 'active', ?, ?)",
+        (connection_id, institution_id, now, now),
+    )
+    return connection_id
