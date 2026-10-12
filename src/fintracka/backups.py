@@ -80,7 +80,7 @@ def restore_database(source_backup: str | Path, target_path: str | Path, *, veri
 
 
 def _verify(path: Path) -> None:
-    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro&immutable=1", uri=True)
     try:
         result = connection.execute("PRAGMA integrity_check").fetchone()[0]
     finally:
