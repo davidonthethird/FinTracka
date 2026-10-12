@@ -7,3 +7,6 @@ dist/
 __pycache__/
 .pytest_cache/
 *.pyc
+*.tsbuildinfo
+playwright-report/
+test-results/

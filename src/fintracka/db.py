@@ -10,6 +10,8 @@ def connect(path: str | Path) -> sqlite3.Connection:
     # worker threads. Each request still owns its connection; this only permits
     # that request-scoped handoff.
     connection = sqlite3.connect(path, timeout=5, isolation_level=None, check_same_thread=False)
+    if str(path) != ":memory:" and not str(path).startswith("file:"):
+        Path(path).chmod(0o600)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA journal_mode = WAL")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import stat
 from concurrent.futures import ThreadPoolExecutor
 import uuid
 from datetime import date
@@ -92,3 +93,10 @@ def test_request_connection_can_cross_fastapi_worker_threads(tmp_path) -> None:
         result = executor.submit(lambda: connection.execute("SELECT 1").fetchone()[0]).result()
     connection.close()
     assert result == 1
+
+
+def test_database_file_permissions_are_owner_only(tmp_path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    connection.close()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600

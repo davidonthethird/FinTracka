@@ -1,5 +1,11 @@
 # Implementation Roadmap
 
+## Current delivery status — 2026-10-11
+
+Phases 0–2, 4, and the local portions of 5–6 are implemented and verified with synthetic data. The Plaid transactions-only adapter, Keychain boundary, pagination recovery, repair, and revoke behavior are fake-tested, but the UI intentionally does not create a live or production connection. Excel export is complete; Google Sheets has a deterministic, bounded, fake-tested gateway contract but production OAuth is not enabled. Local backup/restore, launchd plist generation, localhost security, the React dashboard, and real-Uvicorn Playwright coverage are implemented.
+
+Phase 7 remains outside current execution authority. The Python 3.14, FileVault, encrypted-backup, current provider review, explicit approval, and one-institution observation gates are unchanged.
+
 ## Phase 0: planning package
 
 Deliver the ten cross-linked design documents and the executable Superpowers implementation plan. Exit when there are no placeholders or conflicting conventions.
@@ -35,4 +41,3 @@ Outside current execution authority. Reconfirm provider pricing/coverage and obt
 ## First milestone
 
 The first code milestone is the synthetic ledger kernel: migrations, money/date/ID normalization, provider-neutral batch application, fixture generator, and tests for repeat sync, modification/removal, pending-to-posted preservation, and atomic rollback.
-

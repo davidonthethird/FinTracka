@@ -1,7 +1,9 @@
 import base64
+import binascii
 import secrets
 import sqlite3
 from collections.abc import Iterator
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,16 +14,21 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from fintracka.backups import backup_database
 from fintracka.budgets import envelope_budget, tracking_budget, tracking_year
 from fintracka.db import connect, migrate
+from fintracka.exports import export_excel
 from fintracka.ids import new_id
+from fintracka.imports import DuplicateImportError, ImportError as CSVImportError, commit_csv, preview_csv
 from fintracka.jobs import JobRunner, recover_interrupted_jobs
+from fintracka.locks import ProcessLock
 from fintracka.ledger import (
     IntegrityError,
     apply_rules,
     confirm_transfer,
     create_rule,
     preview_rules,
+    reconcile,
     set_splits,
     transfer_candidates,
     update_transaction,
@@ -46,11 +53,33 @@ class CategoryCreate(StrictModel):
     group_id: str | None = None
 
 
+class CategoryGroupCreate(StrictModel):
+    name: str = Field(min_length=1, max_length=100)
+    sort_order: int
+
+
+class AccountPatch(StrictModel):
+    expected_updated_at: str
+    nickname: str | None = Field(default=None, max_length=120)
+    include_overview: bool | None = None
+    include_budget: bool | None = None
+    include_net: bool | None = None
+    include_export: bool | None = None
+
+
 class TransactionPatch(StrictModel):
     expected_updated_at: str
     category_id: str | None = None
     notes: str | None = Field(default=None, max_length=2_000)
     user_merchant: str | None = Field(default=None, max_length=300)
+
+
+class BulkTransactionPatch(TransactionPatch):
+    id: str
+
+
+class BulkTransactionRequest(StrictModel):
+    items: list[BulkTransactionPatch] = Field(min_length=1, max_length=500)
 
 
 class TransactionResponse(StrictModel):
@@ -100,6 +129,25 @@ class TransferConfirmRequest(StrictModel):
     transaction_b: str
 
 
+class ReconciliationCreate(StrictModel):
+    account_id: str
+    period_start: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    period_end: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    opening_minor: int
+    closing_minor: int
+    cleared_cutoff: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class ExportRequest(StrictModel):
+    target: Literal["excel"]
+
+
+class CSVImportRequest(StrictModel):
+    account_id: str
+    filename: str = Field(min_length=1, max_length=255)
+    content_base64: str = Field(max_length=6_700_000)
+
+
 def create_app(
     database_path: str | Path,
     *,
@@ -113,7 +161,13 @@ def create_app(
     initial.close()
     sessions = LocalSessions(bootstrap_token or secrets.token_urlsafe(32))
     jobs = JobRunner(path)
-    app = FastAPI(title="FinTracka", version="1.0.0", docs_url=None, redoc_url=None)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):  # type: ignore[no-untyped-def]
+        yield
+        jobs.close()
+
+    app = FastAPI(title="FinTracka", version="1.0.0", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.state.database_path = path
     app.state.sessions = sessions
     app.state.jobs = jobs
@@ -212,6 +266,38 @@ def create_app(
             )
         ]
 
+    @app.patch("/api/v1/accounts/{account_id}")
+    def patch_account(account_id: str, payload: AccountPatch, database: Database) -> dict[str, object]:
+        current = database.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+        if current is None:
+            raise HTTPException(status_code=404, detail="account not found")
+        if current["updated_at"] != payload.expected_updated_at:
+            raise HTTPException(status_code=409, detail="account changed; refresh and retry")
+        supplied = payload.model_fields_set - {"expected_updated_at"}
+        if not supplied:
+            return dict(current)
+        values: dict[str, object] = {}
+        for field in supplied:
+            value = getattr(payload, field)
+            values[field] = int(value) if field.startswith("include_") and value is not None else value
+        now = _now()
+        try:
+            database.execute("BEGIN IMMEDIATE")
+            assignments = ", ".join(f"{field} = ?" for field in values)
+            database.execute(
+                f"UPDATE accounts SET {assignments}, updated_at = ? WHERE id = ?",
+                (*values.values(), now, account_id),
+            )
+            database.execute(
+                "INSERT INTO audit_events (id, actor, action, entity_type, entity_id, occurred_at) VALUES (?, 'user', 'account_update', 'account', ?, ?)",
+                (new_id(), account_id, now),
+            )
+            database.commit()
+        except Exception:
+            database.rollback()
+            raise
+        return dict(database.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone())
+
     @app.get("/api/v1/accounts/{account_id}/balances")
     def account_balances(account_id: str, database: Database) -> list[dict[str, object]]:
         return [
@@ -284,6 +370,40 @@ def create_app(
         row = _transaction(database, transaction_id)
         return TransactionResponse(**{**dict(row), "pending": bool(row["pending"])})
 
+    @app.post("/api/v1/transactions/bulk", response_model=list[TransactionResponse])
+    def bulk_transactions(payload: BulkTransactionRequest, database: Database) -> list[TransactionResponse]:
+        identifiers = [item.id for item in payload.items]
+        if len(identifiers) != len(set(identifiers)):
+            raise HTTPException(status_code=422, detail="bulk items must be unique")
+        current = {
+            row["id"]: row["updated_at"]
+            for row in database.execute(
+                f"SELECT id, updated_at FROM transactions WHERE id IN ({','.join('?' for _ in identifiers)})",
+                identifiers,
+            )
+        }
+        if set(current) != set(identifiers):
+            raise HTTPException(status_code=404, detail="transaction not found")
+        if any(current[item.id] != item.expected_updated_at for item in payload.items):
+            raise HTTPException(status_code=409, detail="transaction changed; refresh and retry")
+        try:
+            database.execute("BEGIN IMMEDIATE")
+            for item in payload.items:
+                supplied = item.model_fields_set - {"id", "expected_updated_at"}
+                update_transaction(
+                    database,
+                    item.id,
+                    **{field: getattr(item, field) for field in supplied},
+                )
+            database.commit()
+        except Exception:
+            database.rollback()
+            raise
+        return [
+            TransactionResponse(**{**dict(row), "pending": bool(row["pending"])})
+            for row in (_transaction(database, identifier) for identifier in identifiers)
+        ]
+
     @app.post("/api/v1/transactions/{transaction_id}/split", response_model=TransactionResponse)
     def split_transaction(transaction_id: str, payload: SplitRequest, database: Database) -> TransactionResponse:
         current = database.execute(
@@ -319,6 +439,30 @@ def create_app(
             return {"id": confirm_transfer(database, payload.transaction_a, payload.transaction_b)}
         except IntegrityError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.get("/api/v1/category-groups")
+    def category_groups(database: Database) -> list[dict[str, object]]:
+        return [dict(row) for row in database.execute("SELECT * FROM category_groups ORDER BY sort_order, name")]
+
+    @app.post("/api/v1/category-groups", status_code=201)
+    def create_category_group(payload: CategoryGroupCreate, database: Database) -> dict[str, object]:
+        group_id = new_id()
+        now = _now()
+        try:
+            database.execute("BEGIN IMMEDIATE")
+            database.execute(
+                "INSERT INTO category_groups (id, name, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (group_id, payload.name, payload.sort_order, now, now),
+            )
+            database.execute(
+                "INSERT INTO audit_events (id, actor, action, entity_type, entity_id, occurred_at) VALUES (?, 'user', 'category_group_create', 'category_group', ?, ?)",
+                (new_id(), group_id, now),
+            )
+            database.commit()
+        except sqlite3.IntegrityError as error:
+            database.rollback()
+            raise HTTPException(status_code=409, detail="category group conflicts with existing data") from error
+        return dict(database.execute("SELECT * FROM category_groups WHERE id = ?", (group_id,)).fetchone())
 
     @app.get("/api/v1/categories")
     def categories(database: Database) -> list[dict[str, object]]:
@@ -391,6 +535,29 @@ def create_app(
     def spending_route(database: Database, month: str) -> list[dict[str, str | int]]:
         return spending_by_category(database, month)
 
+    @app.get("/api/v1/reports/budget")
+    def budget_report_route(database: Database, month: str) -> dict[str, object]:
+        return {
+            "month": month,
+            "tracking": [asdict(row) for row in tracking_budget(database, month)],
+            "envelope": asdict(envelope_budget(database, month)),
+        }
+
+    @app.get("/api/v1/reports/balances")
+    def balance_report_route(database: Database) -> list[dict[str, object]]:
+        return [
+            dict(row)
+            for row in database.execute(
+                """
+                SELECT b.id, b.account_id, a.name account, a.nature, b.observed_at,
+                       b.current_minor, b.available_minor, b.currency, b.source
+                FROM account_balance_snapshots b JOIN accounts a ON a.id = b.account_id
+                WHERE a.include_net = 1
+                ORDER BY b.observed_at, a.name, b.id
+                """
+            )
+        ]
+
     @app.get("/api/v1/budgets/tracking/{month}")
     def tracking_route(month: str, database: Database) -> list[dict[str, object]]:
         return [asdict(row) for row in tracking_budget(database, month)]
@@ -402,6 +569,101 @@ def create_app(
     @app.get("/api/v1/budgets/envelope/{month}")
     def envelope_route(month: str, database: Database) -> dict[str, object]:
         return asdict(envelope_budget(database, month))
+
+    @app.get("/api/v1/sync-runs")
+    def sync_runs(database: Database) -> list[dict[str, object]]:
+        return [dict(row) for row in database.execute("SELECT * FROM sync_runs ORDER BY started_at DESC, id DESC LIMIT 100")]
+
+    @app.get("/api/v1/sync-runs/{run_id}")
+    def sync_run(run_id: str, database: Database) -> dict[str, object]:
+        row = database.execute("SELECT * FROM sync_runs WHERE id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="sync run not found")
+        result = dict(row)
+        result["items"] = [
+            dict(item)
+            for item in database.execute(
+                "SELECT * FROM sync_run_items WHERE sync_run_id = ? ORDER BY id", (run_id,)
+            )
+        ]
+        return result
+
+    @app.post("/api/v1/imports/csv/preview")
+    def preview_csv_route(payload: CSVImportRequest, database: Database) -> dict[str, object]:
+        content = _decode_csv(payload.content_base64)
+        try:
+            return asdict(preview_csv(database, content))
+        except (CSVImportError, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post("/api/v1/imports/csv/commit", status_code=201)
+    def commit_csv_route(payload: CSVImportRequest, database: Database) -> dict[str, object]:
+        content = _decode_csv(payload.content_base64)
+        try:
+            return asdict(commit_csv(database, payload.account_id, payload.filename, content))
+        except DuplicateImportError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except (CSVImportError, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post("/api/v1/reconciliations", status_code=201)
+    def create_reconciliation(payload: ReconciliationCreate, database: Database) -> dict[str, object]:
+        if payload.period_start > payload.period_end:
+            raise HTTPException(status_code=422, detail="period start must not follow period end")
+        try:
+            return asdict(
+                reconcile(
+                    database,
+                    payload.account_id,
+                    payload.period_start,
+                    payload.period_end,
+                    payload.opening_minor,
+                    payload.closing_minor,
+                    payload.cleared_cutoff,
+                )
+            )
+        except sqlite3.IntegrityError as error:
+            raise HTTPException(status_code=422, detail="reconciliation data is invalid") from error
+
+    @app.get("/api/v1/reconciliations")
+    def reconciliations(database: Database) -> list[dict[str, object]]:
+        return [dict(row) for row in database.execute("SELECT * FROM reconciliations ORDER BY created_at DESC, id DESC")]
+
+    @app.post("/api/v1/exports", status_code=202)
+    def start_export(payload: ExportRequest) -> dict[str, str]:
+        destination = path.parent / "exports" / "FinTracka.xlsx"
+        def work(connection: sqlite3.Connection) -> None:
+            with ProcessLock(path.parent / "fintracka.lock"):
+                export_excel(connection, destination)
+
+        job_id = jobs.submit("excel_export", work)
+        return {"job_id": job_id}
+
+    @app.get("/api/v1/exports")
+    def export_jobs(database: Database) -> list[dict[str, object]]:
+        return [
+            dict(row)
+            for row in database.execute(
+                "SELECT * FROM jobs WHERE kind = 'excel_export' ORDER BY created_at DESC, id DESC LIMIT 100"
+            )
+        ]
+
+    @app.post("/api/v1/backups", status_code=202)
+    def start_backup(payload: EmptyRequest) -> dict[str, str]:
+        del payload
+        def work(_: sqlite3.Connection) -> None:
+            with ProcessLock(path.parent / "fintracka.lock"):
+                backup_database(path, path.parent / "backups")
+
+        job_id = jobs.submit("backup", work)
+        return {"job_id": job_id}
+
+    @app.get("/api/v1/jobs/{job_id}")
+    def job(job_id: str, database: Database) -> dict[str, object]:
+        row = database.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return dict(row)
 
     frontend = Path(static_directory) if static_directory else Path(__file__).parents[2] / "frontend" / "dist"
     if (frontend / "index.html").is_file():
@@ -463,3 +725,10 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _decode_csv(value: str) -> bytes:
+    try:
+        return base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise HTTPException(status_code=422, detail="CSV content must be valid base64") from error

@@ -35,8 +35,9 @@ class SheetsGateway(Protocol):
 
 def export_excel(connection: sqlite3.Connection, destination: str | Path) -> Path:
     destination = Path(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    snapshot = build_snapshot(connection)
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    destination.parent.chmod(0o700)
+    snapshot = _consistent_snapshot(connection)
     workbook = Workbook()
     workbook.remove(workbook.active)
     for name in SHEET_ORDER:
@@ -75,12 +76,23 @@ def export_google(
 ) -> None:
     if batch_size < 1:
         raise ValueError("batch size must be positive")
-    snapshot = build_snapshot(connection)
+    snapshot = _consistent_snapshot(connection)
     warning = "Edited locally in FinTracka; this sheet is overwritten on sync."
     for name in SHEET_ORDER:
         gateway.replace_sheet(name, snapshot[name], batch_size)
         gateway.protect_sheet(name, warning)
     _audit(connection, "google_sheets_export", "app_owned_workbook")
+
+
+def _consistent_snapshot(connection: sqlite3.Connection) -> dict[str, list[list[object]]]:
+    try:
+        connection.execute("BEGIN")
+        snapshot = build_snapshot(connection)
+        connection.commit()
+        return snapshot
+    except Exception:
+        connection.rollback()
+        raise
 
 
 def build_snapshot(connection: sqlite3.Connection) -> dict[str, list[list[object]]]:
@@ -210,4 +222,3 @@ def _audit(connection: sqlite3.Connection, action: str, entity_id: str) -> None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-

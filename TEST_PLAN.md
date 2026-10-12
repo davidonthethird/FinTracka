@@ -8,6 +8,8 @@
 - Playwright covers user journeys against the synthetic fixture.
 - Export tests reopen generated workbooks and compare stable IDs, row counts, and values.
 
+The implementation uses two layers of browser verification: a repository-native TypeScript Playwright test under `frontend/e2e/`, plus `e2e/browser_acceptance.py` for visual capture and accessibility-state diagnostics through the web-app testing helper.
+
 ## Synthetic fixture
 
 Three institutions containing checking, savings, and two credit cards; income, ordinary spending, a paired transfer, a credit-card payment, pending/posting replacement, refund, reimbursement, reversal, split, duplicate candidate, provider modification/removal, and a deliberate one-cent reconciliation discrepancy.
@@ -43,7 +45,18 @@ Three institutions containing checking, savings, and two credit cards; income, o
 ## Commands
 
 - Backend: `.venv/bin/python -m pytest -q`
-- Frontend unit/build: `npm test -- --run` and `npm run build`
-- Browser: `npm run test:e2e`
-- Complete: `./scripts/verify.sh` once that script exists.
+- Frontend unit/type/build: from `frontend`, run `npm test -- --run`, `npm run typecheck`, and `npm run build`.
+- Browser: from `frontend` with the project virtual environment active, run `npm run test:e2e`.
+- Complete: `./scripts/verify.sh`.
 
+## Implemented verification matrix
+
+- Foundation: exact minor units, timezone dates, UUIDv7 shape, migration idempotency, constraints, `0600` database permissions, and FastAPI worker-thread handoff.
+- Synchronization: three institutions, idempotent repeat, modification/removal, pending-to-posted preservation, rollback, checkpoint atomicity, and demo categorization.
+- Financial integrity: ordered rules, exact splits, transfers, reporting exclusions, CSV repeat/overlap, refunds, reversals, and one-cent reconciliation failure.
+- API/security: one-use bootstrap, cookie flags, Host/Origin/CSRF rejection, strict bodies, optimistic conflicts, pagination, atomic bulk edits, reports, reconciliation, jobs, and production static fallback.
+- Providers: transactions-only Plaid Link requests, Keychain references, pagination mutation restart, bounded retry, consent repair, and revoke with fake clients only.
+- Operations: Excel stable IDs/update/deletion/formula escaping, fake Google bounded replacement, verified backup/restore/retention, process locking, and launchd plist generation.
+- Browser: secure onboarding, overview, account editing, filtering, atomic bulk categorization, splitting, transfer confirmation, both budgets, reports, rule preview, visible repair state, Excel export, backup, dark mode, keyboard focus, HTTP failures, and console errors.
+
+The latest verification run is recorded in Git history rather than treated as permanent evidence; rerun `scripts/verify.sh` for the current checkout before release.

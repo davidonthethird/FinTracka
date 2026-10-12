@@ -19,6 +19,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     data_directory = args.data_dir.expanduser().resolve()
     data_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    data_directory.chmod(0o700)
     database_path = data_directory / "fintracka.sqlite3"
     lock_path = data_directory / "fintracka.lock"
     if args.command == "serve":

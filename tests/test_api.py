@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import sqlite3
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -144,6 +146,83 @@ def test_rule_split_and_transfer_workflow_routes(tmp_path: Path) -> None:
         ).status_code == 200
 
 
+def test_management_reports_reconciliation_and_local_operation_jobs(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_ids = create_synthetic_ledger(connection, count=1, demo=True)
+    apply_batch(connection, connection_ids[0], synthetic_batches(connection_ids)[connection_ids[0]])
+    account = dict(connection.execute("SELECT id, updated_at FROM accounts WHERE provider_account_id = 'checking-1'").fetchone())
+    transactions = [dict(row) for row in connection.execute("SELECT id, updated_at FROM transactions ORDER BY id LIMIT 2")]
+    activity = connection.execute(
+        "SELECT SUM(amount_minor) FROM transactions WHERE account_id = ? AND local_date BETWEEN '2026-10-01' AND '2026-10-31'",
+        (account["id"],),
+    ).fetchone()[0]
+    connection.close()
+
+    app = create_app(path, bootstrap_token="bootstrap")
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+
+        changed = client.patch(
+            f"/api/v1/accounts/{account['id']}",
+            json={"expected_updated_at": account["updated_at"], "nickname": "Daily cash", "include_export": False},
+            headers=headers,
+        )
+        assert changed.status_code == 200
+        assert changed.json()["nickname"] == "Daily cash" and changed.json()["include_export"] == 0
+
+        bulk = client.post(
+            "/api/v1/transactions/bulk",
+            json={"items": [{"id": item["id"], "expected_updated_at": item["updated_at"], "notes": "Checked"} for item in transactions]},
+            headers=headers,
+        )
+        assert bulk.status_code == 200 and len(bulk.json()) == 2
+        assert all(item["notes"] == "Checked" for item in bulk.json())
+
+        group = client.post(
+            "/api/v1/category-groups",
+            json={"name": "Goals", "sort_order": 90},
+            headers=headers,
+        )
+        assert group.status_code == 201
+        assert any(item["name"] == "Goals" for item in client.get("/api/v1/category-groups").json())
+        encoded = base64.b64encode(
+            b"date,amount,currency,description\n2026-11-01,-12.34,USD,Imported lunch\n"
+        ).decode()
+        import_payload = {"account_id": account["id"], "filename": "statement.csv", "content_base64": encoded}
+        preview = client.post("/api/v1/imports/csv/preview", json=import_payload, headers=headers)
+        assert preview.status_code == 200 and preview.json()["row_count"] == 1
+        assert client.post("/api/v1/imports/csv/commit", json=import_payload, headers=headers).status_code == 201
+        assert client.post("/api/v1/imports/csv/commit", json=import_payload, headers=headers).status_code == 409
+        assert client.get("/api/v1/reports/budget", params={"month": "2026-10"}).status_code == 200
+        assert client.get("/api/v1/reports/balances").json()
+
+        reconciliation = client.post(
+            "/api/v1/reconciliations",
+            json={
+                "account_id": account["id"],
+                "period_start": "2026-10-01",
+                "period_end": "2026-10-31",
+                "opening_minor": 0,
+                "closing_minor": activity,
+                "cleared_cutoff": "2026-10-31",
+            },
+            headers=headers,
+        )
+        assert reconciliation.status_code == 201 and reconciliation.json()["status"] == "balanced"
+
+        export_job = client.post("/api/v1/exports", json={"target": "excel"}, headers=headers)
+        backup_job = client.post("/api/v1/backups", json={}, headers=headers)
+        assert export_job.status_code == backup_job.status_code == 202
+        assert _wait_for_job(client, export_job.json()["job_id"])["status"] == "succeeded"
+        assert _wait_for_job(client, backup_job.json()["job_id"])["status"] == "succeeded"
+        assert (tmp_path / "exports" / "FinTracka.xlsx").is_file()
+        assert list((tmp_path / "backups").glob("fintracka-*.sqlite3"))
+
+
 def _category_payload(name: str = "Groceries") -> dict[str, str | int]:
     return {
         "name": name,
@@ -151,3 +230,12 @@ def _category_payload(name: str = "Groceries") -> dict[str, str | int]:
         "reporting_behavior": "ordinary",
         "sort_order": 10,
     }
+
+
+def _wait_for_job(client: TestClient, job_id: str) -> dict[str, object]:
+    for _ in range(200):
+        response = client.get(f"/api/v1/jobs/{job_id}")
+        if response.status_code == 200 and response.json()["status"] not in {"queued", "running"}:
+            return response.json()
+        time.sleep(0.01)
+    raise AssertionError(f"job {job_id} did not finish")

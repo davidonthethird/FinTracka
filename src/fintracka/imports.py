@@ -26,6 +26,28 @@ class ImportResult:
     duplicate_suggestions: int
 
 
+@dataclass(frozen=True)
+class ImportPreview:
+    file_hash: str
+    row_count: int
+    already_imported: bool
+
+
+def preview_csv(
+    connection: sqlite3.Connection,
+    content: bytes,
+    *,
+    max_bytes: int = 5_000_000,
+) -> ImportPreview:
+    file_hash, _, rows = _read_csv(content, max_bytes=max_bytes)
+    for index, row in enumerate(rows, start=1):
+        _parsed_row(row, index)
+    imported = connection.execute(
+        "SELECT 1 FROM import_batches WHERE file_hash = ?", (file_hash,)
+    ).fetchone() is not None
+    return ImportPreview(file_hash, len(rows), imported)
+
+
 def commit_csv(
     connection: sqlite3.Connection,
     account_id: str,
@@ -34,9 +56,7 @@ def commit_csv(
     *,
     max_bytes: int = 5_000_000,
 ) -> ImportResult:
-    if len(content) > max_bytes:
-        raise ImportError("CSV exceeds the size limit")
-    file_hash = hashlib.sha256(content).hexdigest()
+    file_hash, fieldnames, rows = _read_csv(content, max_bytes=max_bytes)
     if connection.execute("SELECT 1 FROM import_batches WHERE file_hash = ?", (file_hash,)).fetchone():
         raise DuplicateImportError("this exact CSV file was already imported")
     account = connection.execute(
@@ -44,17 +64,6 @@ def commit_csv(
     ).fetchone()
     if account is None:
         raise ImportError("account not found")
-    try:
-        text = content.decode("utf-8-sig")
-    except UnicodeDecodeError as error:
-        raise ImportError("CSV must be UTF-8") from error
-    reader = csv.DictReader(io.StringIO(text))
-    required = {"date", "amount", "currency", "description"}
-    if reader.fieldnames is None or not required <= set(reader.fieldnames):
-        raise ImportError("CSV requires date, amount, currency, and description columns")
-    rows = list(reader)
-    if not rows:
-        raise ImportError("CSV has no data rows")
     batch_id = new_id()
     now = _now()
     suggestions = 0
@@ -70,7 +79,7 @@ def commit_csv(
             )
             suggestions += int(is_duplicate)
             row_hash = hashlib.sha256(
-                "\x1f".join(row.get(field, "") for field in reader.fieldnames).encode()
+                "\x1f".join(row.get(field, "") for field in fieldnames).encode()
             ).hexdigest()
             connection.execute(
                 "INSERT INTO import_rows (batch_id, row_index, transaction_id, row_hash) VALUES (?, ?, ?, ?)",
@@ -100,15 +109,7 @@ def _insert_row(
     row: dict[str, str],
     now: str,
 ) -> tuple[str, bool]:
-    try:
-        local_date = datetime.strptime(row["date"], "%Y-%m-%d").date().isoformat()
-    except (KeyError, ValueError) as error:
-        raise ImportError(f"row {index} has an invalid date") from error
-    currency = row["currency"]
-    amount = minor_units(row["amount"], currency)
-    description = row["description"].strip()
-    if not description:
-        raise ImportError(f"row {index} has no description")
+    local_date, amount, currency, description = _parsed_row(row, index)
     duplicate = connection.execute(
         "SELECT 1 FROM transactions WHERE account_id = ? AND local_date = ? AND amount_minor = ? AND currency = ? AND provider_description = ? AND tombstoned = 0",
         (account_id, local_date, amount, currency, description),
@@ -128,6 +129,37 @@ def _insert_row(
         (new_id(), "duplicate_suggestion" if duplicate else "csv_create", transaction_id, now),
     )
     return transaction_id, duplicate
+
+
+def _read_csv(content: bytes, *, max_bytes: int) -> tuple[str, list[str], list[dict[str, str]]]:
+    if len(content) > max_bytes:
+        raise ImportError("CSV exceeds the size limit")
+    file_hash = hashlib.sha256(content).hexdigest()
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError as error:
+        raise ImportError("CSV must be UTF-8") from error
+    reader = csv.DictReader(io.StringIO(text))
+    required = {"date", "amount", "currency", "description"}
+    if reader.fieldnames is None or not required <= set(reader.fieldnames):
+        raise ImportError("CSV requires date, amount, currency, and description columns")
+    rows = list(reader)
+    if not rows:
+        raise ImportError("CSV has no data rows")
+    return file_hash, reader.fieldnames, rows
+
+
+def _parsed_row(row: dict[str, str], index: int) -> tuple[str, int, str, str]:
+    try:
+        local_date = datetime.strptime(row["date"], "%Y-%m-%d").date().isoformat()
+    except (KeyError, ValueError) as error:
+        raise ImportError(f"row {index} has an invalid date") from error
+    currency = row["currency"]
+    amount = minor_units(row["amount"], currency)
+    description = row["description"].strip()
+    if not description:
+        raise ImportError(f"row {index} has no description")
+    return local_date, amount, currency, description
 
 
 def _now() -> str:

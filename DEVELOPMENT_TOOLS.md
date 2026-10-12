@@ -2,6 +2,14 @@
 
 Audit and setup date: 2026-10-11 (America/New_York)
 
+## Application implementation update
+
+The historical setup audit below predates the application. FinTracka now includes a React 19/TypeScript 7/Vite 8 frontend with React Router, TanStack Table, Recharts, Vitest, and Playwright 1.64, all pinned in `frontend/package-lock.json`. The Python package now includes the SQLite ledger, FastAPI application, synthetic fixtures, fake-tested Plaid Sandbox boundary, Keychain boundary, Excel/fake-Google exports, backup/restore, launchd plist generation, CLI, and 37+ automated backend tests.
+
+Use `scripts/verify.sh` from the repository root for the complete current verification. It selects the project virtual environment, runs Pytest and `pip check`, then runs frontend units, TypeScript checking, the production build, a fresh-ledger real-Uvicorn Playwright workflow, and `npm audit`. The browser test installs no credentials and uses only generated records.
+
+The Python 3.11.5 restriction remains unchanged: it is acceptable only for synthetic/Sandbox development. A security-current Python 3.14.x environment, FileVault confirmation, encrypted off-device backup, and explicit approval remain hard gates before real financial data.
+
 This document records development-environment setup only. No finance application code, live financial connection, browser profile, credential, or private website was accessed.
 
 ## Outcome

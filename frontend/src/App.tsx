@@ -7,7 +7,7 @@ import { api } from "./api";
 import { currentMonth, formatMoney, movementWidths } from "./format";
 
 type OverviewData = { cash_minor: number; card_liabilities_minor: number; net_position_minor: number; income_minor: number; spending_minor: number };
-type Account = { id: string; name: string; nickname?: string; nature: string; subtype?: string; currency: string; status: string; balance_minor?: number; include_overview: number; include_budget: number; include_net: number; include_export: number };
+type Account = { id: string; name: string; nickname?: string; nature: string; subtype?: string; currency: string; status: string; balance_minor?: number; include_overview: number; include_budget: number; include_net: number; include_export: number; updated_at: string };
 type Transaction = { id: string; account_id: string; local_date: string; amount_minor: number; currency: string; description: string; merchant?: string; category_id?: string; category?: string; notes?: string; pending: boolean; updated_at: string };
 type Category = { id: string; name: string; category_type: string; reporting_behavior: string };
 type TrackingRow = { category_id: string; category: string; target_minor: number; actual_minor: number; variance_minor: number };
@@ -85,9 +85,11 @@ function OverviewPage() {
 }
 
 function AccountsPage() {
-  const result = useData<Account[]>("/accounts");
+  const [refresh, setRefresh] = useState(0);
+  const [selected, setSelected] = useState<Account>();
+  const result = useData<Account[]>("/accounts", refresh);
   return <Page title="Accounts" note="Balances and reporting scope"><DataBoundary result={result}>{(accounts) => <>
-    {["asset", "liability"].map((nature) => <section className="instrument-panel account-group" key={nature}><div className="section-heading"><h2>{nature === "asset" ? "Cash accounts" : "Credit accounts"}</h2><strong>{formatMoney(accounts.filter((a) => a.nature === nature).reduce((sum, a) => sum + (a.balance_minor || 0), 0))}</strong></div>{accounts.filter((a) => a.nature === nature).map((account) => <div className="account-row" key={account.id}><span className="account-mark">{account.name.slice(0, 2).toUpperCase()}</span><span><strong>{account.nickname || account.name}</strong><small>{account.subtype?.replace("_", " ")} · {account.status}</small></span><span className="scope-flags"><i className={account.include_budget ? "on" : ""}>Budget</i><i className={account.include_net ? "on" : ""}>Net</i><i className={account.include_export ? "on" : ""}>Export</i></span><b>{formatMoney(account.balance_minor || 0, account.currency)}</b></div>)}</section>)}</>}</DataBoundary></Page>;
+    {["asset", "liability"].map((nature) => <section className="instrument-panel account-group" key={nature}><div className="section-heading"><h2>{nature === "asset" ? "Cash accounts" : "Credit accounts"}</h2><strong>{formatMoney(accounts.filter((a) => a.nature === nature).reduce((sum, a) => sum + (a.balance_minor || 0), 0))}</strong></div>{accounts.filter((a) => a.nature === nature).map((account) => <div className="account-row" key={account.id}><span className="account-mark">{account.name.slice(0, 2).toUpperCase()}</span><span><strong>{account.nickname || account.name}</strong><small>{account.subtype?.replace("_", " ")} · {account.status}</small></span><span className="scope-flags"><i className={account.include_budget ? "on" : ""}>Budget</i><i className={account.include_net ? "on" : ""}>Net</i><i className={account.include_export ? "on" : ""}>Export</i></span><b>{formatMoney(account.balance_minor || 0, account.currency)}</b><button className="quiet-button" onClick={() => setSelected(account)}>Edit</button></div>)}</section>)}{selected && <AccountEditor account={selected} onClose={() => setSelected(undefined)} onSaved={() => { setSelected(undefined); setRefresh((value) => value + 1); }} />}</>}</DataBoundary></Page>;
 }
 
 function TransactionsPage() {
@@ -111,7 +113,7 @@ function TransactionsPage() {
   const table = useReactTable({ data: transactions.data?.items || [], columns, getCoreRowModel: getCoreRowModel() });
   async function categorize(categoryId: string) {
     const rows = (transactions.data?.items || []).filter((row) => selected[row.id]);
-    await Promise.all(rows.map((row) => api(`/transactions/${row.id}`, { method: "PATCH", body: JSON.stringify({ expected_updated_at: row.updated_at, category_id: categoryId }) })));
+    await api("/transactions/bulk", { method: "POST", body: JSON.stringify({ items: rows.map((row) => ({ id: row.id, expected_updated_at: row.updated_at, category_id: categoryId })) }) });
     setSelected({}); setRefresh((value) => value + 1);
   }
   async function confirmTransfer(candidate: TransferCandidate) {
@@ -186,8 +188,19 @@ function ConnectionsPage() {
 }
 
 function SettingsPage({ dark, setDark }: { dark: boolean; setDark: (value: boolean) => void }) {
+  const [operation, setOperation] = useState("");
   const settings = useData<Record<string, string | boolean>>("/settings");
-  return <Page title="Settings" note="Security and local automation"><DataBoundary result={settings}>{(data) => <div className="settings-list"><Setting label="Theme" text="Stored in this browser"><button onClick={() => setDark(!dark)}>{dark ? "Use light" : "Use dark"}</button></Setting><Setting label="Reporting" text={`${data.reporting_currency} · ${data.reporting_timezone}`}><span>Fixed for release 1</span></Setting><Setting label="Network" text="Dashboard listens only on 127.0.0.1"><span className="good">Local only</span></Setting><Setting label="Live-data readiness" text="Python 3.14, FileVault, encrypted backup, and approval are required"><span className="warning">Not ready</span></Setting><Setting label="Daily sync" text="06:17 local time and at login"><span>Mac must be awake</span></Setting></div>}</DataBoundary></Page>;
+  async function run(kind: "export" | "backup") {
+    setOperation(`${kind === "export" ? "Export" : "Backup"} queued…`);
+    const result = await api<{ job_id: string }>(kind === "export" ? "/exports" : "/backups", { method: "POST", body: kind === "export" ? JSON.stringify({ target: "excel" }) : "{}" });
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 100));
+      const job = await api<{ status: string }>(`/jobs/${result.job_id}`);
+      if (!['queued', 'running'].includes(job.status)) { setOperation(`${kind === "export" ? "Export" : "Backup"} ${job.status}.`); return; }
+    }
+    setOperation(`${kind === "export" ? "Export" : "Backup"} is still running.`);
+  }
+  return <Page title="Settings" note="Security and local automation"><DataBoundary result={settings}>{(data) => <div className="settings-list"><Setting label="Theme" text="Stored in this browser"><button onClick={() => setDark(!dark)}>{dark ? "Use light" : "Use dark"}</button></Setting><Setting label="Reporting" text={`${data.reporting_currency} · ${data.reporting_timezone}`}><span>Fixed for release 1</span></Setting><Setting label="Network" text="Dashboard listens only on 127.0.0.1"><span className="good">Local only</span></Setting><Setting label="Live-data readiness" text="Python 3.14, FileVault, encrypted backup, and approval are required"><span className="warning">Not ready</span></Setting><Setting label="Daily sync" text="06:17 local time and at login"><span>Mac must be awake</span></Setting><Setting label="Excel snapshot" text="Writes an atomic app-owned workbook"><button onClick={() => run("export")}>Export now</button></Setting><Setting label="Verified backup" text="SQLite online backup with integrity check"><button onClick={() => run("backup")}>Back up now</button></Setting>{operation && <div className="operation-status" role="status"><strong>Operation</strong><span>{operation}</span></div>}</div>}</DataBoundary></Page>;
 }
 
 function Page({ title, note, children }: { title: string; note: string; children: React.ReactNode }) { return <div className="page"><header className="page-title"><div><p className="eyebrow">FinTracka</p><h1>{title}</h1></div><p>{note}</p></header>{children}</div>; }
@@ -197,6 +210,19 @@ function Metric({ label, value, tone = "" }: { label: string; value: string; ton
 function Empty({ title, text }: { title: string; text: string }) { return <div className="empty"><strong>{title}</strong><p>{text}</p></div>; }
 function PageState({ text, error = false }: { text: string; error?: boolean }) { return <div className={`page-state ${error ? "error" : ""}`}>{text}</div>; }
 function Setting({ label, text, children }: { label: string; text: string; children: React.ReactNode }) { return <div><span><strong>{label}</strong><small>{text}</small></span>{children}</div>; }
+
+function AccountEditor({ account, onClose, onSaved }: { account: Account; onClose: () => void; onSaved: () => void }) {
+  const [error, setError] = useState("");
+  async function save(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setError("");
+    const form = new FormData(event.currentTarget);
+    try {
+      await api(`/accounts/${account.id}`, { method: "PATCH", body: JSON.stringify({ expected_updated_at: account.updated_at, nickname: form.get("nickname") || null, include_overview: form.has("overview"), include_budget: form.has("budget"), include_net: form.has("net"), include_export: form.has("export") }) });
+      onSaved();
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to save account"); }
+  }
+  return <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="account-title"><div className="section-heading"><div><p className="eyebrow">Reporting scope</p><h2 id="account-title">{account.name}</h2></div><button className="quiet-button" onClick={onClose}>Close</button></div><form onSubmit={save}><label>Nickname<input name="nickname" defaultValue={account.nickname || ""} maxLength={120} /></label><fieldset className="check-grid"><legend>Include this account in</legend><label><input type="checkbox" name="overview" defaultChecked={Boolean(account.include_overview)} /> Overview</label><label><input type="checkbox" name="budget" defaultChecked={Boolean(account.include_budget)} /> Budgets</label><label><input type="checkbox" name="net" defaultChecked={Boolean(account.include_net)} /> Net position</label><label><input type="checkbox" name="export" defaultChecked={Boolean(account.include_export)} /> Exports</label></fieldset>{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="quiet-button" onClick={onClose}>Cancel</button><button>Save account</button></div></form></section></div>;
+}
 
 function SplitEditor({ transaction, categories, onClose, onSaved }: { transaction: Transaction; categories: Category[]; onClose: () => void; onSaved: () => void }) {
   const [firstMinor, setFirstMinor] = useState(Math.trunc(transaction.amount_minor / 2));
