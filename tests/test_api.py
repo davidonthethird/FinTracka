@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import json
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Barrier
 
@@ -14,8 +16,85 @@ from fintracka.api import create_app
 from fintracka.db import connect, migrate
 from fintracka.ids import new_id
 from fintracka.jobs import recover_interrupted_jobs
+from fintracka.google_sheets import configure_google
+from fintracka.keychain import KeychainSecrets
+from fintracka.plaid_adapter import ConnectedItem, InstitutionInfo, LinkSession
+from fintracka.plaid_service import complete_plaid_connection
+from fintracka.providers import NormalizedAccount, NormalizedBalance, NormalizedTransaction, SyncBatch
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
 from fintracka.sync import apply_batch
+
+
+@dataclass
+class FakePlaidAdapter:
+    environment: str = "production"
+    revoked: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.revoked is None:
+            self.revoked = []
+
+    def create_link_session(self) -> LinkSession:
+        return LinkSession("link-production", "2026-10-12T14:00:00Z", "production")
+
+    def complete_link(self, public_token: str, secret_reference: str) -> ConnectedItem:
+        assert public_token == "public-production"
+        return ConnectedItem("item-production", secret_reference)
+
+    def connection_info(self, secret_reference: str) -> InstitutionInfo:
+        assert secret_reference.startswith("plaid:production:connection:")
+        return InstitutionInfo("ins_1", "Example Bank")
+
+    def repair_connection(self, secret_reference: str) -> LinkSession:
+        assert secret_reference.startswith("plaid:production:connection:")
+        return LinkSession("link-repair", "2026-10-12T15:00:00Z", "production")
+
+    def fetch_updates(self, secret_reference: str, checkpoint: str | None) -> SyncBatch:
+        del secret_reference, checkpoint
+        account = NormalizedAccount("checking-1", "Everyday Checking", "depository", "checking", "asset", "USD", None)
+        return SyncBatch(
+            accounts=(account,),
+            balances=(NormalizedBalance("checking-1", "2026-10-12T12:00:00Z", 100_00, 90_00, "USD", "plaid"),),
+            added=(NormalizedTransaction("txn-1", "checking-1", "2026-10-12T12:00:00Z", -12_34, "USD", "Corner Store", "Corner Store", False),),
+            modified=(),
+            removed=(),
+            next_checkpoint="cursor-1",
+            raw_response_hashes=("hash-1",),
+        )
+
+    def revoke(self, secret_reference: str) -> None:
+        assert self.revoked is not None
+        self.revoked.append(secret_reference)
+
+
+class FakeKeyring:
+    def __init__(self) -> None:
+        self.values: dict[tuple[str, str], str] = {}
+
+    def set_password(self, service: str, account: str, password: str) -> None:
+        self.values[(service, account)] = password
+
+    def get_password(self, service: str, account: str) -> str | None:
+        return self.values.get((service, account))
+
+    def delete_password(self, service: str, account: str) -> None:
+        self.values.pop((service, account), None)
+
+
+class FakeGoogleGateway:
+    def __init__(self) -> None:
+        self.sheets: dict[str, list[list[object]]] = {}
+
+    def create_workbook(self, names: tuple[str, ...]) -> str:
+        assert "Transactions" in names
+        return "google-workbook"
+
+    def replace_sheet(self, name: str, rows: list[list[object]], batch_size: int) -> None:
+        assert batch_size <= 500
+        self.sheets[name] = rows
+
+    def protect_sheet(self, name: str, warning: str) -> None:
+        assert name in self.sheets and "overwritten" in warning
 
 
 def test_health_security_headers_and_strict_host(tmp_path: Path) -> None:
@@ -49,6 +128,262 @@ def test_bootstrap_cookie_csrf_and_origin_protect_mutations(tmp_path: Path) -> N
         assert client.post(
             "/api/v1/categories", json=_category_payload("Origin"), headers={**headers, "origin": "https://evil.example"}
         ).status_code == 403
+
+
+def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection.execute(
+        "INSERT INTO app_metadata (key, value) VALUES ('plaid.environment', 'production')"
+    )
+    connection.close()
+    adapter = FakePlaidAdapter()
+    app = create_app(
+        path,
+        bootstrap_token="bootstrap",
+        plaid_adapter_factory=lambda _: adapter,
+        filevault_checker=lambda: True,
+    )
+
+    with TestClient(app) as client:
+        health = client.get("/api/v1/health")
+        csp = health.headers["content-security-policy"]
+        assert "https://cdn.plaid.com/link/v2/stable/link-initialize.js" in csp
+        assert "frame-src https://cdn.plaid.com/" in csp
+        assert "connect-src 'self' https://production.plaid.com/" in csp
+        assert "https://sandbox.plaid.com/" not in csp
+        assert "'nonce-" in csp
+        assert "form-action 'self'" in csp
+        assert health.headers["x-frame-options"] == "DENY"
+        assert "payment=()" in health.headers["permissions-policy"]
+        assert client.get("/openapi.json").status_code == 404
+
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+
+        assert client.post("/api/v1/connections/plaid/sessions", json={}).status_code == 403
+        session = client.post(
+            "/api/v1/connections/plaid/sessions", json={}, headers=headers
+        )
+        assert session.status_code == 200
+        assert session.json() == {
+            "link_token": "link-production",
+            "expires_at": "2026-10-12T14:00:00Z",
+            "environment": "production",
+        }
+
+        invalid = client.post(
+            "/api/v1/connections/plaid/complete",
+            json={"public_token": "public-production", "access_token": "must-not-be-accepted"},
+            headers=headers,
+        )
+        assert invalid.status_code == 422
+        completed = client.post(
+            "/api/v1/connections/plaid/complete",
+            json={"public_token": "public-production"},
+            headers=headers,
+        )
+        assert completed.status_code == 201
+        connection_payload = completed.json()
+        assert connection_payload["institution_name"] == "Example Bank"
+        assert connection_payload["environment"] == "production"
+        assert "access_token" not in str(connection_payload)
+        connection_id = connection_payload["id"]
+
+        listed = client.get("/api/v1/connections").json()
+        assert listed[0]["institution_name"] == "Example Bank"
+        assert listed[0]["environment"] == "production"
+        assert "keychain" not in str(listed).lower()
+        assert "token" not in str(listed).lower()
+
+        repair = client.post(
+            f"/api/v1/connections/{connection_id}/repair", json={}, headers=headers
+        )
+        assert repair.status_code == 200
+        assert repair.json() == {
+            "link_token": "link-repair",
+            "expires_at": "2026-10-12T15:00:00Z",
+            "environment": "production",
+        }
+
+        sync = client.post("/api/v1/sync-runs", json={}, headers=headers)
+        assert sync.status_code == 202
+        assert _wait_for_job(client, sync.json()["job_id"])["status"] == "succeeded"
+        transactions = client.get("/api/v1/transactions").json()["items"]
+        assert [item["description"] for item in transactions] == ["Corner Store"]
+
+        deleted = client.delete(f"/api/v1/connections/{connection_id}", headers=headers)
+        assert deleted.status_code == 204
+        assert adapter.revoked and adapter.revoked[0].startswith("plaid:production:connection:")
+        assert client.get("/api/v1/connections").json()[0]["status"] == "revoked"
+
+
+def test_first_production_link_creates_backup_and_filevault_is_a_hard_gate(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection.execute(
+        "INSERT INTO app_metadata (key, value) VALUES ('plaid.environment', 'production')"
+    )
+    connection.close()
+    adapter = FakePlaidAdapter()
+
+    blocked = create_app(
+        path,
+        bootstrap_token="blocked",
+        plaid_adapter_factory=lambda _: adapter,
+        filevault_checker=lambda: False,
+    )
+    with TestClient(blocked) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "blocked"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        response = client.post(
+            "/api/v1/connections/plaid/sessions",
+            json={},
+            headers={"origin": "http://testserver", "x-csrf-token": csrf},
+        )
+        assert response.status_code == 409
+        assert not list((tmp_path / "backups").glob("*.sqlite3"))
+
+    allowed = create_app(
+        path,
+        bootstrap_token="allowed",
+        plaid_adapter_factory=lambda _: adapter,
+        filevault_checker=lambda: True,
+    )
+    with TestClient(allowed) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "allowed"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        response = client.post(
+            "/api/v1/connections/plaid/sessions",
+            json={},
+            headers={"origin": "http://testserver", "x-csrf-token": csrf},
+        )
+        assert response.status_code == 200
+        backups = list((tmp_path / "backups").glob("fintracka-*.sqlite3"))
+        assert len(backups) == 1 and backups[0].stat().st_mode & 0o777 == 0o600
+
+
+def test_google_authorization_and_export_run_as_persisted_jobs(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    create_synthetic_ledger(connection, count=1)
+    keychain = KeychainSecrets(FakeKeyring())
+    configure_google(
+        connection,
+        keychain,
+        json.dumps(
+            {
+                "installed": {
+                    "client_id": "desktop.apps.googleusercontent.com",
+                    "client_secret": "secret-local",
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": ["http://localhost"],
+                }
+            }
+        ),
+    )
+    connection.close()
+    gateway = FakeGoogleGateway()
+    app = create_app(
+        path,
+        bootstrap_token="bootstrap",
+        google_secrets_factory=lambda: keychain,
+        google_authorizer=lambda config, scopes: json.dumps(
+            {"refresh_token": "refresh-local", "client_id": config["installed"]["client_id"]}
+        ),
+        google_authorization_gateway_factory=lambda credentials: gateway,
+        google_export_gateway_factory=lambda connection, secrets: gateway,
+    )
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+
+        authorization = client.post(
+            "/api/v1/exports/google/authorize", json={}, headers=headers
+        )
+        assert authorization.status_code == 202
+        assert _wait_for_job(client, authorization.json()["job_id"])["status"] == "succeeded"
+        google_export = client.post(
+            "/api/v1/exports", json={"target": "google_sheets"}, headers=headers
+        )
+        assert google_export.status_code == 202
+        assert _wait_for_job(client, google_export.json()["job_id"])["status"] == "succeeded"
+        assert "Transactions" in gateway.sheets
+        assert "refresh-local" not in str(client.get("/api/v1/exports").json())
+
+
+def test_schedule_is_changed_only_by_explicit_csrf_protected_actions(tmp_path: Path) -> None:
+    state = {"installed": False, "loaded": False}
+
+    def install(destination: Path, python: Path, data: Path) -> None:
+        del destination, python, data
+        state.update(installed=True, loaded=True)
+
+    def remove(destination: Path) -> None:
+        del destination
+        state.update(installed=False, loaded=False)
+
+    app = create_app(
+        tmp_path / "ledger.sqlite3",
+        bootstrap_token="bootstrap",
+        schedule_installer=install,
+        schedule_remover=remove,
+        schedule_status_reader=lambda destination: dict(state),
+    )
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+
+        assert client.get("/api/v1/settings").json()["schedule_installed"] is False
+        assert client.post("/api/v1/settings/schedule", json={}).status_code == 403
+        assert client.post("/api/v1/settings/schedule", json={}, headers=headers).json()["loaded"] is True
+        assert client.get("/api/v1/settings").json()["schedule_installed"] is True
+        assert client.delete("/api/v1/settings/schedule", headers=headers).status_code == 204
+        assert state == {"installed": False, "loaded": False}
+
+
+def test_startup_queues_only_one_catch_up_sync_for_stale_live_connection(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    adapter = FakePlaidAdapter()
+    complete_plaid_connection(connection, adapter, "public-production")
+    connection.execute(
+        "UPDATE provider_connections SET last_success_at = '2026-10-01T00:00:00Z'"
+    )
+    connection.close()
+
+    app = create_app(path, bootstrap_token="first", plaid_adapter_factory=lambda _: adapter)
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "first"})
+        for _ in range(200):
+            check = connect(path)
+            row = check.execute(
+                "SELECT id, status FROM jobs WHERE kind = 'plaid_sync' ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            check.close()
+            if row is not None and row["status"] not in {"queued", "running"}:
+                break
+            time.sleep(0.01)
+        assert row is not None and row["status"] == "succeeded"
+
+    second = create_app(path, bootstrap_token="second", plaid_adapter_factory=lambda _: adapter)
+    with TestClient(second):
+        pass
+    connection = connect(path)
+    assert connection.execute(
+        "SELECT COUNT(*) FROM jobs WHERE kind = 'plaid_sync'"
+    ).fetchone()[0] == 1
+    assert connection.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
+    connection.close()
 
 
 def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
@@ -245,6 +580,8 @@ def test_management_reports_reconciliation_and_local_operation_jobs(tmp_path: Pa
         assert preview.status_code == 200 and preview.json()["row_count"] == 1
         assert client.post("/api/v1/imports/csv/commit", json=import_payload, headers=headers).status_code == 201
         assert client.post("/api/v1/imports/csv/commit", json=import_payload, headers=headers).status_code == 409
+        oversized = {**import_payload, "content_base64": "A" * 6_700_001}
+        assert client.post("/api/v1/imports/csv/preview", json=oversized, headers=headers).status_code == 422
         assert client.get("/api/v1/reports/budget", params={"month": "2026-10"}).status_code == 200
         assert client.get("/api/v1/reports/balances").json()
 

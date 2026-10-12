@@ -57,5 +57,6 @@ commit
 
 ## Live-data gate
 
-Before production: current Python, FileVault, encrypted off-device backup, full synthetic suite, implementation threat-model review, institution coverage, current provider terms, explicit user approval, one-institution rollout, statement reconciliation, and seven-day observation.
+Before the first Production Link session, the application checks Python 3.14, FileVault, Keychain availability, Plaid Production configuration, and a verified local backup. It creates and verifies the backup before requesting the Link token. The missing off-device backup is an accepted testing warning, not a blocker.
 
+Production Link, first sync, repair, and disconnect are available from Connections. Disconnect revokes Plaid access, removes the local access token, and retains imported records. Start with one institution, compare imported accounts and balances, reconcile one statement to the cent, and observe the connection for seven days before adding another institution.

@@ -6,7 +6,7 @@ import random
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, Protocol
+from typing import Callable, Literal, Protocol
 
 from fintracka.keychain import KeychainSecrets, SecretStoreUnavailable
 from fintracka.money import minor_units
@@ -26,6 +26,9 @@ class ProviderActionRequired(RuntimeError):
 class PlaidClient(Protocol):
     def create_link_token(self, request: dict[str, object]) -> dict[str, str]: ...
     def exchange_public_token(self, public_token: str) -> dict[str, str]: ...
+    def accounts(self, access_token: str) -> dict[str, object]: ...
+    def item(self, access_token: str) -> dict[str, object]: ...
+    def institution(self, institution_id: str) -> dict[str, object]: ...
     def sync(self, access_token: str, cursor: str | None) -> dict[str, object]: ...
     def remove_item(self, access_token: str) -> None: ...
 
@@ -33,12 +36,13 @@ class PlaidClient(Protocol):
 class OfficialPlaidClient:
     """Narrow wrapper around the generated official SDK used by the tested adapter."""
 
-    def __init__(self, client_id: str, secret: str) -> None:
+    def __init__(self, client_id: str, secret: str, environment: Literal["sandbox", "production"]) -> None:
         import plaid
         from plaid.api import plaid_api
 
+        hosts = {"sandbox": plaid.Environment.Sandbox, "production": plaid.Environment.Production}
         configuration = plaid.Configuration(
-            host=plaid.Environment.Sandbox,
+            host=hosts[environment],
             api_key={"clientId": client_id, "secret": secret},
         )
         self._api = plaid_api.PlaidApi(plaid.ApiClient(configuration))
@@ -64,10 +68,29 @@ class OfficialPlaidClient:
             ItemPublicTokenExchangeRequest(public_token=public_token),
         )
 
+    def accounts(self, access_token: str) -> dict[str, object]:
+        from plaid.model.accounts_get_request import AccountsGetRequest
+
+        return self._invoke("accounts_get", AccountsGetRequest(access_token=access_token))
+
+    def item(self, access_token: str) -> dict[str, object]:
+        from plaid.model.item_get_request import ItemGetRequest
+
+        return self._invoke("item_get", ItemGetRequest(access_token=access_token))
+
+    def institution(self, institution_id: str) -> dict[str, object]:
+        from plaid.model.country_code import CountryCode
+        from plaid.model.institutions_get_by_id_request import InstitutionsGetByIdRequest
+
+        return self._invoke(
+            "institutions_get_by_id",
+            InstitutionsGetByIdRequest(institution_id=institution_id, country_codes=[CountryCode("US")]),
+        )
+
     def sync(self, access_token: str, cursor: str | None) -> dict[str, object]:
         from plaid.model.transactions_sync_request import TransactionsSyncRequest
 
-        values = {"access_token": access_token}
+        values = {"access_token": access_token, "count": 500}
         if cursor is not None:
             values["cursor"] = cursor
         return self._invoke("transactions_sync", TransactionsSyncRequest(**values))
@@ -92,12 +115,19 @@ class OfficialPlaidClient:
 class LinkSession:
     link_token: str
     expiration: str
+    environment: Literal["sandbox", "production"]
 
 
 @dataclass(frozen=True)
 class ConnectedItem:
     external_connection_id: str
     secret_reference: str
+
+
+@dataclass(frozen=True)
+class InstitutionInfo:
+    external_id: str
+    name: str
 
 
 class PlaidAdapter:
@@ -110,11 +140,13 @@ class PlaidAdapter:
         client: PlaidClient,
         secrets: KeychainSecrets,
         *,
+        environment: Literal["sandbox", "production"] = "sandbox",
         sleep: Callable[[float], None] = time.sleep,
         jitter: Callable[[], float] = random.random,
     ) -> None:
         self.client = client
         self.secrets = secrets
+        self.environment = environment
         self.sleep = sleep
         self.jitter = jitter
 
@@ -130,11 +162,19 @@ class PlaidAdapter:
                 }
             )
         )
-        return LinkSession(response["link_token"], response["expiration"])
+        return LinkSession(response["link_token"], response["expiration"], self.environment)
 
     def complete_link(self, public_token: str, secret_reference: str) -> ConnectedItem:
         response = self._retry(lambda: self.client.exchange_public_token(public_token))
-        self.secrets.put(secret_reference, response["access_token"])
+        access_token = response["access_token"]
+        try:
+            self.secrets.put(secret_reference, access_token)
+        except SecretStoreUnavailable:
+            try:
+                self._retry(lambda: self.client.remove_item(access_token))
+            except Exception:
+                pass
+            raise
         return ConnectedItem(response["item_id"], secret_reference)
 
     def repair_connection(self, secret_reference: str) -> LinkSession:
@@ -150,18 +190,36 @@ class PlaidAdapter:
                 }
             )
         )
-        return LinkSession(response["link_token"], response["expiration"])
+        return LinkSession(response["link_token"], response["expiration"], self.environment)
+
+    def connection_info(self, secret_reference: str) -> InstitutionInfo:
+        access_token = self._secret(secret_reference)
+        item_response = self._retry(lambda: self.client.item(access_token))
+        item = item_response["item"]
+        institution_id = str(item["institution_id"])
+        response = self._retry(lambda: self.client.institution(institution_id))
+        institution = response["institution"]
+        return InstitutionInfo(institution_id, str(institution["name"]))
 
     def fetch_updates(self, secret_reference: str, checkpoint: str | None) -> SyncBatch:
         access_token = self._secret(secret_reference)
+        account_response = self._retry(lambda: self.client.accounts(access_token))
+        observed_at = str(account_response.get("observed_at") or _now())
+        accounts: dict[str, NormalizedAccount] = {}
+        balances: dict[str, NormalizedBalance] = {}
+        for raw_account in account_response.get("accounts", []):
+            account, balance = _account(raw_account, observed_at)
+            accounts[account.external_id] = account
+            balances[account.external_id] = balance
+        account_hash = hashlib.sha256(
+            json.dumps(account_response, sort_keys=True, default=str, separators=(",", ":")).encode()
+        ).hexdigest()
         for restart in range(3):
             cursor = checkpoint
-            accounts: dict[str, NormalizedAccount] = {}
-            balances: dict[str, NormalizedBalance] = {}
             added: list[NormalizedTransaction] = []
             modified: list[NormalizedTransaction] = []
             removed: list[str] = []
-            hashes: list[str] = []
+            hashes: list[str] = [account_hash]
             try:
                 while True:
                     response = self._retry(lambda: self.client.sync(access_token, cursor))
@@ -200,7 +258,11 @@ class PlaidAdapter:
 
     def revoke(self, secret_reference: str) -> None:
         access_token = self._secret(secret_reference)
-        self._retry(lambda: self.client.remove_item(access_token))
+        try:
+            self._retry(lambda: self.client.remove_item(access_token))
+        except PlaidError as error:
+            if error.code != "ITEM_NOT_FOUND":
+                raise
         self.secrets.delete(secret_reference)
 
     def _secret(self, reference: str) -> str:

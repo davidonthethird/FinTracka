@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { NavLink, Route, Routes } from "react-router-dom";
+import { NavLink, Route, Routes, useNavigate } from "react-router-dom";
+import { usePlaidLink } from "react-plaid-link";
 import { ColumnDef, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
@@ -16,7 +17,11 @@ type EnvelopeData = { month: string; starting_pool_minor: number; available_to_a
 type Rule = { id: string; name: string; priority: number; enabled: number; conditions_json: string; category_id: string; category?: string };
 type RulePreview = { rule_id: string; name: string; priority: number; match_count: number };
 type TransferCandidate = { transaction_a: string; transaction_b: string; external_a: string; external_b: string; confidence: string };
-type Connection = { id: string; provider: string; status: string; last_success_at?: string; last_error_code?: string };
+type Connection = { id: string; provider: string; environment?: string; institution_name?: string; status: string; last_success_at?: string; last_error_code?: string };
+type Provider = { id: string; name: string; enabled: boolean; environment?: string };
+type LinkSession = { link_token: string; expires_at: string; environment: string };
+type ReadinessCheck = { id: string; label: string; status: "pass" | "fail" | "warning"; blocking: boolean; detail: string };
+type ReadinessData = { ready: boolean; checks: ReadinessCheck[] };
 
 const nav = [
   ["/", "Overview"], ["/accounts", "Accounts"], ["/transactions", "Transactions"],
@@ -211,26 +216,111 @@ function RulesPage() {
 }
 
 function ConnectionsPage() {
+  const navigate = useNavigate();
   const [selected, setSelected] = useState<Connection>();
-  const providers = useData<{ id: string; name: string; enabled: boolean }[]>("/providers");
-  const connections = useData<Connection[]>("/connections");
-  return <Page title="Connections" note="Synthetic data and Plaid Sandbox only"><div className="notice"><strong>Live access is locked.</strong><span>Production credentials require a separate rollout approval.</span></div><DataBoundary result={connections}>{(items) => <section className="instrument-panel"><div className="section-heading"><h2>Connected sources</h2><span>{items.length} total</span></div>{items.map((item) => <div className="connection-row" key={item.id}><span className={`connection-state ${item.status}`} /><span><strong>{item.provider}</strong><small>{item.last_success_at ? `Last synced ${item.last_success_at}` : "Never synced"}</small></span><b>{item.status}</b><button className="quiet-button" onClick={() => setSelected(item)}>Details</button></div>)}</section>}</DataBoundary><section className="provider-list"><DataBoundary result={providers}>{(items) => <>{items.map((item) => <div key={item.id}><span><strong>{item.name}</strong><small>{item.id === "synthetic" ? "Safe generated data" : "Transactions only"}</small></span><button disabled={!item.enabled}>{item.enabled ? "Available" : "Not configured"}</button></div>)}</>}</DataBoundary></section>{selected && <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setSelected(undefined)}><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="connection-title"><div className="section-heading"><div><p className="eyebrow">Connection detail</p><h2 id="connection-title">{selected.provider}</h2></div><button className="quiet-button" onClick={() => setSelected(undefined)}>Close</button></div><div className="connection-detail"><span>Status<strong>{selected.status}</strong></span><span>Last successful sync<strong>{selected.last_success_at || "Not yet recorded"}</strong></span><span>Latest error<strong>{selected.last_error_code || "None"}</strong></span><p>Disconnect and repair controls remain unavailable for synthetic sources. Plaid Sandbox becomes available only after local sandbox credentials are configured.</p></div></section></div>}</Page>;
+  const [refresh, setRefresh] = useState(0);
+  const [link, setLink] = useState<{ session: LinkSession; mode: "connect" | "repair" }>();
+  const [message, setMessage] = useState("");
+  const providers = useData<Provider[]>("/providers", refresh);
+  const connections = useData<Connection[]>("/connections", refresh);
+  const plaid = providers.data?.find((provider) => provider.id === "plaid");
+
+  async function beginConnect() {
+    setMessage("Creating a secure Plaid session…");
+    try {
+      const session = await api<LinkSession>("/connections/plaid/sessions", { method: "POST", body: "{}" });
+      setLink({ session, mode: "connect" });
+    } catch (caught) { setMessage(caught instanceof Error ? caught.message : "Unable to start Plaid Link"); }
+  }
+  async function beginRepair(connection: Connection) {
+    setMessage("Creating a secure repair session…");
+    try {
+      const session = await api<LinkSession>(`/connections/${connection.id}/repair`, { method: "POST", body: "{}" });
+      setSelected(undefined); setLink({ session, mode: "repair" });
+    } catch (caught) { setMessage(caught instanceof Error ? caught.message : "Unable to repair connection"); }
+  }
+  async function syncNow(destination?: string) {
+    setMessage("Sync queued…");
+    const result = await api<{ job_id: string }>("/sync-runs", { method: "POST", body: "{}" });
+    for (let attempt = 0; attempt < 150; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 200));
+      const job = await api<{ status: string }>(`/jobs/${result.job_id}`);
+      if (job.status === "succeeded") { setMessage("Sync completed."); setRefresh((value) => value + 1); if (destination) navigate(destination); return; }
+      if (!['queued', 'running'].includes(job.status)) throw new Error("Sync failed. Open connection details for the required action.");
+    }
+    setMessage("Sync is still running. You can leave this page safely.");
+  }
+  async function linkSucceeded(publicToken: string | null) {
+    const mode = link?.mode;
+    setLink(undefined);
+    try {
+      if (mode === "connect") {
+        if (!publicToken) throw new Error("Plaid did not return a connection token.");
+        await api<Connection>("/connections/plaid/complete", { method: "POST", body: JSON.stringify({ public_token: publicToken }) });
+        await syncNow("/accounts");
+      } else {
+        await syncNow();
+      }
+    } catch (caught) { setMessage(caught instanceof Error ? caught.message : "Unable to finish the bank connection"); }
+  }
+  async function disconnect(connection: Connection) {
+    if (!window.confirm(`Disconnect ${connection.institution_name || "this bank"}? Imported history will remain in FinTracka.`)) return;
+    try {
+      await api(`/connections/${connection.id}`, { method: "DELETE" });
+      setSelected(undefined); setMessage("Bank access revoked. Imported history was preserved."); setRefresh((value) => value + 1);
+    } catch (caught) { setMessage(caught instanceof Error ? caught.message : "Unable to disconnect bank"); }
+  }
+  return <Page title="Connections" note="Transactions-only bank access">
+    <div className="notice"><strong>Live testing mode.</strong><span>Start with one institution and reconcile it before adding another. Bank credentials stay inside Plaid Link.</span></div>
+    {message && <div className="operation-status connection-operation" role="status"><strong>Connection</strong><span>{message}</span></div>}
+    <DataBoundary result={connections}>{(items) => <section className="instrument-panel"><div className="section-heading"><h2>Connected sources</h2><div className="button-row"><span>{items.length} total</span>{items.some((item) => item.provider === "plaid" && item.status === "active") && <button onClick={() => syncNow().catch((caught) => setMessage(caught instanceof Error ? caught.message : "Unable to sync"))}>Sync now</button>}</div></div>{items.map((item) => <div className="connection-row" key={item.id}><span className={`connection-state ${item.status}`} /><span><strong>{item.institution_name || item.provider}</strong><small>{item.last_success_at ? `Last synced ${item.last_success_at}` : `${item.environment || "local"} · Never synced`}</small></span><b>{item.status}</b><button className="quiet-button" onClick={() => setSelected(item)}>Details</button></div>)}</section>}</DataBoundary>
+    <section className="provider-list"><DataBoundary result={providers}>{(items) => <>{items.map((item) => <div key={item.id}><span><strong>{item.name}</strong><small>{item.id === "synthetic" ? "Safe generated data" : `Transactions only · ${item.environment || "not configured"}`}</small></span>{item.id === "plaid" ? <button disabled={!item.enabled || Boolean(link)} onClick={beginConnect}>{item.enabled ? "Connect bank" : "Not configured"}</button> : <span className="good">Available</span>}</div>)}</>}</DataBoundary></section>
+    {link && <PlaidLinkLauncher session={link.session} onSuccess={linkSucceeded} onExit={(error) => { setLink(undefined); setMessage(error || "Plaid Link closed without changes."); }} />}
+    {selected && <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setSelected(undefined)}><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="connection-title"><div className="section-heading"><div><p className="eyebrow">Connection detail</p><h2 id="connection-title">{selected.institution_name || selected.provider}</h2></div><button className="quiet-button" onClick={() => setSelected(undefined)}>Close</button></div><div className="connection-detail"><span>Status<strong>{selected.status}</strong></span><span>Environment<strong>{selected.environment || "Local"}</strong></span><span>Last successful sync<strong>{selected.last_success_at || "Not yet recorded"}</strong></span><span>Latest error<strong>{selected.last_error_code || "None"}</strong></span>{selected.provider === "plaid" && selected.status !== "revoked" ? <div className="dialog-actions"><button className="quiet-button destructive" onClick={() => disconnect(selected)}>Disconnect</button><button onClick={() => beginRepair(selected)}>Repair connection</button></div> : <p>Synthetic and revoked sources retain their imported ledger history.</p>}</div></section></div>}
+    {!plaid?.enabled && <p className="provider-help">Configure Plaid locally before connecting a bank. No credential is stored in this browser or repository.</p>}
+  </Page>;
+}
+
+function PlaidLinkLauncher({ session, onSuccess, onExit }: { session: LinkSession; onSuccess: (token: string | null) => void; onExit: (error?: string) => void }) {
+  const opened = useRef(false);
+  const { open, ready, error } = usePlaidLink({
+    token: session.link_token,
+    onSuccess: (publicToken) => onSuccess(publicToken),
+    onExit: (plaidError) => onExit(plaidError?.display_message || (plaidError ? `Plaid could not continue (${plaidError.error_code}).` : undefined)),
+  });
+  useEffect(() => {
+    if (ready && !opened.current) { opened.current = true; open(); }
+  }, [ready, open]);
+  useEffect(() => { if (error) onExit("Plaid Link could not load. Check the local Content Security Policy and network connection."); }, [error, onExit]);
+  return <span className="plaid-launch-state" role="status">Opening Plaid Link for {session.environment}…</span>;
 }
 
 function SettingsPage({ dark, setDark }: { dark: boolean; setDark: (value: boolean) => void }) {
   const [operation, setOperation] = useState("");
-  const settings = useData<Record<string, string | boolean>>("/settings");
-  async function run(kind: "export" | "backup") {
-    setOperation(`${kind === "export" ? "Export" : "Backup"} queued…`);
-    const result = await api<{ job_id: string }>(kind === "export" ? "/exports" : "/backups", { method: "POST", body: kind === "export" ? JSON.stringify({ target: "excel" }) : "{}" });
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, 100));
+  const [refresh, setRefresh] = useState(0);
+  const settings = useData<Record<string, string | boolean>>("/settings", refresh);
+  const readiness = useData<ReadinessData>("/settings/readiness", refresh);
+  async function run(kind: "excel" | "backup" | "google_authorize" | "google_export") {
+    const labels = { excel: "Excel export", backup: "Backup", google_authorize: "Google authorization", google_export: "Google export" };
+    setOperation(`${labels[kind]} queued…`);
+    const paths = { excel: "/exports", backup: "/backups", google_authorize: "/exports/google/authorize", google_export: "/exports" };
+    const bodies = { excel: JSON.stringify({ target: "excel" }), backup: "{}", google_authorize: "{}", google_export: JSON.stringify({ target: "google_sheets" }) };
+    const result = await api<{ job_id: string }>(paths[kind], { method: "POST", body: bodies[kind] });
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
       const job = await api<{ status: string }>(`/jobs/${result.job_id}`);
-      if (!['queued', 'running'].includes(job.status)) { setOperation(`${kind === "export" ? "Export" : "Backup"} ${job.status}.`); return; }
+      if (!['queued', 'running'].includes(job.status)) { setOperation(`${labels[kind]} ${job.status}.`); setRefresh((value) => value + 1); return; }
     }
-    setOperation(`${kind === "export" ? "Export" : "Backup"} is still running.`);
+    setOperation(`${labels[kind]} is still running.`);
   }
-  return <Page title="Settings" note="Security and local automation"><DataBoundary result={settings}>{(data) => <div className="settings-list"><Setting label="Theme" text="Stored in this browser"><button onClick={() => setDark(!dark)}>{dark ? "Use light" : "Use dark"}</button></Setting><Setting label="Reporting" text={`${data.reporting_currency} · ${data.reporting_timezone}`}><span>Fixed for release 1</span></Setting><Setting label="Network" text="Dashboard listens only on 127.0.0.1"><span className="good">Local only</span></Setting><Setting label="Live-data readiness" text="Python 3.14, FileVault, encrypted backup, and approval are required"><span className="warning">Not ready</span></Setting><Setting label="Daily sync" text="06:17 local time and at login"><span>Mac must be awake</span></Setting><Setting label="Excel snapshot" text="Writes an atomic app-owned workbook"><button onClick={() => run("export")}>Export now</button></Setting><Setting label="Verified backup" text="SQLite online backup with integrity check"><button onClick={() => run("backup")}>Back up now</button></Setting>{operation && <div className="operation-status" role="status"><strong>Operation</strong><span>{operation}</span></div>}</div>}</DataBoundary></Page>;
+  async function changeSchedule(installed: boolean) {
+    setOperation(installed ? "Installing daily sync…" : "Removing daily sync…");
+    try {
+      await api("/settings/schedule", { method: installed ? "POST" : "DELETE", body: installed ? "{}" : undefined });
+      setOperation(installed ? "Daily sync installed." : "Daily sync removed."); setRefresh((value) => value + 1);
+    } catch (caught) { setOperation(caught instanceof Error ? caught.message : "Unable to change daily sync"); }
+  }
+  return <Page title="Settings" note="Security and local automation"><DataBoundary result={readiness}>{(report) => <section className="instrument-panel readiness-panel"><div className="section-heading"><h2>Live-data readiness</h2><strong className={report.ready ? "good" : "warning"}>{report.ready ? "Ready for one-bank testing" : "Blocking checks remain"}</strong></div><div className="readiness-grid">{report.checks.map((check) => <div key={check.id} className={check.status}><span aria-hidden="true">{check.status === "pass" ? "✓" : check.status === "fail" ? "×" : "!"}</span><p><strong>{check.label}</strong><small>{check.detail}</small></p><b>{check.blocking ? "Required" : "Advisory"}</b></div>)}</div></section>}</DataBoundary><DataBoundary result={settings}>{(data) => <div className="settings-list"><Setting label="Theme" text="Stored in this browser"><button onClick={() => setDark(!dark)}>{dark ? "Use light" : "Use dark"}</button></Setting><Setting label="Reporting" text={`${data.reporting_currency} · ${data.reporting_timezone}`}><span>Fixed for release 1</span></Setting><Setting label="Network" text="Dashboard listens only on 127.0.0.1"><span className="good">Local only</span></Setting><Setting label="Daily sync" text="06:17 local time and at login; the Mac must be awake"><button onClick={() => changeSchedule(!data.schedule_installed)}>{data.schedule_installed ? "Remove schedule" : "Install schedule"}</button></Setting><Setting label="Google Sheets" text="One-way export with access only to the workbook FinTracka creates">{data.google_authorized ? <button onClick={() => run("google_export")}>Export to Google</button> : <button disabled={!data.google_configured} onClick={() => run("google_authorize")}>{data.google_configured ? "Authorize Google" : "Not configured"}</button>}</Setting><Setting label="Excel snapshot" text="Writes an atomic app-owned workbook"><button onClick={() => run("excel")}>Export now</button></Setting><Setting label="Verified backup" text="SQLite online backup with integrity check"><button onClick={() => run("backup")}>Back up now</button></Setting>{operation && <div className="operation-status" role="status"><strong>Operation</strong><span>{operation}</span></div>}</div>}</DataBoundary></Page>;
 }
 
 function Page({ title, note, children }: { title: string; note: string; children: React.ReactNode }) { return <div className="page"><header className="page-title"><div><p className="eyebrow">FinTracka</p><h1>{title}</h1></div><p>{note}</p></header>{children}</div>; }

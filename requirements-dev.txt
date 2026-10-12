@@ -1,4 +1,4 @@
--e .[bank]
+-e .[bank,google]
 fastapi[standard]==0.143.0
 playwright==1.63.0
 pip-audit==2.10.1

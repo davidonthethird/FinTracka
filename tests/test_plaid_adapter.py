@@ -32,17 +32,28 @@ def test_keychain_keeps_secret_out_of_sqlite(tmp_path) -> None:
 def test_link_requests_transactions_only_and_completion_returns_no_token() -> None:
     client = FakePlaidClient()
     secrets = KeychainSecrets(FakeKeyring())
-    adapter = PlaidAdapter(client, secrets, sleep=lambda _: None)
+    adapter = PlaidAdapter(client, secrets, environment="production", sleep=lambda _: None)
 
     session = adapter.create_link_session()
     connected = adapter.complete_link("public-sandbox-token", "connection:test")
 
     assert session.link_token == "link-token"
+    assert session.environment == "production"
     assert client.link_requests[0]["products"] == ["transactions"]
     assert "auth" not in json.dumps(client.link_requests[0]).lower()
     assert connected.external_connection_id == "item-1"
     assert not hasattr(connected, "access_token")
     assert secrets.get("connection:test") == "access-secret-token"
+
+
+def test_link_completion_revokes_item_when_keychain_write_fails() -> None:
+    client = FakePlaidClient()
+    adapter = PlaidAdapter(client, KeychainSecrets(FailingKeyring()), sleep=lambda _: None)
+
+    with pytest.raises(Exception, match="Keychain"):
+        adapter.complete_link("public-sandbox-token", "connection:test")
+
+    assert client.removed == ["access-secret-token"]
 
 
 def test_paginated_sync_normalizes_amounts_and_restarts_after_mutation() -> None:
@@ -61,6 +72,7 @@ def test_paginated_sync_normalizes_amounts_and_restarts_after_mutation() -> None
     batch = adapter.fetch_updates("connection:test", None)
 
     assert client.sync_cursors == [None, "c1", None, "c1"]
+    assert [account.external_id for account in batch.accounts] == ["checking-1"]
     assert [transaction.external_id for transaction in batch.added] == ["first", "second"]
     assert [transaction.amount_minor for transaction in batch.added] == [-1234, -1234]
     assert batch.next_checkpoint == "c2"
@@ -93,6 +105,16 @@ def test_repair_and_revoke_use_stored_secret() -> None:
     assert secrets.get("connection:test") is None
 
 
+def test_revoke_treats_already_removed_item_as_success() -> None:
+    client = FakePlaidClient(remove_error=PlaidError("ITEM_NOT_FOUND"))
+    secrets = KeychainSecrets(FakeKeyring())
+    secrets.put("connection:test", "access-secret-token")
+
+    PlaidAdapter(client, secrets, sleep=lambda _: None).revoke("connection:test")
+
+    assert secrets.get("connection:test") is None
+
+
 class FakeKeyring:
     def __init__(self) -> None:
         self.values: dict[tuple[str, str], str] = {}
@@ -107,12 +129,19 @@ class FakeKeyring:
         self.values.pop((service, account), None)
 
 
+class FailingKeyring(FakeKeyring):
+    def set_password(self, service: str, account: str, password: str) -> None:
+        raise RuntimeError("locked")
+
+
 class FakePlaidClient:
-    def __init__(self, sync_results=None) -> None:
+    def __init__(self, sync_results=None, remove_error: Exception | None = None) -> None:
         self.link_requests: list[dict[str, object]] = []
         self.sync_results = list(sync_results or [])
         self.sync_cursors: list[str | None] = []
         self.removed: list[str] = []
+        self.account_requests: list[str] = []
+        self.remove_error = remove_error
 
     def create_link_token(self, request: dict[str, object]) -> dict[str, str]:
         self.link_requests.append(request)
@@ -130,22 +159,39 @@ class FakePlaidClient:
             raise result
         return result
 
+    def accounts(self, access_token: str) -> dict[str, object]:
+        self.account_requests.append(access_token)
+        return {
+            "accounts": [
+                {
+                    "account_id": "checking-1",
+                    "name": "Checking",
+                    "type": "depository",
+                    "subtype": "checking",
+                    "mask": "1234",
+                    "balances": {
+                        "current": 1000.0,
+                        "available": 900.0,
+                        "iso_currency_code": "USD",
+                    },
+                }
+            ]
+        }
+
     def remove_item(self, access_token: str) -> None:
         self.removed.append(access_token)
+        if self.remove_error:
+            raise self.remove_error
+
+    def item(self, access_token: str) -> dict[str, object]:
+        return {"item": {"item_id": "item-1", "institution_id": "ins_1"}}
+
+    def institution(self, institution_id: str) -> dict[str, object]:
+        return {"institution": {"institution_id": institution_id, "name": "Test Bank"}}
 
 
 def _page(cursor: str, *, has_more: bool, external_id: str = "txn") -> dict[str, object]:
     return {
-        "accounts": [
-            {
-                "account_id": "checking-1",
-                "name": "Checking",
-                "type": "depository",
-                "subtype": "checking",
-                "mask": "1234",
-                "balances": {"current": 1000.0, "available": 900.0, "iso_currency_code": "USD"},
-            }
-        ],
         "added": [
             {
                 "transaction_id": external_id,

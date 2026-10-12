@@ -2,12 +2,13 @@ import base64
 import binascii
 import secrets
 import sqlite3
+import sys
 from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Callable, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
@@ -24,11 +25,18 @@ from fintracka.budgets import (
     tracking_year,
 )
 from fintracka.db import connect, migrate
-from fintracka.exports import export_excel
+from fintracka.exports import export_excel, export_google
+from fintracka.google_sheets import (
+    authorize_google,
+    build_google_gateway,
+    google_status,
+)
 from fintracka.ids import new_id
 from fintracka.imports import DuplicateImportError, ImportError as CSVImportError, commit_csv, preview_csv
 from fintracka.jobs import JobRunner, recover_interrupted_jobs
+from fintracka.keychain import KeychainSecrets, SecretStoreUnavailable
 from fintracka.locks import ProcessLock
+from fintracka.launchd import install_schedule, remove_schedule, schedule_status
 from fintracka.ledger import (
     ConflictError,
     IntegrityError,
@@ -42,7 +50,17 @@ from fintracka.ledger import (
     update_transaction,
 )
 from fintracka.reports import cash_flow, overview, spending_by_category
+from fintracka.readiness import filevault_enabled, readiness_report
 from fintracka.security import LocalSessions, host_allowed, origin_allowed
+from fintracka.plaid_adapter import PlaidAdapter
+from fintracka.plaid_service import (
+    PlaidNotConfigured,
+    build_plaid_adapter,
+    complete_plaid_connection,
+    repair_plaid_connection,
+    revoke_plaid_connection,
+    sync_plaid_connections,
+)
 
 
 class StrictModel(BaseModel):
@@ -141,6 +159,10 @@ class EmptyRequest(StrictModel):
     pass
 
 
+class PlaidCompleteRequest(StrictModel):
+    public_token: str = Field(min_length=1, max_length=1_000)
+
+
 class SplitItem(StrictModel):
     amount_minor: int
     category_id: str | None = None
@@ -178,7 +200,7 @@ class EnvelopeUpdate(StrictModel):
 
 
 class ExportRequest(StrictModel):
-    target: Literal["excel"]
+    target: Literal["excel", "google_sheets"]
 
 
 class CSVImportRequest(StrictModel):
@@ -192,43 +214,79 @@ def create_app(
     *,
     bootstrap_token: str | None = None,
     static_directory: str | Path | None = None,
+    plaid_adapter_factory: Callable[[sqlite3.Connection], PlaidAdapter] | None = None,
+    google_secrets_factory: Callable[[], KeychainSecrets] = KeychainSecrets,
+    google_authorizer: Callable[[dict[str, Any], list[str]], str] | None = None,
+    google_authorization_gateway_factory: Callable[[str], Any] | None = None,
+    google_export_gateway_factory: Callable[[sqlite3.Connection, KeychainSecrets], Any] | None = None,
+    schedule_installer: Callable[[Path, Path, Path], Any] = install_schedule,
+    schedule_remover: Callable[[Path], Any] = remove_schedule,
+    schedule_status_reader: Callable[[Path], dict[str, bool]] = schedule_status,
+    filevault_checker: Callable[[], bool] = filevault_enabled,
 ) -> FastAPI:
     path = Path(database_path)
     initial = connect(path)
     migrate(initial)
     recover_interrupted_jobs(initial)
+    plaid_environment = _plaid_environment(initial)
     initial.close()
     sessions = LocalSessions(bootstrap_token or secrets.token_urlsafe(32))
     jobs = JobRunner(path)
+    launch_agent = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.sync.plist"
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):  # type: ignore[no-untyped-def]
-        yield
-        jobs.close()
+        startup = connect(path)
+        try:
+            if _catch_up_due(startup):
+                try:
+                    plaid_adapter(startup)
+                except (PlaidNotConfigured, SecretStoreUnavailable):
+                    pass
+                else:
+                    def catch_up(connection: sqlite3.Connection) -> None:
+                        with ProcessLock(path.parent / "fintracka.lock"):
+                            sync_plaid_connections(connection, plaid_adapter(connection))
 
-    app = FastAPI(title="FinTracka", version="1.0.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+                    jobs.submit("plaid_sync", catch_up)
+        finally:
+            startup.close()
+        try:
+            yield
+        finally:
+            jobs.close()
+
+    app = FastAPI(
+        title="FinTracka",
+        version="1.0.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
     app.state.database_path = path
     app.state.sessions = sessions
     app.state.jobs = jobs
 
     @app.middleware("http")
     async def local_security(request: Request, call_next):  # type: ignore[no-untyped-def]
+        nonce = secrets.token_urlsafe(18)
         if not host_allowed(request.headers.get("host", "")):
-            return _secured(JSONResponse({"detail": "invalid host"}, status_code=400))
+            return _secured(JSONResponse({"detail": "invalid host"}, status_code=400), nonce, plaid_environment)
         api_path = request.url.path
         exempt = api_path in {"/api/v1/health", "/api/v1/session/bootstrap"}
         session = sessions.get(request.cookies.get("fintracka_session"))
         if api_path.startswith("/api/v1") and not exempt and session is None:
-            return _secured(JSONResponse({"detail": "local session required"}, status_code=401))
+            return _secured(JSONResponse({"detail": "local session required"}, status_code=401), nonce, plaid_environment)
         if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not exempt:
             origin = request.headers.get("origin")
             if origin is None or not origin_allowed(origin):
-                return _secured(JSONResponse({"detail": "invalid origin"}, status_code=403))
+                return _secured(JSONResponse({"detail": "invalid origin"}, status_code=403), nonce, plaid_environment)
             if session is None or not secrets.compare_digest(
                 request.headers.get("x-csrf-token", ""), session.csrf_token
             ):
-                return _secured(JSONResponse({"detail": "invalid CSRF token"}, status_code=403))
-        return _secured(await call_next(request))
+                return _secured(JSONResponse({"detail": "invalid CSRF token"}, status_code=403), nonce, plaid_environment)
+        return _secured(await call_next(request), nonce, plaid_environment)
 
     def database() -> Iterator[sqlite3.Connection]:
         connection = connect(path)
@@ -238,6 +296,11 @@ def create_app(
             connection.close()
 
     Database = Annotated[sqlite3.Connection, Depends(database)]
+
+    def plaid_adapter(connection: sqlite3.Connection) -> PlaidAdapter:
+        if plaid_adapter_factory is not None:
+            return plaid_adapter_factory(connection)
+        return build_plaid_adapter(connection, KeychainSecrets())
 
     @app.get("/api/v1/health")
     def health() -> dict[str, str]:
@@ -266,19 +329,50 @@ def create_app(
         return {"csrf_token": session.csrf_token}
 
     @app.get("/api/v1/settings")
-    def settings() -> dict[str, str | bool]:
+    def settings(database: Database) -> dict[str, str | bool]:
+        google = google_status(database)
+        scheduler = schedule_status_reader(launch_agent)
         return {
             "reporting_currency": "USD",
             "reporting_timezone": "America/New_York",
             "localhost_only": True,
             "live_data_ready": False,
+            "google_configured": bool(google["configured"]),
+            "google_authorized": bool(google["authorized"]),
+            "schedule_installed": scheduler["installed"],
+            "schedule_loaded": scheduler["loaded"],
         }
 
+    @app.post("/api/v1/settings/schedule")
+    def install_sync_schedule(payload: EmptyRequest) -> dict[str, bool]:
+        del payload
+        schedule_installer(launch_agent, Path(sys.executable), path.parent)
+        return schedule_status_reader(launch_agent)
+
+    @app.delete("/api/v1/settings/schedule", status_code=204)
+    def remove_sync_schedule() -> None:
+        schedule_remover(launch_agent)
+
+    @app.get("/api/v1/settings/readiness")
+    def readiness(database: Database) -> dict[str, object]:
+        return readiness_report(
+            database,
+            path.parent,
+            google_secrets_factory(),
+            filevault_checker=filevault_checker,
+            scheduler=schedule_status_reader(launch_agent),
+        )
+
     @app.get("/api/v1/providers")
-    def providers() -> list[dict[str, str | bool]]:
+    def providers(database: Database) -> list[dict[str, str | bool]]:
+        environment = _plaid_environment(database)
+        configured = database.execute(
+            "SELECT 1 FROM app_metadata WHERE key = ?",
+            (f"plaid.{environment}.secret_ref",),
+        ).fetchone() is not None
         return [
             {"id": "synthetic", "name": "Synthetic", "enabled": True},
-            {"id": "plaid_sandbox", "name": "Plaid Sandbox", "enabled": False},
+            {"id": "plaid", "name": "Plaid", "enabled": configured, "environment": environment},
         ]
 
     @app.get("/api/v1/connections")
@@ -286,9 +380,72 @@ def create_app(
         return [
             dict(row)
             for row in database.execute(
-                "SELECT id, provider, status, last_success_at, last_error_code, updated_at FROM provider_connections ORDER BY created_at, id"
+                """
+                SELECT pc.id, pc.provider, pc.environment, pc.status, i.name institution_name,
+                       pc.last_success_at, pc.last_error_code, pc.updated_at
+                FROM provider_connections pc
+                LEFT JOIN institutions i ON i.id = pc.institution_id
+                ORDER BY pc.created_at, pc.id
+                """
             )
         ]
+
+    @app.post("/api/v1/connections/plaid/sessions")
+    def create_plaid_session(payload: EmptyRequest, database: Database) -> dict[str, str]:
+        del payload
+        try:
+            adapter = plaid_adapter(database)
+            if adapter.environment == "production":
+                existing = database.execute(
+                    "SELECT 1 FROM provider_connections WHERE provider = 'plaid' AND environment = 'production' LIMIT 1"
+                ).fetchone()
+                if existing is None:
+                    if not filevault_checker():
+                        raise HTTPException(
+                            status_code=409,
+                            detail="FileVault must be enabled before a live bank connection",
+                        )
+                    with ProcessLock(path.parent / "fintracka.lock"):
+                        backup_database(path, path.parent / "backups")
+            session = adapter.create_link_session()
+        except (PlaidNotConfigured, SecretStoreUnavailable) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {
+            "link_token": session.link_token,
+            "expires_at": session.expiration,
+            "environment": session.environment,
+        }
+
+    @app.post("/api/v1/connections/plaid/complete", status_code=201)
+    def complete_plaid(payload: PlaidCompleteRequest, database: Database) -> dict[str, str]:
+        try:
+            return complete_plaid_connection(database, plaid_adapter(database), payload.public_token)
+        except (PlaidNotConfigured, SecretStoreUnavailable) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post("/api/v1/connections/{connection_id}/repair")
+    def repair_plaid(connection_id: str, payload: EmptyRequest, database: Database) -> dict[str, str]:
+        del payload
+        try:
+            session = repair_plaid_connection(database, plaid_adapter(database), connection_id)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (PlaidNotConfigured, SecretStoreUnavailable) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {
+            "link_token": session.link_token,
+            "expires_at": session.expiration,
+            "environment": session.environment,
+        }
+
+    @app.delete("/api/v1/connections/{connection_id}", status_code=204)
+    def disconnect_plaid(connection_id: str, database: Database) -> None:
+        try:
+            revoke_plaid_connection(database, plaid_adapter(database), connection_id)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (PlaidNotConfigured, SecretStoreUnavailable) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
     @app.get("/api/v1/accounts")
     def accounts(database: Database) -> list[dict[str, object]]:
@@ -636,6 +793,24 @@ def create_app(
     def sync_runs(database: Database) -> list[dict[str, object]]:
         return [dict(row) for row in database.execute("SELECT * FROM sync_runs ORDER BY started_at DESC, id DESC LIMIT 100")]
 
+    @app.post("/api/v1/sync-runs", status_code=202)
+    def start_sync(payload: EmptyRequest) -> dict[str, str]:
+        del payload
+
+        def work(connection: sqlite3.Connection) -> None:
+            with ProcessLock(path.parent / "fintracka.lock"):
+                sync_plaid_connections(connection, plaid_adapter(connection))
+
+        try:
+            check = connect(path)
+            try:
+                plaid_adapter(check)
+            finally:
+                check.close()
+        except (PlaidNotConfigured, SecretStoreUnavailable) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"job_id": jobs.submit("plaid_sync", work)}
+
     @app.get("/api/v1/sync-runs/{run_id}")
     def sync_run(run_id: str, database: Database) -> dict[str, object]:
         row = database.execute("SELECT * FROM sync_runs WHERE id = ?", (run_id,)).fetchone()
@@ -702,19 +877,58 @@ def create_app(
     @app.post("/api/v1/exports", status_code=202)
     def start_export(payload: ExportRequest) -> dict[str, str]:
         destination = path.parent / "exports" / "FinTracka.xlsx"
+
         def work(connection: sqlite3.Connection) -> None:
             with ProcessLock(path.parent / "fintracka.lock"):
-                export_excel(connection, destination)
+                if payload.target == "excel":
+                    export_excel(connection, destination)
+                else:
+                    secrets_store = google_secrets_factory()
+                    gateway = (
+                        google_export_gateway_factory(connection, secrets_store)
+                        if google_export_gateway_factory
+                        else build_google_gateway(connection, secrets_store)
+                    )
+                    export_google(connection, gateway)
 
-        job_id = jobs.submit("excel_export", work)
+        if payload.target == "google_sheets":
+            status_connection = connect(path)
+            try:
+                status = google_status(status_connection)
+            finally:
+                status_connection.close()
+            if not status["authorized"]:
+                raise HTTPException(status_code=409, detail="Google Sheets is not authorized")
+        job_id = jobs.submit(f"{payload.target}_export", work)
         return {"job_id": job_id}
+
+    @app.post("/api/v1/exports/google/authorize", status_code=202)
+    def start_google_authorization(payload: EmptyRequest) -> dict[str, str]:
+        del payload
+
+        def work(connection: sqlite3.Connection) -> None:
+            with ProcessLock(path.parent / "fintracka.lock"):
+                authorize_google(
+                    connection,
+                    google_secrets_factory(),
+                    oauth_authorizer=google_authorizer,
+                    gateway_factory=google_authorization_gateway_factory,
+                )
+
+        check = connect(path)
+        try:
+            if not google_status(check)["configured"]:
+                raise HTTPException(status_code=409, detail="Google desktop OAuth is not configured")
+        finally:
+            check.close()
+        return {"job_id": jobs.submit("google_authorize", work)}
 
     @app.get("/api/v1/exports")
     def export_jobs(database: Database) -> list[dict[str, object]]:
         return [
             dict(row)
             for row in database.execute(
-                "SELECT * FROM jobs WHERE kind = 'excel_export' ORDER BY created_at DESC, id DESC LIMIT 100"
+                "SELECT * FROM jobs WHERE kind IN ('excel_export', 'google_sheets_export', 'google_authorize') ORDER BY created_at DESC, id DESC LIMIT 100"
             )
         ]
 
@@ -743,7 +957,7 @@ def create_app(
 
         @app.get("/{full_path:path}", include_in_schema=False)
         def frontend_route(full_path: str):  # type: ignore[no-untyped-def]
-            if full_path.startswith("api/"):
+            if full_path.startswith("api/") or full_path in {"openapi.json", "docs", "redoc"}:
                 raise HTTPException(status_code=404, detail="not found")
             candidate = (frontend / full_path).resolve()
             if candidate.is_file() and frontend.resolve() in candidate.parents:
@@ -781,12 +995,62 @@ def _write_transaction(connection: sqlite3.Connection) -> Iterator[None]:
         raise
 
 
-def _secured(response: Response) -> Response:
-    response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+def _secured(response: Response, nonce: str, plaid_environment: str) -> Response:
+    plaid_api = "production" if plaid_environment == "production" else "sandbox"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        f"script-src 'self' 'nonce-{nonce}' https://cdn.plaid.com/link/v2/stable/link-initialize.js; "
+        f"style-src 'self' 'nonce-{nonce}'; style-src-attr 'unsafe-inline'; "
+        "frame-src https://cdn.plaid.com/; "
+        f"connect-src 'self' https://{plaid_api}.plaid.com/; "
+        "frame-ancestors 'none'; form-action 'self'; base-uri 'none'; object-src 'none'"
+    )
     response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Permissions-Policy"] = (
+        "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+    )
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+def _plaid_environment(connection: sqlite3.Connection) -> str:
+    row = connection.execute(
+        "SELECT value FROM app_metadata WHERE key = 'plaid.environment'"
+    ).fetchone()
+    return row[0] if row is not None and row[0] in {"sandbox", "production"} else "sandbox"
+
+
+def _catch_up_due(
+    connection: sqlite3.Connection,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    active = connection.execute(
+        "SELECT MAX(last_success_at) FROM provider_connections WHERE provider = 'plaid' AND status = 'active'"
+    ).fetchone()
+    if active is None:
+        return False
+    has_connection = connection.execute(
+        "SELECT 1 FROM provider_connections WHERE provider = 'plaid' AND status = 'active' LIMIT 1"
+    ).fetchone()
+    if has_connection is None:
+        return False
+    running = connection.execute(
+        "SELECT 1 FROM jobs WHERE kind = 'plaid_sync' AND status IN ('queued', 'running') LIMIT 1"
+    ).fetchone()
+    if running is not None:
+        return False
+    latest = active[0]
+    if latest is None:
+        return True
+    try:
+        observed = datetime.fromisoformat(str(latest).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    current = now or datetime.now(timezone.utc)
+    return current - observed > timedelta(hours=24)
 
 
 def _encode_cursor(local_date: str, transaction_id: str) -> str:

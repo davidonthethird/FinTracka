@@ -2,19 +2,19 @@
 
 ## Current evidence and design status
 
-The synthetic-data release is implemented and verified as of 2026-10-12. This document now distinguishes implemented controls from live-rollout gates. No production provider or Google credential has been used.
+The live-testing implementation is complete as of 2026-10-12. Automated tests remain synthetic; production credentials stay in macOS Keychain and a real institution is connected only through the interactive Plaid Link flow. See `FinTracka-threat-model.md` for the repository-grounded abuse-path review.
 
 Implemented evidence:
 
-- `security.LocalSessions` exchanges a one-use fragment token for an in-memory session; `api.local_security` enforces Host, Origin, CSRF, and session checks and adds CSP, no-sniff, no-referrer, and no-store headers.
+- `security.LocalSessions` exchanges a one-use fragment token for an in-memory session; `api.local_security` enforces Host, Origin, CSRF, and session checks and adds environment-specific CSP, frame denial, Permissions-Policy, no-sniff, no-referrer, and no-store headers. Interactive API documentation is disabled.
 - `db.connect` enables foreign keys, WAL, a five-second busy timeout, request-safe FastAPI thread handoff, and owner-only `0600` database/WAL permissions. Migrations contain the ledger checks and uniqueness constraints.
 - `sync.apply_batch` commits provider facts, aliases, audit versions, tombstones, rules, and the checkpoint in one `BEGIN IMMEDIATE` transaction.
 - `keychain.KeychainSecrets` and `connection_secret_refs` keep provider token values outside SQLite. Plaid tests verify that completion responses do not expose access tokens.
-- `exports.export_excel` validates a temporary workbook before atomic replacement, applies formula-injection escaping, and sets `0600`. Google export remains behind a fake-tested narrow gateway.
+- `exports.export_excel` validates a temporary workbook before atomic replacement, applies formula-injection escaping, and sets `0600`. Google uses official clients, desktop authorization, the narrow `drive.file` scope, and Keychain-held refresh credentials.
 - `backups.backup_database` uses SQLite online backup, `integrity_check`, atomic replacement, `0600`, and retention. API exports and backups use fixed application-owned directories rather than caller-supplied paths.
 - Optimistic version checks, mutations, and audit rows share one `BEGIN IMMEDIATE` transaction; a concurrent-request regression proves that only one writer can consume an expected version.
 - The React client does not store ledger data or secrets in browser storage; only the theme preference is persistent. The session cookie is HttpOnly and SameSite-Strict.
-- Python, TypeScript, browser, dependency, and real-Uvicorn checks are collected by `scripts/verify.sh` and the test suites; release review also runs a tracked-file secret-pattern scan.
+- Python 3.14, TypeScript, browser, dependency, and real-Uvicorn checks are collected by `scripts/verify.sh`. `scripts/scan_local_secrets.py` compares Keychain-held values without printing them against the worktree, local data files, and Git history.
 
 ## Assets
 
@@ -50,7 +50,7 @@ Abuse path: a provider repeats, mutates, or interrupts pages while advancing its
 
 ### High: laptop or backup disclosure
 
-FileVault is a live-data prerequisite. Application data and backups use mode `0600`; directories use `0700`. Off-device copies use encrypted Time Machine or encrypted APFS. No custom cryptography is introduced.
+FileVault is a live-data prerequisite. Application data and backups use mode `0600`; directories use `0700`. A verified local backup is created before the first Production Link session and 30 daily copies are retained. During testing, the missing off-device backup is a prominent non-blocking warning and an explicitly accepted hardware-loss risk. No custom cryptography is introduced.
 
 ### Medium: CSV/provider content injection
 
@@ -76,14 +76,10 @@ Use SQLite online backup, `integrity_check`, file/directory fsync, and atomic re
 
 Malware executing as the logged-in macOS user can potentially read displayed data or request Keychain access. A localhost-only design reduces network exposure but cannot secure a compromised host.
 
-## Live-data gate and open security work
+## Live-testing gate
 
-Synthetic and Plaid Sandbox use are permitted. Real financial data remains blocked until all of the following are independently verified:
+The Settings readiness panel enforces Python 3.14, FileVault, a readable Keychain, Plaid Production credentials, and a verified local backup. Google authorization, launchd scheduling, last-sync recency, and off-device backup are reported separately as advisory state.
 
-- Install a security-current Python 3.14.x, rebuild `.venv`, reinstall locked dependencies, and rerun `scripts/verify.sh`.
-- Confirm FileVault is enabled and the selected off-device Time Machine/APFS destination is encrypted.
-- Run a provider-coverage and current-pricing review, obtain explicit live-rollout approval, connect one institution, and reconcile it to a statement for at least seven days.
-- Configure production provider and Google credentials only through Keychain. The current application does not expose live Link or Google OAuth controls.
-- Run a dependency-vulnerability review for the exact release lockfiles and inspect any newly introduced runtime scripts.
+The approved rollout is one institution first, account/balance comparison, an exact statement reconciliation, and seven days of observation before another institution is added. Full verification, dependency audits, and the local secret scan run before a public push. Credentialed Plaid and Google smoke tests run only on this Mac and never in GitHub Actions.
 
-Remaining medium risks are deliberate release boundaries: localhost HTTP has no TLS because it is loopback-only; Google sharing is outside FinTracka's control after export; the Google production gateway and launch-agent installer are not enabled; and account/transaction deletion is intentionally absent so disconnect cannot erase audit history.
+Remaining deliberate boundaries: localhost HTTP has no TLS because it is loopback-only; Google sharing is outside FinTracka's control after export; an off-device backup is not yet configured; Plaid's required hosted Link script is trusted through a narrow CSP allowlist rather than a fixed SRI hash; and disconnect cannot erase audit history.

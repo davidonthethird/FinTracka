@@ -24,7 +24,7 @@ def backup_database(source_path: str | Path, backup_directory: str | Path, *, ke
         finally:
             target.close()
             source.close()
-        _verify(temporary)
+        verify_backup(temporary)
         temporary.chmod(0o600)
         os.replace(temporary, destination)
         _sync_file(destination)
@@ -54,7 +54,7 @@ def restore_database(source_backup: str | Path, target_path: str | Path, *, veri
     if target_path.exists():
         raise FileExistsError("restore target already exists")
     if verify:
-        _verify(source_backup)
+        verify_backup(Path(source_backup))
     target_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor, temporary_name = tempfile.mkstemp(prefix=".fintracka-restore-", dir=target_path.parent)
     os.close(descriptor)
@@ -68,7 +68,7 @@ def restore_database(source_backup: str | Path, target_path: str | Path, *, veri
             target.close()
             source.close()
         if verify:
-            _verify(temporary)
+            verify_backup(temporary)
         temporary.chmod(0o600)
         os.replace(temporary, target_path)
         _sync_file(target_path)
@@ -79,8 +79,8 @@ def restore_database(source_backup: str | Path, target_path: str | Path, *, veri
     return target_path
 
 
-def _verify(path: Path) -> None:
-    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+def verify_backup(path: Path) -> None:
+    connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro&immutable=1", uri=True)
     try:
         result = connection.execute("PRAGMA integrity_check").fetchone()[0]
     finally:
