@@ -73,9 +73,12 @@ def test_migrations_are_idempotent_and_install_core_constraints(tmp_path: Path) 
             "audit_events",
             "schema_migrations",
         } <= tables
-        assert connection.execute(
-            "SELECT COUNT(*) FROM schema_migrations"
-        ).fetchone()[0] == 2
+        assert [
+            row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
+        ] == [1, 2, 3]
+        assert "environment" in {
+            row[1] for row in connection.execute("PRAGMA table_info(provider_connections)")
+        }
 
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
