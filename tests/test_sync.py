@@ -34,6 +34,18 @@ def test_three_bank_fixture_has_checking_savings_and_multiple_cards(
     assert types.count("credit_card") >= 2
 
 
+def test_demo_fixture_includes_categorized_budget_data(ledger: sqlite3.Connection) -> None:
+    connection_id = create_synthetic_ledger(ledger, count=1, demo=True)[0]
+    apply_batch(ledger, connection_id, synthetic_batches([connection_id])[connection_id])
+
+    assert ledger.execute("SELECT COUNT(*) FROM categories").fetchone()[0] >= 4
+    assert ledger.execute("SELECT COUNT(*) FROM categorization_rules").fetchone()[0] >= 2
+    assert ledger.execute("SELECT COUNT(*) FROM tracking_budget_targets").fetchone()[0] >= 3
+    assert ledger.execute(
+        "SELECT COUNT(*) FROM transactions WHERE category_source = 'rule'"
+    ).fetchone()[0] == 2
+
+
 def test_repeat_modify_and_remove_are_idempotent(ledger: sqlite3.Connection) -> None:
     connection_id = create_synthetic_ledger(ledger)[0]
     initial = synthetic_batches([connection_id])[connection_id]

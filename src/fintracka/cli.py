@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
         with ProcessLock(lock_path):
             connection = connect(database_path)
             migrate(connection)
-            connection_ids = create_synthetic_ledger(connection)
+            connection_ids = create_synthetic_ledger(connection, demo=True)
             for connection_id, batch in synthetic_batches(connection_ids).items():
                 apply_batch(connection, connection_id, batch)
             connection.close()
@@ -89,4 +89,3 @@ def _default_data_directory() -> Path:
 
 if __name__ == "__main__":
     sys.exit(main())
-

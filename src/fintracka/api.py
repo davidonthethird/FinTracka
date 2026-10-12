@@ -8,14 +8,24 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from fintracka.budgets import envelope_budget, tracking_budget, tracking_year
 from fintracka.db import connect, migrate
 from fintracka.ids import new_id
 from fintracka.jobs import JobRunner, recover_interrupted_jobs
-from fintracka.ledger import update_transaction
+from fintracka.ledger import (
+    IntegrityError,
+    apply_rules,
+    confirm_transfer,
+    create_rule,
+    preview_rules,
+    set_splits,
+    transfer_candidates,
+    update_transaction,
+)
 from fintracka.reports import cash_flow, overview, spending_by_category
 from fintracka.security import LocalSessions, host_allowed, origin_allowed
 
@@ -63,10 +73,38 @@ class TransactionPage(StrictModel):
     next_cursor: str | None
 
 
+class RuleCreate(StrictModel):
+    name: str = Field(min_length=1, max_length=120)
+    priority: int
+    conditions: dict[str, str | int | bool]
+    category_id: str
+
+
+class EmptyRequest(StrictModel):
+    pass
+
+
+class SplitItem(StrictModel):
+    amount_minor: int
+    category_id: str | None = None
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class SplitRequest(StrictModel):
+    expected_updated_at: str
+    splits: list[SplitItem] = Field(min_length=2, max_length=50)
+
+
+class TransferConfirmRequest(StrictModel):
+    transaction_a: str
+    transaction_b: str
+
+
 def create_app(
     database_path: str | Path,
     *,
     bootstrap_token: str | None = None,
+    static_directory: str | Path | None = None,
 ) -> FastAPI:
     path = Path(database_path)
     initial = connect(path)
@@ -246,6 +284,42 @@ def create_app(
         row = _transaction(database, transaction_id)
         return TransactionResponse(**{**dict(row), "pending": bool(row["pending"])})
 
+    @app.post("/api/v1/transactions/{transaction_id}/split", response_model=TransactionResponse)
+    def split_transaction(transaction_id: str, payload: SplitRequest, database: Database) -> TransactionResponse:
+        current = database.execute(
+            "SELECT updated_at FROM transactions WHERE id = ?", (transaction_id,)
+        ).fetchone()
+        if current is None:
+            raise HTTPException(status_code=404, detail="transaction not found")
+        if current["updated_at"] != payload.expected_updated_at:
+            raise HTTPException(status_code=409, detail="transaction changed; refresh and retry")
+        try:
+            set_splits(
+                database,
+                transaction_id,
+                [(item.amount_minor, item.category_id, item.notes) for item in payload.splits],
+            )
+        except IntegrityError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        row = _transaction(database, transaction_id)
+        return TransactionResponse(**{**dict(row), "pending": bool(row["pending"])})
+
+    @app.get("/api/v1/transfers/candidates")
+    def transfer_candidate_route(database: Database) -> list[dict[str, object]]:
+        return [asdict(candidate) for candidate in transfer_candidates(database)]
+
+    @app.post("/api/v1/transfers/{candidate_id}/confirm", status_code=201)
+    def transfer_confirm_route(
+        candidate_id: str,
+        payload: TransferConfirmRequest,
+        database: Database,
+    ) -> dict[str, str]:
+        del candidate_id
+        try:
+            return {"id": confirm_transfer(database, payload.transaction_a, payload.transaction_b)}
+        except IntegrityError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
     @app.get("/api/v1/categories")
     def categories(database: Database) -> list[dict[str, object]]:
         return [dict(row) for row in database.execute("SELECT * FROM categories ORDER BY sort_order, name")]
@@ -266,6 +340,44 @@ def create_app(
             (new_id(), category_id, now),
         )
         return dict(database.execute("SELECT * FROM categories WHERE id = ?", (category_id,)).fetchone())
+
+    @app.get("/api/v1/rules")
+    def rules(database: Database) -> list[dict[str, object]]:
+        return [
+            dict(row)
+            for row in database.execute(
+                "SELECT r.id, r.name, r.priority, r.enabled, r.conditions_json, r.category_id, c.name category, r.updated_at FROM categorization_rules r JOIN categories c ON c.id = r.category_id ORDER BY r.priority, r.id"
+            )
+        ]
+
+    @app.post("/api/v1/rules", status_code=201)
+    def create_rule_route(payload: RuleCreate, database: Database) -> dict[str, object]:
+        try:
+            rule_id = create_rule(
+                database,
+                payload.name,
+                payload.priority,
+                payload.conditions,
+                payload.category_id,
+            )
+        except (IntegrityError, sqlite3.IntegrityError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return dict(
+            database.execute(
+                "SELECT id, name, priority, enabled, conditions_json, category_id, updated_at FROM categorization_rules WHERE id = ?",
+                (rule_id,),
+            ).fetchone()
+        )
+
+    @app.post("/api/v1/rules/preview")
+    def preview_rules_route(payload: EmptyRequest, database: Database) -> list[dict[str, str | int]]:
+        del payload
+        return preview_rules(database)
+
+    @app.post("/api/v1/rules/reprocess")
+    def reprocess_rules_route(payload: EmptyRequest, database: Database) -> dict[str, int]:
+        del payload
+        return {"applied_count": apply_rules(database, reprocess=True)}
 
     @app.get("/api/v1/overview")
     def overview_route(database: Database, month: str) -> dict[str, int]:
@@ -290,6 +402,21 @@ def create_app(
     @app.get("/api/v1/budgets/envelope/{month}")
     def envelope_route(month: str, database: Database) -> dict[str, object]:
         return asdict(envelope_budget(database, month))
+
+    frontend = Path(static_directory) if static_directory else Path(__file__).parents[2] / "frontend" / "dist"
+    if (frontend / "index.html").is_file():
+        assets = frontend / "assets"
+        if assets.is_dir():
+            app.mount("/assets", StaticFiles(directory=assets), name="frontend-assets")
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        def frontend_route(full_path: str):  # type: ignore[no-untyped-def]
+            if full_path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="not found")
+            candidate = (frontend / full_path).resolve()
+            if candidate.is_file() and frontend.resolve() in candidate.parents:
+                return FileResponse(candidate)
+            return FileResponse(frontend / "index.html")
 
     return app
 

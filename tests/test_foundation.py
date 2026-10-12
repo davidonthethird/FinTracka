@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 import uuid
 from datetime import date
 from pathlib import Path
@@ -84,3 +85,10 @@ def test_migrations_are_idempotent_and_install_core_constraints(tmp_path: Path) 
             )
     finally:
         connection.close()
+
+def test_request_connection_can_cross_fastapi_worker_threads(tmp_path) -> None:
+    connection = connect(tmp_path / "ledger.sqlite3")
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        result = executor.submit(lambda: connection.execute("SELECT 1").fetchone()[0]).result()
+    connection.close()
+    assert result == 1

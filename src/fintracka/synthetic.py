@@ -7,7 +7,12 @@ from fintracka.ids import new_id
 from fintracka.providers import NormalizedAccount, NormalizedBalance, NormalizedTransaction, SyncBatch
 
 
-def create_synthetic_ledger(connection: sqlite3.Connection, count: int = 3) -> list[str]:
+def create_synthetic_ledger(
+    connection: sqlite3.Connection,
+    count: int = 3,
+    *,
+    demo: bool = False,
+) -> list[str]:
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     connection_ids: list[str] = []
     for index in range(1, count + 1):
@@ -31,6 +36,8 @@ def create_synthetic_ledger(connection: sqlite3.Connection, count: int = 3) -> l
         ).fetchone()[0]
         connection_ids.append(actual_connection)
         _seed_account(connection, actual_connection, f"checking-{index}", "Checking", "checking", "asset", now)
+    if demo:
+        _seed_demo_categories(connection, now)
     return connection_ids
 
 
@@ -92,4 +99,49 @@ def _seed_account(
     connection.execute(
         "INSERT OR IGNORE INTO accounts (id, connection_id, provider_account_id, name, type, subtype, nature, currency, created_at, updated_at) VALUES (?, ?, ?, ?, 'depository', ?, ?, 'USD', ?, ?)",
         (new_id(), connection_id, external_id, name, subtype, nature, now, now),
+    )
+
+
+def _seed_demo_categories(connection: sqlite3.Connection, now: str) -> None:
+    group_id = new_id()
+    connection.execute(
+        "INSERT INTO category_groups (id, name, sort_order, created_at, updated_at) VALUES (?, 'Everyday', 10, ?, ?)",
+        (group_id, now, now),
+    )
+    definitions = [
+        ("Salary", "income", "income", 10),
+        ("Groceries", "expense", "ordinary", 20),
+        ("Housing", "expense", "ordinary", 30),
+        ("Transport", "expense", "ordinary", 40),
+        ("Fun", "expense", "ordinary", 50),
+    ]
+    categories: dict[str, str] = {}
+    for name, category_type, behavior, order in definitions:
+        category_id = new_id()
+        categories[name] = category_id
+        connection.execute(
+            "INSERT INTO categories (id, group_id, name, category_type, reporting_behavior, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (category_id, group_id, name, category_type, behavior, order, now, now),
+        )
+    rules = [
+        ("Payroll", 10, '{"description_contains":"PAYROLL"}', categories["Salary"]),
+        ("Market", 20, '{"description_contains":"MARKET"}', categories["Groceries"]),
+    ]
+    for name, priority, conditions, category_id in rules:
+        connection.execute(
+            "INSERT INTO categorization_rules (id, name, priority, conditions_json, category_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (new_id(), name, priority, conditions, category_id, now, now),
+        )
+    targets = {"Groceries": 60_000, "Housing": 150_000, "Transport": 25_000, "Fun": 30_000}
+    for name, amount in targets.items():
+        connection.execute(
+            "INSERT INTO tracking_budget_targets (category_id, month, amount_minor, currency) VALUES (?, '2026-10', ?, 'USD')",
+            (categories[name], amount),
+        )
+        connection.execute(
+            "INSERT INTO envelope_allocations (category_id, month, amount_minor, currency) VALUES (?, '2026-10', ?, 'USD')",
+            (categories[name], amount),
+        )
+    connection.execute(
+        "INSERT INTO envelope_month_settings (month, starting_pool_minor, currency) VALUES ('2026-10', 300000, 'USD')"
     )

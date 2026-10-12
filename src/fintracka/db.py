@@ -6,7 +6,10 @@ from pathlib import Path
 
 
 def connect(path: str | Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(path, timeout=5, isolation_level=None)
+    # FastAPI may create a sync dependency and run its endpoint in different
+    # worker threads. Each request still owns its connection; this only permits
+    # that request-scoped handoff.
+    connection = sqlite3.connect(path, timeout=5, isolation_level=None, check_same_thread=False)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA journal_mode = WAL")
@@ -43,4 +46,3 @@ def migrate(connection: sqlite3.Connection) -> None:
             + f"\nINSERT INTO schema_migrations VALUES ({version}, '{name}', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));\n"
             + "COMMIT;"
         )
-

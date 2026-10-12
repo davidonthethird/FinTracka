@@ -93,6 +93,57 @@ def test_running_jobs_are_marked_interrupted_on_startup(tmp_path: Path) -> None:
     connection.close()
 
 
+def test_production_frontend_and_router_fallback_are_served(tmp_path: Path) -> None:
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    (frontend / "index.html").write_text("<title>FinTracka</title>", encoding="utf-8")
+    app = create_app(
+        tmp_path / "ledger.sqlite3",
+        bootstrap_token="bootstrap",
+        static_directory=frontend,
+    )
+    with TestClient(app) as client:
+        assert "<title>FinTracka</title>" in client.get("/").text
+        assert "<title>FinTracka</title>" in client.get("/transactions").text
+        assert client.get("/api/v1/missing").status_code == 401
+
+
+def test_rule_split_and_transfer_workflow_routes(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    apply_batch(connection, connection_id, synthetic_batches([connection_id])[connection_id])
+    transaction = connection.execute(
+        "SELECT id, updated_at, amount_minor FROM transactions WHERE amount_minor < 0 LIMIT 1"
+    ).fetchone()
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+        category = client.post("/api/v1/categories", json=_category_payload(), headers=headers).json()
+        rule = client.post(
+            "/api/v1/rules",
+            json={"name": "Markets", "priority": 10, "conditions": {"description_contains": "MARKET"}, "category_id": category["id"]},
+            headers=headers,
+        )
+        assert rule.status_code == 201
+        assert client.post("/api/v1/rules/preview", json={}, headers=headers).json()[0]["match_count"] == 1
+        assert client.post(
+            f"/api/v1/transactions/{transaction['id']}/split",
+            json={
+                "expected_updated_at": transaction["updated_at"],
+                "splits": [
+                    {"amount_minor": -4000, "category_id": category["id"], "notes": "Food"},
+                    {"amount_minor": transaction["amount_minor"] + 4000, "category_id": category["id"], "notes": "Other"},
+                ],
+            },
+            headers=headers,
+        ).status_code == 200
+
+
 def _category_payload(name: str = "Groceries") -> dict[str, str | int]:
     return {
         "name": name,

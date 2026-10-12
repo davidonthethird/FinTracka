@@ -148,6 +148,34 @@ def apply_rules(connection: sqlite3.Connection, *, reprocess: bool = False) -> i
     return applied
 
 
+def preview_rules(connection: sqlite3.Connection) -> list[dict[str, str | int]]:
+    rules = connection.execute(
+        "SELECT id, name, priority, conditions_json FROM categorization_rules WHERE enabled = 1 ORDER BY priority, id"
+    ).fetchall()
+    transactions = connection.execute(
+        "SELECT * FROM transactions WHERE tombstoned = 0 AND category_source IS NOT 'manual' ORDER BY local_date, id"
+    ).fetchall()
+    claimed: set[str] = set()
+    preview: list[dict[str, str | int]] = []
+    for rule in rules:
+        matches = [
+            transaction["id"]
+            for transaction in transactions
+            if transaction["id"] not in claimed
+            and _matches(transaction, json.loads(rule["conditions_json"]))
+        ]
+        claimed.update(matches)
+        preview.append(
+            {
+                "rule_id": rule["id"],
+                "name": rule["name"],
+                "priority": rule["priority"],
+                "match_count": len(matches),
+            }
+        )
+    return preview
+
+
 def transfer_candidates(connection: sqlite3.Connection) -> list[TransferCandidate]:
     rows = connection.execute(
         """
@@ -277,4 +305,3 @@ def _audit(
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-

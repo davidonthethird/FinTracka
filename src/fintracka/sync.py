@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from fintracka.dates import local_date, utc_instant
 from fintracka.ids import new_id
+from fintracka.ledger import apply_rules
 from fintracka.providers import NormalizedAccount, NormalizedBalance, NormalizedTransaction, SyncBatch
 
 
@@ -45,6 +46,7 @@ def apply_batch(
             _upsert_transaction(connection, provider, connection_id, transaction, now)
         for external_id in batch.removed:
             _remove_transaction(connection, provider, connection_id, external_id, now)
+        apply_rules(connection)
         connection.execute(
             """
             INSERT INTO provider_checkpoints (connection_id, cursor, updated_at)
@@ -272,4 +274,3 @@ def _audit(
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
