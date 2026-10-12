@@ -6,7 +6,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
@@ -50,6 +50,7 @@ from fintracka.ledger import (
     update_transaction,
 )
 from fintracka.reports import cash_flow, overview, spending_by_category
+from fintracka.readiness import filevault_enabled, readiness_report
 from fintracka.security import LocalSessions, host_allowed, origin_allowed
 from fintracka.plaid_adapter import PlaidAdapter
 from fintracka.plaid_service import (
@@ -221,6 +222,7 @@ def create_app(
     schedule_installer: Callable[[Path, Path, Path], Any] = install_schedule,
     schedule_remover: Callable[[Path], Any] = remove_schedule,
     schedule_status_reader: Callable[[Path], dict[str, bool]] = schedule_status,
+    filevault_checker: Callable[[], bool] = filevault_enabled,
 ) -> FastAPI:
     path = Path(database_path)
     initial = connect(path)
@@ -234,10 +236,34 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):  # type: ignore[no-untyped-def]
-        yield
-        jobs.close()
+        startup = connect(path)
+        try:
+            if _catch_up_due(startup):
+                try:
+                    plaid_adapter(startup)
+                except (PlaidNotConfigured, SecretStoreUnavailable):
+                    pass
+                else:
+                    def catch_up(connection: sqlite3.Connection) -> None:
+                        with ProcessLock(path.parent / "fintracka.lock"):
+                            sync_plaid_connections(connection, plaid_adapter(connection))
 
-    app = FastAPI(title="FinTracka", version="1.0.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+                    jobs.submit("plaid_sync", catch_up)
+        finally:
+            startup.close()
+        try:
+            yield
+        finally:
+            jobs.close()
+
+    app = FastAPI(
+        title="FinTracka",
+        version="1.0.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
     app.state.database_path = path
     app.state.sessions = sessions
     app.state.jobs = jobs
@@ -327,6 +353,16 @@ def create_app(
     def remove_sync_schedule() -> None:
         schedule_remover(launch_agent)
 
+    @app.get("/api/v1/settings/readiness")
+    def readiness(database: Database) -> dict[str, object]:
+        return readiness_report(
+            database,
+            path.parent,
+            google_secrets_factory(),
+            filevault_checker=filevault_checker,
+            scheduler=schedule_status_reader(launch_agent),
+        )
+
     @app.get("/api/v1/providers")
     def providers(database: Database) -> list[dict[str, str | bool]]:
         environment = _plaid_environment(database)
@@ -358,7 +394,20 @@ def create_app(
     def create_plaid_session(payload: EmptyRequest, database: Database) -> dict[str, str]:
         del payload
         try:
-            session = plaid_adapter(database).create_link_session()
+            adapter = plaid_adapter(database)
+            if adapter.environment == "production":
+                existing = database.execute(
+                    "SELECT 1 FROM provider_connections WHERE provider = 'plaid' AND environment = 'production' LIMIT 1"
+                ).fetchone()
+                if existing is None:
+                    if not filevault_checker():
+                        raise HTTPException(
+                            status_code=409,
+                            detail="FileVault must be enabled before a live bank connection",
+                        )
+                    with ProcessLock(path.parent / "fintracka.lock"):
+                        backup_database(path, path.parent / "backups")
+            session = adapter.create_link_session()
         except (PlaidNotConfigured, SecretStoreUnavailable) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         return {
@@ -908,7 +957,7 @@ def create_app(
 
         @app.get("/{full_path:path}", include_in_schema=False)
         def frontend_route(full_path: str):  # type: ignore[no-untyped-def]
-            if full_path.startswith("api/"):
+            if full_path.startswith("api/") or full_path in {"openapi.json", "docs", "redoc"}:
                 raise HTTPException(status_code=404, detail="not found")
             candidate = (frontend / full_path).resolve()
             if candidate.is_file() and frontend.resolve() in candidate.parents:
@@ -954,9 +1003,13 @@ def _secured(response: Response, nonce: str, plaid_environment: str) -> Response
         f"style-src 'self' 'nonce-{nonce}'; style-src-attr 'unsafe-inline'; "
         "frame-src https://cdn.plaid.com/; "
         f"connect-src 'self' https://{plaid_api}.plaid.com/; "
-        "frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+        "frame-ancestors 'none'; form-action 'self'; base-uri 'none'; object-src 'none'"
     )
     response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Permissions-Policy"] = (
+        "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+    )
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -967,6 +1020,37 @@ def _plaid_environment(connection: sqlite3.Connection) -> str:
         "SELECT value FROM app_metadata WHERE key = 'plaid.environment'"
     ).fetchone()
     return row[0] if row is not None and row[0] in {"sandbox", "production"} else "sandbox"
+
+
+def _catch_up_due(
+    connection: sqlite3.Connection,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    active = connection.execute(
+        "SELECT MAX(last_success_at) FROM provider_connections WHERE provider = 'plaid' AND status = 'active'"
+    ).fetchone()
+    if active is None:
+        return False
+    has_connection = connection.execute(
+        "SELECT 1 FROM provider_connections WHERE provider = 'plaid' AND status = 'active' LIMIT 1"
+    ).fetchone()
+    if has_connection is None:
+        return False
+    running = connection.execute(
+        "SELECT 1 FROM jobs WHERE kind = 'plaid_sync' AND status IN ('queued', 'running') LIMIT 1"
+    ).fetchone()
+    if running is not None:
+        return False
+    latest = active[0]
+    if latest is None:
+        return True
+    try:
+        observed = datetime.fromisoformat(str(latest).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    current = now or datetime.now(timezone.utc)
+    return current - observed > timedelta(hours=24)
 
 
 def _encode_cursor(local_date: str, transaction_id: str) -> str:

@@ -31,7 +31,13 @@ def main(argv: list[str] | None = None) -> int:
 
         bootstrap = secrets.token_urlsafe(32)
         print(f"Open http://127.0.0.1:{args.port}/#bootstrap={bootstrap}")
-        uvicorn.run(create_app(database_path, bootstrap_token=bootstrap), host="127.0.0.1", port=args.port)
+        static_dir = Path(__file__).parent.parent.parent / "frontend" / "dist"
+        app = create_app(
+            database_path,
+            bootstrap_token=bootstrap,
+            static_directory=static_dir if static_dir.is_dir() else None,
+        )
+        uvicorn.run(app, host="127.0.0.1", port=args.port)
         return 0
     if args.command == "init-synthetic":
         with ProcessLock(lock_path):

@@ -19,6 +19,7 @@ from fintracka.jobs import recover_interrupted_jobs
 from fintracka.google_sheets import configure_google
 from fintracka.keychain import KeychainSecrets
 from fintracka.plaid_adapter import ConnectedItem, InstitutionInfo, LinkSession
+from fintracka.plaid_service import complete_plaid_connection
 from fintracka.providers import NormalizedAccount, NormalizedBalance, NormalizedTransaction, SyncBatch
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
 from fintracka.sync import apply_batch
@@ -138,7 +139,12 @@ def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_pa
     )
     connection.close()
     adapter = FakePlaidAdapter()
-    app = create_app(path, bootstrap_token="bootstrap", plaid_adapter_factory=lambda _: adapter)
+    app = create_app(
+        path,
+        bootstrap_token="bootstrap",
+        plaid_adapter_factory=lambda _: adapter,
+        filevault_checker=lambda: True,
+    )
 
     with TestClient(app) as client:
         health = client.get("/api/v1/health")
@@ -148,6 +154,10 @@ def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_pa
         assert "connect-src 'self' https://production.plaid.com/" in csp
         assert "https://sandbox.plaid.com/" not in csp
         assert "'nonce-" in csp
+        assert "form-action 'self'" in csp
+        assert health.headers["x-frame-options"] == "DENY"
+        assert "payment=()" in health.headers["permissions-policy"]
+        assert client.get("/openapi.json").status_code == 404
 
         client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
         csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
@@ -208,6 +218,52 @@ def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_pa
         assert deleted.status_code == 204
         assert adapter.revoked and adapter.revoked[0].startswith("plaid:production:connection:")
         assert client.get("/api/v1/connections").json()[0]["status"] == "revoked"
+
+
+def test_first_production_link_creates_backup_and_filevault_is_a_hard_gate(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection.execute(
+        "INSERT INTO app_metadata (key, value) VALUES ('plaid.environment', 'production')"
+    )
+    connection.close()
+    adapter = FakePlaidAdapter()
+
+    blocked = create_app(
+        path,
+        bootstrap_token="blocked",
+        plaid_adapter_factory=lambda _: adapter,
+        filevault_checker=lambda: False,
+    )
+    with TestClient(blocked) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "blocked"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        response = client.post(
+            "/api/v1/connections/plaid/sessions",
+            json={},
+            headers={"origin": "http://testserver", "x-csrf-token": csrf},
+        )
+        assert response.status_code == 409
+        assert not list((tmp_path / "backups").glob("*.sqlite3"))
+
+    allowed = create_app(
+        path,
+        bootstrap_token="allowed",
+        plaid_adapter_factory=lambda _: adapter,
+        filevault_checker=lambda: True,
+    )
+    with TestClient(allowed) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "allowed"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        response = client.post(
+            "/api/v1/connections/plaid/sessions",
+            json={},
+            headers={"origin": "http://testserver", "x-csrf-token": csrf},
+        )
+        assert response.status_code == 200
+        backups = list((tmp_path / "backups").glob("fintracka-*.sqlite3"))
+        assert len(backups) == 1 and backups[0].stat().st_mode & 0o777 == 0o600
 
 
 def test_google_authorization_and_export_run_as_persisted_jobs(tmp_path: Path) -> None:
@@ -292,6 +348,42 @@ def test_schedule_is_changed_only_by_explicit_csrf_protected_actions(tmp_path: P
         assert client.get("/api/v1/settings").json()["schedule_installed"] is True
         assert client.delete("/api/v1/settings/schedule", headers=headers).status_code == 204
         assert state == {"installed": False, "loaded": False}
+
+
+def test_startup_queues_only_one_catch_up_sync_for_stale_live_connection(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    adapter = FakePlaidAdapter()
+    complete_plaid_connection(connection, adapter, "public-production")
+    connection.execute(
+        "UPDATE provider_connections SET last_success_at = '2026-10-01T00:00:00Z'"
+    )
+    connection.close()
+
+    app = create_app(path, bootstrap_token="first", plaid_adapter_factory=lambda _: adapter)
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "first"})
+        for _ in range(200):
+            check = connect(path)
+            row = check.execute(
+                "SELECT id, status FROM jobs WHERE kind = 'plaid_sync' ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            check.close()
+            if row is not None and row["status"] not in {"queued", "running"}:
+                break
+            time.sleep(0.01)
+        assert row is not None and row["status"] == "succeeded"
+
+    second = create_app(path, bootstrap_token="second", plaid_adapter_factory=lambda _: adapter)
+    with TestClient(second):
+        pass
+    connection = connect(path)
+    assert connection.execute(
+        "SELECT COUNT(*) FROM jobs WHERE kind = 'plaid_sync'"
+    ).fetchone()[0] == 1
+    assert connection.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
+    connection.close()
 
 
 def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
@@ -488,6 +580,8 @@ def test_management_reports_reconciliation_and_local_operation_jobs(tmp_path: Pa
         assert preview.status_code == 200 and preview.json()["row_count"] == 1
         assert client.post("/api/v1/imports/csv/commit", json=import_payload, headers=headers).status_code == 201
         assert client.post("/api/v1/imports/csv/commit", json=import_payload, headers=headers).status_code == 409
+        oversized = {**import_payload, "content_base64": "A" * 6_700_001}
+        assert client.post("/api/v1/imports/csv/preview", json=oversized, headers=headers).status_code == 422
         assert client.get("/api/v1/reports/budget", params={"month": "2026-10"}).status_code == 200
         assert client.get("/api/v1/reports/balances").json()
 

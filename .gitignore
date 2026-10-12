@@ -16,6 +16,10 @@ playwright-report/
 test-results/
 .DS_Store
 *.log
+*.out
+*client_secret*.json
+*credentials*.json
+service-account*.json
 *.db
 *.db-shm
 *.db-wal
