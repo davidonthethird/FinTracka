@@ -1,4 +1,7 @@
 .venv/
+.env
+.env.*
+!.env.example
 .playwright-cli/
 .worktrees/
 .superpowers/
@@ -10,3 +13,17 @@ __pycache__/
 *.tsbuildinfo
 playwright-report/
 test-results/
+.DS_Store
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.csv
+*.tsv
+*.xls
+*.xlsx
+data/
+backups/
+exports/
