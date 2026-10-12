@@ -24,7 +24,7 @@ class ProviderActionRequired(RuntimeError):
 
 
 class PlaidClient(Protocol):
-    def create_link_token(self, request: dict[str, object]) -> dict[str, str]: ...
+    def create_link_token(self, request: dict[str, object]) -> dict[str, object]: ...
     def exchange_public_token(self, public_token: str) -> dict[str, str]: ...
     def accounts(self, access_token: str) -> dict[str, object]: ...
     def item(self, access_token: str) -> dict[str, object]: ...
@@ -164,7 +164,10 @@ class PlaidAdapter:
                 }
             )
         )
-        return LinkSession(response["link_token"], response["expiration"], self.environment)
+        expiration = response["expiration"]
+        if isinstance(expiration, datetime):
+            expiration = expiration.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        return LinkSession(str(response["link_token"]), str(expiration), self.environment)
 
     def complete_link(self, public_token: str, secret_reference: str) -> ConnectedItem:
         response = self._retry(lambda: self.client.exchange_public_token(public_token))
