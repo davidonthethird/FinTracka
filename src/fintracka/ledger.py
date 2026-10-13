@@ -150,6 +150,8 @@ def categorize_transaction(
     transaction = connection.execute("SELECT * FROM transactions WHERE id = ?", (transaction_id,)).fetchone()
     if transaction is None:
         raise IntegrityError("transaction not found")
+    if transaction["is_cash_withdrawal"]:
+        scope = "one_time"
     if connection.execute("SELECT 1 FROM categories WHERE id = ? AND archived = 0", (category_id,)).fetchone() is None:
         raise IntegrityError("category not found")
 
@@ -282,7 +284,7 @@ def apply_rules(connection: sqlite3.Connection, *, reprocess: bool = False) -> i
     applied = 0
     now = _now()
     for transaction in transactions:
-        if transaction["category_source"] == "manual":
+        if transaction["category_source"] == "manual" or transaction["is_cash_withdrawal"]:
             continue
         if transaction["category_id"] is not None and transaction["category_source"] != "provider" and not reprocess:
             continue
@@ -318,6 +320,7 @@ def preview_rules(connection: sqlite3.Connection) -> list[dict[str, str | int]]:
             transaction["id"]
             for transaction in transactions
             if transaction["id"] not in claimed
+            and not transaction["is_cash_withdrawal"]
             and _matches(transaction, json.loads(rule["conditions_json"]))
         ]
         claimed.update(matches)

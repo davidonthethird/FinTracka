@@ -38,6 +38,7 @@ class NormalizedTransaction:
     provider_category_primary: str | None = None
     provider_category_detailed: str | None = None
     provider_category_confidence: str | None = None
+    is_cash_withdrawal: bool = False
 
 
 @dataclass(frozen=True)

@@ -162,7 +162,7 @@ def _upsert_transaction(
     instant = utc_instant(transaction.occurred_at).isoformat().replace("+00:00", "Z")
     transaction_id = existing[0] if existing else new_id()
     before = connection.execute(
-        "SELECT account_id, local_date, posted_at, amount_minor, currency, provider_description, provider_merchant, pending, tombstoned, provider_category_primary, provider_category_detailed, provider_category_confidence FROM transactions WHERE id = ?",
+        "SELECT account_id, local_date, posted_at, amount_minor, currency, provider_description, provider_merchant, pending, tombstoned, provider_category_primary, provider_category_detailed, provider_category_confidence, is_cash_withdrawal FROM transactions WHERE id = ?",
         (transaction_id,),
     ).fetchone()
     provider_values = (
@@ -178,6 +178,7 @@ def _upsert_transaction(
         transaction.provider_category_primary,
         transaction.provider_category_detailed,
         transaction.provider_category_confidence,
+        int(transaction.is_cash_withdrawal),
     )
     provider_category_id = _provider_category_id(connection, transaction)
     if before is None:
@@ -187,9 +188,9 @@ def _upsert_transaction(
                 id, account_id, local_date, posted_at, amount_minor, currency,
                 provider_description, provider_merchant, pending, tombstoned,
                 provider_category_primary, provider_category_detailed,
-                provider_category_confidence, category_id, category_source,
+                provider_category_confidence, is_cash_withdrawal, category_id, category_source,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 transaction_id,
@@ -210,6 +211,7 @@ def _upsert_transaction(
                 currency = ?, provider_description = ?, provider_merchant = ?,
                 pending = ?, tombstoned = 0, provider_category_primary = ?,
                 provider_category_detailed = ?, provider_category_confidence = ?,
+                is_cash_withdrawal = ?,
                 category_id = CASE WHEN category_source IN ('manual', 'rule') THEN category_id ELSE ? END,
                 category_source = CASE WHEN category_source IN ('manual', 'rule') THEN category_source ELSE ? END,
                 updated_at = ?
@@ -256,7 +258,9 @@ def _provider_category_id(
     detailed = (transaction.provider_category_detailed or "").upper()
     text = f"{primary} {detailed}"
     category_name: str | None = None
-    if "CREDIT_CARD_PAYMENT" in text:
+    if transaction.is_cash_withdrawal:
+        category_name = "Other"
+    elif "CREDIT_CARD_PAYMENT" in text:
         category_name = "Credit card payment"
     elif primary.startswith("TRANSFER") or "TRANSFER_" in text:
         category_name = "Transfer"
@@ -283,7 +287,7 @@ def _provider_category_id(
     elif primary == "ENTERTAINMENT":
         category_name = "Fun"
     elif primary == "GOVERNMENT_AND_NON_PROFIT":
-        category_name = "Giving"
+        category_name = "Tzedaka"
     elif primary == "LOAN_PAYMENTS":
         category_name = "Debt payments"
     elif primary == "OTHER":

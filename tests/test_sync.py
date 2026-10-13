@@ -129,6 +129,29 @@ def test_provider_category_is_mapped_without_overwriting_manual_choice(
     assert tuple(preserved) == ("Fun", "manual", "FOOD_AND_DRINK_RESTAURANT")
 
 
+def test_cash_withdrawal_defaults_to_other_and_giving_maps_to_tzedaka(
+    ledger: sqlite3.Connection,
+) -> None:
+    connection_id = create_synthetic_ledger(ledger)[0]
+    withdrawal = NormalizedTransaction(
+        "atm", "checking-1", "2026-10-10T12:00:00Z", -20_000, "USD", "ATM WITHDRAWAL",
+        is_cash_withdrawal=True,
+    )
+    gift = NormalizedTransaction(
+        "gift", "checking-1", "2026-10-11T12:00:00Z", -1_800, "USD", "HOOD GIVING",
+        provider_category_primary="GOVERNMENT_AND_NON_PROFIT",
+    )
+    apply_batch(ledger, connection_id, SyncBatch(added=(withdrawal, gift), next_checkpoint="cash"))
+
+    rows = {
+        row["provider_description"]: (row["name"], row["is_cash_withdrawal"])
+        for row in ledger.execute(
+            "SELECT t.provider_description, c.name, t.is_cash_withdrawal FROM transactions t LEFT JOIN categories c ON c.id = t.category_id WHERE t.provider_description IN ('ATM WITHDRAWAL', 'HOOD GIVING')"
+        )
+    }
+    assert rows == {"ATM WITHDRAWAL": ("Other", 1), "HOOD GIVING": ("Tzedaka", 0)}
+
+
 def test_pending_to_posted_keeps_one_canonical_row_and_user_fields(
     ledger: sqlite3.Connection,
 ) -> None:

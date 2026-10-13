@@ -11,6 +11,7 @@ from fintracka.imports import DuplicateImportError, commit_csv
 from fintracka.ledger import (
     IntegrityError,
     apply_rules,
+    categorize_transaction,
     confirm_transfer,
     create_rule,
     reconcile,
@@ -52,6 +53,34 @@ def test_rules_are_first_match_and_never_replace_manual_category(
     assert tuple(ledger.execute(
         "SELECT category_id, category_source, notes FROM transactions WHERE id = ?", (transaction_id,)
     ).fetchone()) == (food, "manual", "manual")
+
+
+def test_withdrawal_categorization_is_always_one_time(ledger: sqlite3.Connection) -> None:
+    shopping = _category(ledger, "Shopping")
+    account_id = ledger.execute(
+        "SELECT id FROM accounts WHERE provider_account_id = 'checking-1'"
+    ).fetchone()[0]
+    now = "2026-10-13T00:00:00Z"
+    identifiers = [new_id(), new_id()]
+    ledger.executemany(
+        """
+        INSERT INTO transactions
+        (id, account_id, local_date, amount_minor, currency, provider_description,
+         is_cash_withdrawal, created_at, updated_at)
+        VALUES (?, ?, '2026-10-13', -2000, 'USD', 'ATM WITHDRAWAL', 1, ?, ?)
+        """,
+        [(identifier, account_id, now, now) for identifier in identifiers],
+    )
+
+    result = categorize_transaction(ledger, identifiers[0], shopping, "past_and_future")
+
+    assert result.affected_count == 1
+    assert ledger.execute(
+        "SELECT COUNT(*) FROM categorization_rules WHERE name LIKE 'Learned: %'"
+    ).fetchone()[0] == 0
+    assert ledger.execute(
+        "SELECT category_id FROM transactions WHERE id = ?", (identifiers[1],)
+    ).fetchone()[0] is None
 
 
 def test_splits_must_sum_exactly_and_replace_parent_in_reporting(

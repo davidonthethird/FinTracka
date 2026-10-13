@@ -9,6 +9,7 @@ from fintracka.db import connect, migrate
 from fintracka.ids import new_id
 from fintracka.keychain import KeychainSecrets, store_secret_reference
 from fintracka.plaid_adapter import OfficialPlaidClient, PlaidAdapter, PlaidError, ProviderActionRequired
+from fintracka.plaid_adapter import _transaction as normalize_transaction
 
 
 def test_official_client_uses_certifi_ca_bundle(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -113,6 +114,36 @@ def test_paginated_sync_normalizes_amounts_and_restarts_after_mutation() -> None
     assert batch.added[0].provider_category_detailed == "FOOD_AND_DRINK_GROCERIES"
     assert batch.added[0].provider_category_confidence == "VERY_HIGH"
     assert batch.next_checkpoint == "c2"
+
+
+@pytest.mark.parametrize(
+    ("detailed", "description", "expected"),
+    [
+        ("CASH_WITHDRAWAL", "Bank transaction", True),
+        ("CASH_ADVANCE", "Bank transaction", True),
+        (None, "ATM WITHDRAWAL 1234", True),
+        (None, "CASH & CARRY MARKET", False),
+        (None, "CASHBACK REWARD", False),
+    ],
+)
+def test_plaid_normalization_detects_only_cash_withdrawals(
+    detailed: str | None, description: str, expected: bool
+) -> None:
+    normalized = normalize_transaction(
+        {
+            "transaction_id": "withdrawal",
+            "account_id": "checking-1",
+            "date": "2026-10-13",
+            "amount": "20.00",
+            "name": description,
+            "personal_finance_category": {
+                "primary": "LOAN_PAYMENTS" if detailed else "OTHER",
+                "detailed": detailed,
+                "confidence_level": "HIGH",
+            },
+        }
+    )
+    assert normalized.is_cash_withdrawal is expected
 
 
 def test_transient_failures_retry_but_consent_errors_require_repair() -> None:

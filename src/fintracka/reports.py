@@ -25,6 +25,7 @@ class Overview:
     cash_spending_minor: int
     cash_transfer_minor: int
     opening_cash_minor: int | None
+    off_bank_cash_spending_minor: int
 
 
 @dataclass(frozen=True)
@@ -265,6 +266,7 @@ def overview(connection: sqlite3.Connection, month: str) -> Overview:
     start, end = month_bounds(month)
     cash_transfer = _cash_transfer_activity(connection, start, end)
     opening_cash = _opening_cash_balance(connection, start)
+    off_bank_cash_spending = _off_bank_cash_spending(connection, start, end)
     return Overview(
         cash,
         liabilities,
@@ -272,9 +274,10 @@ def overview(connection: sqlite3.Connection, month: str) -> Overview:
         flow.income_minor,
         flow.spending_minor,
         cash_activity.income_minor,
-        cash_activity.spending_minor,
+        cash_activity.spending_minor - off_bank_cash_spending,
         cash_transfer,
         opening_cash,
+        off_bank_cash_spending,
     )
 
 
@@ -368,6 +371,10 @@ def _opening_cash_balance(connection: sqlite3.Connection, start: str) -> int | N
             SELECT id FROM accounts
             WHERE nature = 'asset' AND include_overview = 1
               AND status = 'active' AND currency = 'USD'
+              AND EXISTS (
+                  SELECT 1 FROM account_balance_snapshots snapshots
+                  WHERE snapshots.account_id = accounts.id
+              )
             ORDER BY id
             """
         )
@@ -396,6 +403,27 @@ def _opening_cash_balance(connection: sqlite3.Connection, start: str) -> int | N
             return None
         total += row["current_minor"]
     return total
+
+
+def _off_bank_cash_spending(connection: sqlite3.Connection, start: str, end: str) -> int:
+    manual_ids = {
+        row["id"]
+        for row in connection.execute(
+            """
+            SELECT t.id FROM transactions t
+            JOIN accounts a ON a.id = t.account_id
+            JOIN provider_connections pc ON pc.id = a.connection_id
+            WHERE pc.provider = 'manual'
+            """
+        )
+    }
+    return sum(
+        -entry.amount_minor
+        for entry in ledger_entries(connection, start, end, account_flag="include_overview")
+        if entry.transaction_id in manual_ids
+        and entry.category_type == "expense"
+        and entry.reporting_behavior != "excluded"
+    )
 
 
 def month_bounds(month: str) -> tuple[str, str]:

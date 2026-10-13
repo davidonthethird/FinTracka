@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -315,23 +316,37 @@ def _transaction(raw: dict[str, object]) -> NormalizedTransaction:
         occurred_at = f"{raw.get('date')}T12:00:00-04:00"
     raw_category = raw.get("personal_finance_category")
     category = raw_category if isinstance(raw_category, dict) else {}
+    description = str(raw.get("name") or "")
+    detailed = str(category["detailed"]) if category.get("detailed") else None
     return NormalizedTransaction(
         external_id=str(raw["transaction_id"]),
         account_external_id=str(raw["account_id"]),
         occurred_at=str(occurred_at),
         amount_minor=-minor_units(str(raw["amount"]), currency),
         currency=currency,
-        description=str(raw.get("name") or ""),
+        description=description,
         merchant=str(raw["merchant_name"]) if raw.get("merchant_name") is not None else None,
         pending=bool(raw.get("pending", False)),
         pending_external_id=str(raw["pending_transaction_id"])
         if raw.get("pending_transaction_id") is not None
         else None,
         provider_category_primary=str(category["primary"]) if category.get("primary") else None,
-        provider_category_detailed=str(category["detailed"]) if category.get("detailed") else None,
+        provider_category_detailed=detailed,
         provider_category_confidence=str(category["confidence_level"])
         if category.get("confidence_level")
         else None,
+        is_cash_withdrawal=_is_cash_withdrawal(detailed, description),
+    )
+
+
+def _is_cash_withdrawal(detailed: str | None, description: str) -> bool:
+    detail = (detailed or "").upper()
+    if "CASH_WITHDRAWAL" in detail or "CASH_ADVANCE" in detail:
+        return True
+    text = " ".join(description.upper().split())
+    return bool(
+        re.search(r"\bATM(?: CASH)? WITHDRAW(?:AL)?\b", text)
+        or re.search(r"^CASH WITHDRAW(?:AL)?\b", text)
     )
 
 

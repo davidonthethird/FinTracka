@@ -16,6 +16,7 @@ from fintracka.budgets import (
 from fintracka.db import connect, migrate
 from fintracka.ids import new_id
 from fintracka.ledger import confirm_transfer, update_transaction
+from fintracka.manual_cash import create_manual_cash
 from fintracka.providers import NormalizedAccount, NormalizedTransaction, SyncBatch
 from fintracka.reports import cash_flow, cash_flow_paths, overview, spending_by_category, spending_by_owner
 from fintracka.sync import apply_batch
@@ -153,6 +154,26 @@ def test_overview_uses_latest_included_usd_balances(ledger: sqlite3.Connection) 
 
     ledger.execute("UPDATE accounts SET include_overview = 0 WHERE subtype = 'savings'")
     assert overview(ledger, "2026-10").cash_minor == 250_000
+
+
+def test_overview_separates_off_bank_manual_cash_from_observed_balances(
+    ledger: sqlite3.Connection,
+) -> None:
+    shopping = _category(ledger, "Shopping", "expense", "ordinary")
+    before = overview(ledger, "2026-10")
+
+    create_manual_cash(ledger, "Cash purchase", 2_500, shopping, "2026-10-13", "Shared")
+    after = overview(ledger, "2026-10")
+
+    assert after.spending_minor == before.spending_minor + 2_500
+    assert after.off_bank_cash_spending_minor == 2_500
+    assert after.cash_spending_minor == before.cash_spending_minor
+    assert (after.cash_minor, after.card_liabilities_minor, after.net_position_minor, after.opening_cash_minor) == (
+        before.cash_minor,
+        before.card_liabilities_minor,
+        before.net_position_minor,
+        before.opening_cash_minor,
+    )
 
 
 def test_overview_separates_cash_activity_and_confirmed_card_payments(
