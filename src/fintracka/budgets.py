@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fintracka.ids import new_id
+from fintracka.planning import planning_snapshot, set_target_override
 from fintracka.reports import ledger_entries, month_bounds
 
 
@@ -41,14 +42,9 @@ def set_tracking_target(
     amount_minor: int,
     currency: str = "USD",
 ) -> None:
-    if amount_minor < 0:
-        raise ValueError("tracking targets cannot be negative")
-    month_bounds(month)
-    connection.execute(
-        "INSERT INTO tracking_budget_targets (category_id, month, amount_minor, currency) VALUES (?, ?, ?, ?) ON CONFLICT(category_id, month) DO UPDATE SET amount_minor = excluded.amount_minor, currency = excluded.currency",
-        (category_id, month, amount_minor, currency),
-    )
-    _audit(connection, "tracking_target_set", category_id)
+    if currency != "USD":
+        raise ValueError("tracking planning supports USD only")
+    set_target_override(connection, category_id, month, amount_minor)
 
 
 def set_envelope_allocation(
@@ -81,40 +77,33 @@ def set_envelope_month(
 
 
 def tracking_budget(connection: sqlite3.Connection, month: str) -> list[TrackingRow]:
-    start, end = month_bounds(month)
-    activity = _expense_activity(connection, start, end)
-    rows = connection.execute(
-        "SELECT t.category_id, c.name category, t.amount_minor FROM tracking_budget_targets t JOIN categories c ON c.id = t.category_id WHERE t.month = ? AND t.currency = 'USD' ORDER BY c.sort_order, c.name",
-        (month,),
-    ).fetchall()
+    snapshot = planning_snapshot(connection, month, 1)
     return [
         TrackingRow(
-            row["category_id"],
-            row["category"],
-            row["amount_minor"],
-            activity.get(row["category_id"], 0),
-            row["amount_minor"] - activity.get(row["category_id"], 0),
+            row.category_id,
+            row.category,
+            row.target_minor,
+            row.actual_minor,
+            row.remaining_minor,
         )
-        for row in rows
+        for row in snapshot.categories
+        if row.target_minor > 0
     ]
 
 
 def tracking_year(connection: sqlite3.Connection, year: int) -> list[TrackingRow]:
-    start, end = f"{year:04d}-01-01", f"{year:04d}-12-31"
-    activity = _expense_activity(connection, start, end)
-    rows = connection.execute(
-        "SELECT t.category_id, c.name category, SUM(t.amount_minor) amount_minor FROM tracking_budget_targets t JOIN categories c ON c.id = t.category_id WHERE t.month LIKE ? AND t.currency = 'USD' GROUP BY t.category_id, c.name ORDER BY c.sort_order, c.name",
-        (f"{year:04d}-%",),
-    ).fetchall()
+    totals: dict[str, tuple[str, int, int]] = {}
+    for number in range(1, 13):
+        for row in planning_snapshot(connection, f"{year:04d}-{number:02d}", 1).categories:
+            if row.target_minor == 0 and row.actual_minor == 0:
+                continue
+            name, target, actual = totals.get(row.category_id, (row.category, 0, 0))
+            totals[row.category_id] = (name, target + row.target_minor, actual + row.actual_minor)
     return [
-        TrackingRow(
-            row["category_id"],
-            row["category"],
-            row["amount_minor"],
-            activity.get(row["category_id"], 0),
-            row["amount_minor"] - activity.get(row["category_id"], 0),
+        TrackingRow(category_id, name, target, actual, target - actual)
+        for category_id, (name, target, actual) in sorted(
+            totals.items(), key=lambda item: (item[1][0], item[0])
         )
-        for row in rows
     ]
 
 

@@ -42,7 +42,8 @@ def test_demo_fixture_includes_categorized_budget_data(ledger: sqlite3.Connectio
 
     assert ledger.execute("SELECT COUNT(*) FROM categories").fetchone()[0] >= 4
     assert ledger.execute("SELECT COUNT(*) FROM categorization_rules").fetchone()[0] >= 2
-    assert ledger.execute("SELECT COUNT(*) FROM tracking_budget_targets").fetchone()[0] >= 3
+    assert ledger.execute("SELECT COUNT(*) FROM planning_target_overrides").fetchone()[0] >= 3
+    assert ledger.execute("SELECT COUNT(*) FROM tracking_budget_targets").fetchone()[0] == 0
     assert ledger.execute(
         "SELECT COUNT(*) FROM transactions WHERE category_source = 'rule'"
     ).fetchone()[0] == 2

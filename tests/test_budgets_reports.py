@@ -108,6 +108,14 @@ def test_tracking_and_envelope_budgets_remain_independent(
     update_transaction(ledger, _transaction_id(ledger, "refund"), category_id=groceries)
 
     set_tracking_target(ledger, groceries, "2026-10", 10_000)
+    assert ledger.execute(
+        "SELECT amount_minor FROM planning_target_overrides WHERE category_id = ? AND month = '2026-10'",
+        (groceries,),
+    ).fetchone()[0] == 10_000
+    assert ledger.execute(
+        "SELECT 1 FROM tracking_budget_targets WHERE category_id = ? AND month = '2026-10'",
+        (groceries,),
+    ).fetchone() is None
     set_envelope_month(ledger, "2026-10", 20_000)
     set_envelope_allocation(ledger, groceries, "2026-10", 9_000)
     tracking = tracking_budget(ledger, "2026-10")

@@ -146,8 +146,8 @@ def _seed_demo_categories(connection: sqlite3.Connection, now: str) -> None:
     targets = {"Groceries": 60_000, "Housing": 150_000, "Transport": 25_000, "Fun": 30_000}
     for name, amount in targets.items():
         connection.execute(
-            "INSERT OR IGNORE INTO tracking_budget_targets (category_id, month, amount_minor, currency) VALUES (?, '2026-10', ?, 'USD')",
-            (categories[name], amount),
+            "INSERT OR IGNORE INTO planning_target_overrides (category_id, month, amount_minor, currency, updated_at) VALUES (?, '2026-10', ?, 'USD', ?)",
+            (categories[name], amount, now),
         )
         connection.execute(
             "INSERT OR IGNORE INTO envelope_allocations (category_id, month, amount_minor, currency) VALUES (?, '2026-10', ?, 'USD')",
