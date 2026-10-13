@@ -8,6 +8,7 @@ import pytest
 from fintracka.db import connect, migrate
 from fintracka.ids import new_id
 from fintracka.providers import NormalizedTransaction, SyncBatch
+from fintracka.reports import spending_by_category
 from fintracka.sync import apply_batch
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
 
@@ -154,14 +155,21 @@ def test_cash_withdrawal_defaults_to_other_and_giving_maps_to_tzedaka(
     provider_loses_detail = NormalizedTransaction(
         "atm", "checking-1", "2026-10-10T12:00:00Z", -20_000, "USD", "ATM 1234",
         is_cash_withdrawal=False,
+        provider_category_primary="TRANSFER_OUT",
     )
     apply_batch(
         ledger, connection_id,
         SyncBatch(modified=(provider_loses_detail,), next_checkpoint="cash-2"),
     )
-    assert ledger.execute(
-        "SELECT is_cash_withdrawal FROM transactions WHERE provider_description = 'ATM 1234'"
-    ).fetchone()[0] == 1
+    persisted = ledger.execute(
+        "SELECT t.is_cash_withdrawal, c.name FROM transactions t "
+        "LEFT JOIN categories c ON c.id = t.category_id "
+        "WHERE t.provider_description = 'ATM 1234'"
+    ).fetchone()
+    assert tuple(persisted) == (1, "Other")
+    assert next(row for row in spending_by_category(ledger, "2026-10") if row["category"] == "Other")[
+        "amount_minor"
+    ] == 20_000
 
 
 def test_pending_to_posted_keeps_one_canonical_row_and_user_fields(

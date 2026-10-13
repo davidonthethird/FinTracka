@@ -181,7 +181,11 @@ def _upsert_transaction(
         transaction.provider_category_confidence,
         withdrawal,
     )
-    provider_category_id = _provider_category_id(connection, transaction)
+    provider_category_id = _provider_category_id(
+        connection,
+        transaction,
+        is_cash_withdrawal=bool(withdrawal),
+    )
     if before is None:
         connection.execute(
             """
@@ -254,12 +258,14 @@ def _upsert_transaction(
 def _provider_category_id(
     connection: sqlite3.Connection,
     transaction: NormalizedTransaction,
+    *,
+    is_cash_withdrawal: bool | None = None,
 ) -> str | None:
     primary = (transaction.provider_category_primary or "").upper()
     detailed = (transaction.provider_category_detailed or "").upper()
     text = f"{primary} {detailed}"
     category_name: str | None = None
-    if transaction.is_cash_withdrawal:
+    if is_cash_withdrawal if is_cash_withdrawal is not None else transaction.is_cash_withdrawal:
         category_name = "Other"
     elif "CREDIT_CARD_PAYMENT" in text:
         category_name = "Credit card payment"
