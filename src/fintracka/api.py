@@ -41,12 +41,14 @@ from fintracka.ledger import (
     ConflictError,
     IntegrityError,
     apply_rules,
+    categorize_transaction,
     confirm_transfer,
     create_rule,
     preview_rules,
     reconcile,
     set_splits,
     transfer_candidates,
+    undo_categorization,
     update_transaction,
 )
 from fintracka.reports import cash_flow, cash_flow_paths, overview, spending_by_category
@@ -118,6 +120,8 @@ class TransactionResponse(StrictModel):
     merchant: str | None
     category_id: str | None
     category: str | None
+    category_source: str | None
+    provider_category_confidence: str | None
     notes: str | None
     pending: bool
     updated_at: str
@@ -128,9 +132,24 @@ class TransactionPage(StrictModel):
     next_cursor: str | None
 
 
+class CategorizeRequest(StrictModel):
+    expected_updated_at: str
+    category_id: str
+    scope: Literal["one_time", "future", "past_and_future"]
+
+
+class CategorizeResponse(StrictModel):
+    transaction: TransactionResponse
+    affected_count: int
+    undo_id: str
+
+
 class RuleConditions(StrictModel):
     description_contains: StrictStr | None = Field(default=None, min_length=1, max_length=300)
+    description_equals: StrictStr | None = Field(default=None, min_length=1, max_length=300)
     merchant_contains: StrictStr | None = Field(default=None, min_length=1, max_length=300)
+    merchant_equals: StrictStr | None = Field(default=None, min_length=1, max_length=300)
+    direction: Literal["inflow", "outflow"] | None = None
     min_amount_minor: StrictInt | None = None
     max_amount_minor: StrictInt | None = None
     account_id: StrictStr | None = Field(default=None, min_length=1, max_length=100)
@@ -525,6 +544,8 @@ def create_app(
             parameters.append(account_id)
         if category_id == "uncategorized":
             clauses.append("t.category_id IS NULL")
+        elif category_id == "review":
+            clauses.append("t.category_source = 'provider' AND COALESCE(t.provider_category_confidence, 'UNKNOWN') NOT IN ('VERY_HIGH', 'HIGH')")
         elif category_id:
             clauses.append("t.category_id = ?")
             parameters.append(category_id)
@@ -534,7 +555,8 @@ def create_app(
             SELECT t.id, t.account_id, t.local_date, t.amount_minor, t.currency,
                    t.provider_description description,
                    COALESCE(t.user_merchant, t.provider_merchant) merchant,
-                   t.category_id, c.name category, t.notes, t.pending, t.updated_at
+                   t.category_id, c.name category, t.category_source,
+                   t.provider_category_confidence, t.notes, t.pending, t.updated_at
             FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
             WHERE {' AND '.join(clauses)}
             ORDER BY t.local_date DESC, t.id DESC LIMIT ?
@@ -565,6 +587,47 @@ def create_app(
             )
         row = _transaction(database, transaction_id)
         return TransactionResponse(**{**dict(row), "pending": bool(row["pending"])})
+
+    @app.post("/api/v1/transactions/{transaction_id}/categorize", response_model=CategorizeResponse)
+    def categorize_transaction_route(
+        transaction_id: str,
+        payload: CategorizeRequest,
+        database: Database,
+    ) -> CategorizeResponse:
+        try:
+            with _write_transaction(database):
+                current = database.execute(
+                    "SELECT updated_at FROM transactions WHERE id = ?", (transaction_id,)
+                ).fetchone()
+                if current is None:
+                    raise HTTPException(status_code=404, detail="transaction not found")
+                if current["updated_at"] != payload.expected_updated_at:
+                    raise HTTPException(status_code=409, detail="transaction changed; refresh and retry")
+                result = categorize_transaction(
+                    database, transaction_id, payload.category_id, payload.scope
+                )
+        except IntegrityError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        row = _transaction(database, transaction_id)
+        return CategorizeResponse(
+            transaction=TransactionResponse(**{**dict(row), "pending": bool(row["pending"])}),
+            affected_count=result.affected_count,
+            undo_id=result.undo_id,
+        )
+
+    @app.post("/api/v1/categorizations/{undo_id}/undo")
+    def undo_categorization_route(
+        undo_id: str,
+        payload: EmptyRequest,
+        database: Database,
+    ) -> dict[str, int]:
+        del payload
+        try:
+            with _write_transaction(database):
+                restored = undo_categorization(database, undo_id)
+        except IntegrityError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"restored_count": restored}
 
     @app.post("/api/v1/transactions/bulk", response_model=list[TransactionResponse])
     def bulk_transactions(payload: BulkTransactionRequest, database: Database) -> list[TransactionResponse]:
@@ -979,7 +1042,8 @@ def _transaction(connection: sqlite3.Connection, transaction_id: str) -> sqlite3
         SELECT t.id, t.account_id, t.local_date, t.amount_minor, t.currency,
                t.provider_description description,
                COALESCE(t.user_merchant, t.provider_merchant) merchant,
-               t.category_id, c.name category, t.notes, t.pending, t.updated_at
+               t.category_id, c.name category, t.category_source,
+               t.provider_category_confidence, t.notes, t.pending, t.updated_at
         FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
         WHERE t.id = ?
         """,

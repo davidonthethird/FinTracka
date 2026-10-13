@@ -39,6 +39,12 @@ class ReconciliationResult:
     difference_minor: int
 
 
+@dataclass(frozen=True)
+class CategorizationResult:
+    affected_count: int
+    undo_id: str
+
+
 _UNSET = object()
 
 
@@ -128,11 +134,124 @@ def create_rule(
     return rule_id
 
 
+def categorize_transaction(
+    connection: sqlite3.Connection,
+    transaction_id: str,
+    category_id: str,
+    scope: str,
+) -> CategorizationResult:
+    if scope not in {"one_time", "future", "past_and_future"}:
+        raise IntegrityError("invalid categorization scope")
+    transaction = connection.execute("SELECT * FROM transactions WHERE id = ?", (transaction_id,)).fetchone()
+    if transaction is None:
+        raise IntegrityError("transaction not found")
+    if connection.execute("SELECT 1 FROM categories WHERE id = ? AND archived = 0", (category_id,)).fetchone() is None:
+        raise IntegrityError("category not found")
+
+    conditions = _learned_conditions(transaction)
+    matching = [transaction]
+    if scope == "past_and_future":
+        matching = [
+            row
+            for row in connection.execute("SELECT * FROM transactions WHERE tombstoned = 0")
+            if row["id"] == transaction_id
+            or (row["category_source"] != "manual" and _matches(row, conditions))
+        ]
+
+    now = _now()
+    undo_id = new_id()
+    rule_id: str | None = None
+    prior_rule_category_id: str | None = None
+    rule_created = 0
+    if scope != "one_time":
+        serialized = json.dumps(conditions, sort_keys=True)
+        rule = connection.execute(
+            "SELECT id, category_id FROM categorization_rules WHERE name LIKE 'Learned: %' AND conditions_json = ?",
+            (serialized,),
+        ).fetchone()
+        if rule:
+            rule_id = rule["id"]
+            prior_rule_category_id = rule["category_id"]
+            connection.execute(
+                "UPDATE categorization_rules SET category_id = ?, enabled = 1, updated_at = ? WHERE id = ?",
+                (category_id, now, rule_id),
+            )
+            _audit(connection, "user", "rule_update", "categorization_rule", rule_id, now)
+        else:
+            priority = connection.execute(
+                "SELECT COALESCE(MIN(priority), 1) - 1 FROM categorization_rules"
+            ).fetchone()[0]
+            label = transaction["user_merchant"] or transaction["provider_merchant"] or transaction["provider_description"]
+            rule_id = create_rule(connection, f"Learned: {label}"[:120], priority, conditions, category_id)
+            rule_created = 1
+
+    connection.execute(
+        "INSERT INTO categorization_undo_batches (id, rule_id, prior_rule_category_id, rule_created, created_at) VALUES (?, ?, ?, ?, ?)",
+        (undo_id, rule_id, prior_rule_category_id, rule_created, now),
+    )
+    connection.executemany(
+        "INSERT INTO categorization_undo_items (batch_id, transaction_id, category_id, category_source) VALUES (?, ?, ?, ?)",
+        [(undo_id, row["id"], row["category_id"], row["category_source"]) for row in matching],
+    )
+    for row in matching:
+        source = "manual" if row["id"] == transaction_id else "rule"
+        connection.execute(
+            "UPDATE transactions SET category_id = ?, category_source = ?, updated_at = ? WHERE id = ?",
+            (category_id, source, now, row["id"]),
+        )
+        if source == "rule" and rule_id:
+            connection.execute(
+                "INSERT INTO rule_applications (id, rule_id, transaction_id, result, applied_at) VALUES (?, ?, ?, 'applied', ?)",
+                (new_id(), rule_id, row["id"], now),
+            )
+        _audit(connection, "user" if source == "manual" else "rule", "category_assign", "transaction", row["id"], now)
+    return CategorizationResult(len(matching), undo_id)
+
+
+def undo_categorization(connection: sqlite3.Connection, undo_id: str) -> int:
+    batch = connection.execute(
+        "SELECT * FROM categorization_undo_batches WHERE id = ?", (undo_id,)
+    ).fetchone()
+    if batch is None or batch["used"]:
+        raise IntegrityError("categorization change cannot be undone")
+    items = connection.execute(
+        "SELECT * FROM categorization_undo_items WHERE batch_id = ?", (undo_id,)
+    ).fetchall()
+    now = _now()
+    for item in items:
+        connection.execute(
+            "UPDATE transactions SET category_id = ?, category_source = ?, updated_at = ? WHERE id = ?",
+            (item["category_id"], item["category_source"], now, item["transaction_id"]),
+        )
+        _audit(connection, "user", "category_undo", "transaction", item["transaction_id"], now)
+    if batch["rule_id"]:
+        if batch["rule_created"]:
+            connection.execute(
+                "UPDATE categorization_rules SET enabled = 0, updated_at = ? WHERE id = ?",
+                (now, batch["rule_id"]),
+            )
+        else:
+            connection.execute(
+                "UPDATE categorization_rules SET category_id = ?, updated_at = ? WHERE id = ?",
+                (batch["prior_rule_category_id"], now, batch["rule_id"]),
+            )
+    connection.execute("UPDATE categorization_undo_batches SET used = 1 WHERE id = ?", (undo_id,))
+    return len(items)
+
+
+def _learned_conditions(transaction: sqlite3.Row) -> dict[str, str]:
+    direction = "inflow" if transaction["amount_minor"] > 0 else "outflow"
+    merchant = transaction["user_merchant"] or transaction["provider_merchant"]
+    if merchant:
+        return {"direction": direction, "merchant_equals": merchant}
+    return {"description_equals": transaction["provider_description"], "direction": direction}
+
+
 def _validate_rule_conditions(conditions: dict[str, Any]) -> None:
-    allowed = {"description_contains", "merchant_contains", "min_amount_minor", "max_amount_minor", "account_id", "pending"}
+    allowed = {"description_contains", "description_equals", "merchant_contains", "merchant_equals", "direction", "min_amount_minor", "max_amount_minor", "account_id", "pending"}
     if not conditions or not set(conditions) <= allowed:
         raise IntegrityError("unsupported or empty rule conditions")
-    for key in ("description_contains", "merchant_contains", "account_id"):
+    for key in ("description_contains", "description_equals", "merchant_contains", "merchant_equals", "account_id"):
         if key in conditions and (not isinstance(conditions[key], str) or not conditions[key].strip()):
             raise IntegrityError(f"{key} must be a non-empty string")
     for key in ("min_amount_minor", "max_amount_minor"):
@@ -140,6 +259,8 @@ def _validate_rule_conditions(conditions: dict[str, Any]) -> None:
             raise IntegrityError(f"{key} must be an integer")
     if "pending" in conditions and not isinstance(conditions["pending"], bool):
         raise IntegrityError("pending must be a boolean")
+    if "direction" in conditions and conditions["direction"] not in {"inflow", "outflow"}:
+        raise IntegrityError("direction must be inflow or outflow")
     minimum = conditions.get("min_amount_minor")
     maximum = conditions.get("max_amount_minor")
     if isinstance(minimum, int) and isinstance(maximum, int) and minimum > maximum:
@@ -158,7 +279,7 @@ def apply_rules(connection: sqlite3.Connection, *, reprocess: bool = False) -> i
     for transaction in transactions:
         if transaction["category_source"] == "manual":
             continue
-        if transaction["category_id"] is not None and not reprocess:
+        if transaction["category_id"] is not None and transaction["category_source"] != "provider" and not reprocess:
             continue
         for rule in rules:
             if not _matches(transaction, json.loads(rule["conditions_json"])):
@@ -317,7 +438,10 @@ def _matches(transaction: sqlite3.Row, conditions: dict[str, Any]) -> bool:
     merchant = (transaction["user_merchant"] or transaction["provider_merchant"] or "").casefold()
     checks = {
         "description_contains": lambda value: str(value).casefold() in description,
+        "description_equals": lambda value: str(value).casefold() == description,
         "merchant_contains": lambda value: str(value).casefold() in merchant,
+        "merchant_equals": lambda value: str(value).casefold() == merchant,
+        "direction": lambda value: (transaction["amount_minor"] > 0) is (value == "inflow"),
         "min_amount_minor": lambda value: transaction["amount_minor"] >= int(value),
         "max_amount_minor": lambda value: transaction["amount_minor"] <= int(value),
         "account_id": lambda value: transaction["account_id"] == value,

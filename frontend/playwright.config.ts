@@ -13,7 +13,7 @@ export default defineConfig({
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: "PYTHONPATH=../src python ../e2e/server.py",
+    command: "PYTHONPATH=../src ../.venv/bin/python ../e2e/server.py",
     url: "http://127.0.0.1:8787/api/v1/health",
     reuseExistingServer: false,
     timeout: 30_000,

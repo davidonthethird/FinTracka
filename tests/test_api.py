@@ -435,6 +435,80 @@ def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
         assert stale.status_code == 409
 
 
+def test_inline_categorization_learns_past_and_future_merchant_matches(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    batch = synthetic_batches([connection_id])[connection_id]
+    first = NormalizedTransaction(
+        "coffee-old", "checking-1", "2026-10-01T12:00:00Z", -500, "USD", "CAFE 01", "Corner Cafe"
+    )
+    second = NormalizedTransaction(
+        "coffee-new", "checking-1", "2026-10-02T12:00:00Z", -650, "USD", "CAFE 02", "Corner Cafe"
+    )
+    apply_batch(connection, connection_id, SyncBatch(accounts=batch.accounts, added=(first, second,), next_checkpoint="p1"))
+    transaction = connection.execute(
+        "SELECT id, updated_at FROM transactions WHERE provider_description = 'CAFE 02'"
+    ).fetchone()
+    dining_id = connection.execute("SELECT id FROM categories WHERE name = 'Dining'").fetchone()[0]
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        response = client.post(
+            f"/api/v1/transactions/{transaction['id']}/categorize",
+            json={
+                "expected_updated_at": transaction["updated_at"],
+                "category_id": dining_id,
+                "scope": "past_and_future",
+            },
+            headers={"origin": "http://testserver", "x-csrf-token": csrf},
+        )
+        assert response.status_code == 200
+        assert response.json()["affected_count"] == 2
+        undo_id = response.json()["undo_id"]
+
+    connection = connect(path)
+    rows = connection.execute(
+        "SELECT provider_description, category_source FROM transactions ORDER BY provider_description"
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [("CAFE 01", "rule"), ("CAFE 02", "manual")]
+    assert connection.execute("SELECT COUNT(*) FROM categorization_rules").fetchone()[0] == 1
+
+    future = NormalizedTransaction(
+        "coffee-future", "checking-1", "2026-10-03T12:00:00Z", -700, "USD", "CAFE 03", "Corner Cafe"
+    )
+    apply_batch(connection, connection_id, SyncBatch(added=(future,), next_checkpoint="p2"))
+    assert connection.execute(
+        "SELECT c.name FROM transactions t JOIN categories c ON c.id = t.category_id "
+        "WHERE t.provider_description = 'CAFE 03'"
+    ).fetchone()[0] == "Dining"
+    connection.close()
+
+    undo_app = create_app(path, bootstrap_token="undo-bootstrap")
+    with TestClient(undo_app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "undo-bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        undone = client.post(
+            f"/api/v1/categorizations/{undo_id}/undo",
+            json={},
+            headers={"origin": "http://testserver", "x-csrf-token": csrf},
+        )
+        assert undone.status_code == 200 and undone.json()["restored_count"] == 2
+
+    connection = connect(path)
+    assert connection.execute(
+        "SELECT COUNT(*) FROM transactions WHERE category_id IS NOT NULL"
+    ).fetchone()[0] == 1
+    assert connection.execute(
+        "SELECT enabled FROM categorization_rules WHERE name LIKE 'Learned: %'"
+    ).fetchone()[0] == 0
+    connection.close()
+
+
 def test_cash_flow_report_includes_clickable_transaction_drilldowns(tmp_path: Path) -> None:
     path = tmp_path / "ledger.sqlite3"
     connection = connect(path)

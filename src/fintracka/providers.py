@@ -35,6 +35,9 @@ class NormalizedTransaction:
     merchant: str | None = None
     pending: bool = False
     pending_external_id: str | None = None
+    provider_category_primary: str | None = None
+    provider_category_detailed: str | None = None
+    provider_category_confidence: str | None = None
 
 
 @dataclass(frozen=True)
@@ -47,4 +50,3 @@ class SyncBatch:
     next_checkpoint: str | None = None
     provider_status: str = "ok"
     raw_response_hashes: tuple[str, ...] = field(default_factory=tuple)
-

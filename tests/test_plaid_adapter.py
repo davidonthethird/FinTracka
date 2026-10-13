@@ -109,6 +109,9 @@ def test_paginated_sync_normalizes_amounts_and_restarts_after_mutation() -> None
     assert [account.external_id for account in batch.accounts] == ["checking-1"]
     assert [transaction.external_id for transaction in batch.added] == ["first", "second"]
     assert [transaction.amount_minor for transaction in batch.added] == [-1234, -1234]
+    assert batch.added[0].provider_category_primary == "FOOD_AND_DRINK"
+    assert batch.added[0].provider_category_detailed == "FOOD_AND_DRINK_GROCERIES"
+    assert batch.added[0].provider_category_confidence == "VERY_HIGH"
     assert batch.next_checkpoint == "c2"
 
 
@@ -236,6 +239,11 @@ def _page(cursor: str, *, has_more: bool, external_id: str = "txn") -> dict[str,
                 "name": "Merchant",
                 "merchant_name": "Merchant",
                 "pending": False,
+                "personal_finance_category": {
+                    "primary": "FOOD_AND_DRINK",
+                    "detailed": "FOOD_AND_DRINK_GROCERIES",
+                    "confidence_level": "VERY_HIGH",
+                },
             }
         ],
         "modified": [],

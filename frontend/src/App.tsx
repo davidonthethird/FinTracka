@@ -10,7 +10,9 @@ import { currentMonth, currencyStep, formatMoney, majorInputToMinor, minorToMajo
 
 type OverviewData = { cash_minor: number; card_liabilities_minor: number; net_position_minor: number; income_minor: number; spending_minor: number; cash_income_minor: number; cash_spending_minor: number; cash_transfer_minor: number; opening_cash_minor: number | null };
 type Account = { id: string; name: string; nickname?: string; nature: string; subtype?: string; currency: string; status: string; balance_minor?: number; include_overview: number; include_budget: number; include_net: number; include_export: number; updated_at: string };
-type Transaction = { id: string; account_id: string; local_date: string; amount_minor: number; currency: string; description: string; merchant?: string; category_id?: string; category?: string; notes?: string; pending: boolean; updated_at: string };
+type Transaction = { id: string; account_id: string; local_date: string; amount_minor: number; currency: string; description: string; merchant?: string; category_id?: string; category?: string; category_source?: string; provider_category_confidence?: string; notes?: string; pending: boolean; updated_at: string };
+type CategorizationScope = "one_time" | "future" | "past_and_future";
+type CategorizeResult = { transaction: Transaction; affected_count: number; undo_id: string };
 type Category = { id: string; name: string; category_type: string; reporting_behavior: string };
 type TrackingRow = { category_id: string; category: string; target_minor: number; actual_minor: number; variance_minor: number };
 type EnvelopeRow = { category_id: string; category: string; allocated_minor: number; activity_minor: number; available_minor: number };
@@ -114,6 +116,8 @@ function TransactionsPage() {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [splitTransaction, setSplitTransaction] = useState<Transaction>();
   const [message, setMessage] = useState("");
+  const [learningScope, setLearningScope] = useState<CategorizationScope>("past_and_future");
+  const [undoId, setUndoId] = useState("");
   const [showAllTransfers, setShowAllTransfers] = useState(false);
   const transactions = useTransactionPages(query, categoryFilter, `${refresh}:${pageRevision}`);
   const categories = useData<Category[]>("/categories", refresh);
@@ -122,15 +126,29 @@ function TransactionsPage() {
     { id: "select", header: "", cell: ({ row }) => <input aria-label={`Select ${row.original.description}`} type="checkbox" checked={Boolean(selected[row.original.id])} onChange={(event) => setSelected({ ...selected, [row.original.id]: event.target.checked })} /> },
     { accessorKey: "local_date", header: "Date" },
     { accessorKey: "merchant", header: "Merchant", cell: ({ row }) => <span><strong>{row.original.merchant || row.original.description}</strong><small>{row.original.description}</small></span> },
-    { accessorKey: "category", header: "Category", cell: ({ getValue }) => getValue<string>() || <span className="muted">Uncategorized</span> },
+    { accessorKey: "category", header: "Category", cell: ({ row }) => <span className="category-cell"><select aria-label={`Category for ${row.original.merchant || row.original.description}`} value={row.original.category_id || ""} onChange={(event) => event.target.value && categorizeOne(row.original, event.target.value)}><option value="" disabled>Uncategorized</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><small>{categorySource(row.original)}</small></span> },
     { accessorKey: "notes", header: "Notes" },
     { accessorKey: "amount_minor", header: "Amount", cell: ({ row }) => <b className={row.original.amount_minor < 0 ? "negative" : "positive"}>{formatMoney(row.original.amount_minor, row.original.currency)}</b> },
-  ], [selected]);
+  ], [selected, categories.data, learningScope]);
   const table = useReactTable({ data: transactions.data?.items || [], columns, getCoreRowModel: getCoreRowModel() });
   async function categorize(categoryId: string) {
     const rows = (transactions.data?.items || []).filter((row) => selected[row.id]);
     await api("/transactions/bulk", { method: "POST", body: JSON.stringify({ items: rows.map((row) => ({ id: row.id, expected_updated_at: row.updated_at, category_id: categoryId })) }) });
     setSelected({}); setRefresh((value) => value + 1);
+  }
+  async function categorizeOne(transaction: Transaction, categoryId: string) {
+    try {
+      const result = await api<CategorizeResult>(`/transactions/${transaction.id}/categorize`, { method: "POST", body: JSON.stringify({ expected_updated_at: transaction.updated_at, category_id: categoryId, scope: learningScope }) });
+      setUndoId(result.undo_id);
+      const scopeMessage = learningScope === "one_time" ? "This choice applies once." : learningScope === "future" ? "Future matches will follow it." : "Past and future matches will follow it.";
+      setMessage(`${result.affected_count} transaction${result.affected_count === 1 ? " was" : "s were"} categorized. ${scopeMessage}`);
+      setRefresh((value) => value + 1);
+    } catch (caught) { setMessage(caught instanceof Error ? caught.message : "Unable to categorize transaction"); }
+  }
+  async function undoLastCategorization() {
+    const result = await api<{ restored_count: number }>(`/categorizations/${undoId}/undo`, { method: "POST", body: "{}" });
+    setMessage(`${result.restored_count} transaction${result.restored_count === 1 ? " was" : "s were"} restored.`);
+    setUndoId(""); setRefresh((value) => value + 1);
   }
   async function confirmTransfer(candidate: TransferCandidate) {
     await api(`/transfers/${candidate.transaction_a}/confirm`, { method: "POST", body: JSON.stringify({ transaction_a: candidate.transaction_a, transaction_b: candidate.transaction_b }) });
@@ -139,8 +157,8 @@ function TransactionsPage() {
   }
   const selectedRows = (transactions.data?.items || []).filter((row) => selected[row.id]);
   return <Page title="Transactions" note="Provider facts stay separate from your edits">
-    <div className="sticky-tools"><form onSubmit={(event) => { event.preventDefault(); transactions.cancelPending(); setQuery(search); setPageRevision((value) => value + 1); }}><input aria-label="Search transactions" placeholder="Search merchant or description" value={search} onChange={(event) => setSearch(event.target.value)} /><button>Search</button></form><select aria-label="Filter by category" value={categoryFilter} onChange={(event) => { transactions.cancelPending(); setSelected({}); setCategoryFilter(event.target.value); }}><option value="">All categories</option><option value="uncategorized">Uncategorized</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><select aria-label="Categorize selected" value="" disabled={!selectedRows.length} onChange={(event) => event.target.value && categorize(event.target.value)}><option value="">Categorize selected…</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><button disabled={selectedRows.length !== 1} onClick={() => setSplitTransaction(selectedRows[0])}>Split</button><span>{selectedRows.length} selected</span></div>
-    {message && <div className="notice success" role="status"><strong>Ledger updated.</strong><span>{message}</span></div>}
+    <div className="sticky-tools"><form onSubmit={(event) => { event.preventDefault(); transactions.cancelPending(); setQuery(search); setPageRevision((value) => value + 1); }}><input aria-label="Search transactions" placeholder="Search merchant or description" value={search} onChange={(event) => setSearch(event.target.value)} /><button>Search</button></form><select aria-label="Filter by category" value={categoryFilter} onChange={(event) => { transactions.cancelPending(); setSelected({}); setCategoryFilter(event.target.value); }}><option value="">All categories</option><option value="review">Review uncertain</option><option value="uncategorized">Uncategorized</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><select aria-label="Correction scope" value={learningScope} onChange={(event) => setLearningScope(event.target.value as CategorizationScope)}><option value="past_and_future">Past + future</option><option value="future">Future matches</option><option value="one_time">This transaction only</option></select><select aria-label="Categorize selected" value="" disabled={!selectedRows.length} onChange={(event) => event.target.value && categorize(event.target.value)}><option value="">Categorize selected…</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><button disabled={selectedRows.length !== 1} onClick={() => setSplitTransaction(selectedRows[0])}>Split</button><span>{selectedRows.length} selected</span></div>
+    {message && <div className="notice success" role="status"><strong>Ledger updated.</strong><span>{message}</span>{undoId && <button className="quiet-button" onClick={undoLastCategorization}>Undo</button>}</div>}
     {transfers.data && transfers.data.length > 0 && <section className={`review-strip ${showAllTransfers ? "expanded" : ""}`}><div><p className="eyebrow">Review</p><strong>{transfers.data.length} possible transfer{transfers.data.length === 1 ? "" : "s"}</strong>{transfers.data.length > 3 && <button className="text-button" onClick={() => setShowAllTransfers(!showAllTransfers)}>{showAllTransfers ? "Show fewer" : "Review all"}</button>}</div>{transfers.data.slice(0, showAllTransfers ? undefined : 3).map((candidate) => <div key={`${candidate.transaction_a}-${candidate.transaction_b}`}><span><strong>{candidate.label_a} ↔ {candidate.label_b}</strong><small>{candidate.date_a}–{candidate.date_b} · {formatMoney(candidate.amount_minor, candidate.currency)} · {candidate.confidence}</small></span><button onClick={() => confirmTransfer(candidate)}>Confirm transfer</button></div>)}</section>}
     {transactions.loading ? <PageState text="Loading register…" /> : transactions.error ? <PageState error text={transactions.error} /> : <div className="table-wrap"><table className="register"><thead>{table.getHeaderGroups().map((group) => <tr key={group.id}>{group.headers.map((header) => <th key={header.id}>{flexRender(header.column.columnDef.header, header.getContext())}</th>)}</tr>)}</thead><tbody>{table.getRowModel().rows.map((row) => <tr key={row.id}>{row.getVisibleCells().map((cell) => <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}</tr>)}</tbody></table>{!table.getRowModel().rows.length && <PageState text="No transactions match these filters." />}{transactions.data?.next_cursor && <div className="load-more"><button disabled={transactions.loadingMore} onClick={transactions.loadMore}>{transactions.loadingMore ? "Loading…" : "Load older transactions"}</button></div>}</div>}
     {splitTransaction && <SplitEditor transaction={splitTransaction} categories={categories.data || []} onClose={() => setSplitTransaction(undefined)} onSaved={() => { setSplitTransaction(undefined); setSelected({}); setRefresh((value) => value + 1); }} />}
@@ -422,6 +440,14 @@ function describeRule(source: string): string {
     const conditions = JSON.parse(source) as Record<string, string | number | boolean>;
     return Object.entries(conditions).map(([key, value]) => `${key.replaceAll("_", " ")} “${String(value)}”`).join(" and ");
   } catch { return "Invalid stored condition"; }
+}
+
+function categorySource(transaction: Transaction): string {
+  if (!transaction.category_id) return "Needs category";
+  if (transaction.category_source === "manual") return "Your choice";
+  if (transaction.category_source === "rule") return "Learned rule";
+  const confidence = transaction.provider_category_confidence?.replaceAll("_", " ").toLowerCase();
+  return confidence ? `Plaid · ${confidence}` : "Plaid suggestion";
 }
 
 type DataResult<T> = { data?: T; loading: boolean; error?: string };

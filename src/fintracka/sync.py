@@ -162,7 +162,7 @@ def _upsert_transaction(
     instant = utc_instant(transaction.occurred_at).isoformat().replace("+00:00", "Z")
     transaction_id = existing[0] if existing else new_id()
     before = connection.execute(
-        "SELECT account_id, local_date, posted_at, amount_minor, currency, provider_description, provider_merchant, pending, tombstoned FROM transactions WHERE id = ?",
+        "SELECT account_id, local_date, posted_at, amount_minor, currency, provider_description, provider_merchant, pending, tombstoned, provider_category_primary, provider_category_detailed, provider_category_confidence FROM transactions WHERE id = ?",
         (transaction_id,),
     ).fetchone()
     provider_values = (
@@ -175,17 +175,31 @@ def _upsert_transaction(
         transaction.merchant,
         int(transaction.pending),
         0,
+        transaction.provider_category_primary,
+        transaction.provider_category_detailed,
+        transaction.provider_category_confidence,
     )
+    provider_category_id = _provider_category_id(connection, transaction)
     if before is None:
         connection.execute(
             """
             INSERT INTO transactions (
                 id, account_id, local_date, posted_at, amount_minor, currency,
                 provider_description, provider_merchant, pending, tombstoned,
+                provider_category_primary, provider_category_detailed,
+                provider_category_confidence, category_id, category_source,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (transaction_id, *provider_values[:-1], now, now),
+            (
+                transaction_id,
+                *provider_values[:8],
+                *provider_values[9:],
+                provider_category_id,
+                "provider" if provider_category_id else None,
+                now,
+                now,
+            ),
         )
         action = "provider_create"
     elif tuple(before) != provider_values:
@@ -194,10 +208,21 @@ def _upsert_transaction(
             UPDATE transactions SET
                 account_id = ?, local_date = ?, posted_at = ?, amount_minor = ?,
                 currency = ?, provider_description = ?, provider_merchant = ?,
-                pending = ?, tombstoned = 0, updated_at = ?
+                pending = ?, tombstoned = 0, provider_category_primary = ?,
+                provider_category_detailed = ?, provider_category_confidence = ?,
+                category_id = CASE WHEN category_source IN ('manual', 'rule') THEN category_id ELSE ? END,
+                category_source = CASE WHEN category_source IN ('manual', 'rule') THEN category_source ELSE ? END,
+                updated_at = ?
             WHERE id = ?
             """,
-            (*provider_values[:-1], now, transaction_id),
+            (
+                *provider_values[:8],
+                *provider_values[9:],
+                provider_category_id,
+                "provider" if provider_category_id else None,
+                now,
+                transaction_id,
+            ),
         )
         action = "provider_update"
     else:
@@ -221,6 +246,54 @@ def _upsert_transaction(
     )
     if action:
         _audit(connection, action, "transaction", transaction_id, now)
+
+
+def _provider_category_id(
+    connection: sqlite3.Connection,
+    transaction: NormalizedTransaction,
+) -> str | None:
+    primary = (transaction.provider_category_primary or "").upper()
+    detailed = (transaction.provider_category_detailed or "").upper()
+    text = f"{primary} {detailed}"
+    category_name: str | None = None
+    if "CREDIT_CARD_PAYMENT" in text:
+        category_name = "Credit card payment"
+    elif primary.startswith("TRANSFER") or "TRANSFER_" in text:
+        category_name = "Transfer"
+    elif primary == "INCOME" or primary.startswith("INCOME_"):
+        category_name = "Salary" if any(word in detailed for word in ("WAGE", "PAYROLL")) else "Other income"
+    elif "TAX" in detailed:
+        category_name = "Taxes"
+    elif "BANK_FEES" in text or "INTEREST_CHARGED" in text:
+        category_name = "Fees & interest"
+    elif "GROCER" in detailed:
+        category_name = "Groceries"
+    elif primary == "FOOD_AND_DRINK" or "RESTAURANT" in detailed or "COFFEE" in detailed:
+        category_name = "Dining"
+    elif primary == "RENT_AND_UTILITIES":
+        category_name = "Housing" if any(word in detailed for word in ("RENT", "MORTGAGE")) else "Utilities"
+    elif primary in {"TRANSPORTATION", "TRANSPORT"}:
+        category_name = "Transport"
+    elif primary in {"MEDICAL", "HEALTHCARE"}:
+        category_name = "Healthcare"
+    elif "INSURANCE" in text:
+        category_name = "Insurance"
+    elif primary == "TRAVEL":
+        category_name = "Travel"
+    elif primary == "ENTERTAINMENT":
+        category_name = "Fun"
+    elif primary == "GOVERNMENT_AND_NON_PROFIT":
+        category_name = "Giving"
+    elif primary == "LOAN_PAYMENTS":
+        category_name = "Debt payments"
+    elif primary == "OTHER":
+        category_name = "Other"
+    elif primary in {"GENERAL_MERCHANDISE", "PERSONAL_CARE", "HOME_IMPROVEMENT", "GENERAL_SERVICES"}:
+        category_name = "Shopping"
+    if category_name is None:
+        return None
+    row = connection.execute("SELECT id FROM categories WHERE name = ? AND archived = 0", (category_name,)).fetchone()
+    return row[0] if row else None
 
 
 def _remove_transaction(

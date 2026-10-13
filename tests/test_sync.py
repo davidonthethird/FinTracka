@@ -88,6 +88,44 @@ def test_repeat_modify_and_remove_are_idempotent(ledger: sqlite3.Connection) -> 
     ).fetchone()[0] == 1
 
 
+def test_provider_category_is_mapped_without_overwriting_manual_choice(
+    ledger: sqlite3.Connection,
+) -> None:
+    connection_id = create_synthetic_ledger(ledger)[0]
+    transaction = NormalizedTransaction(
+        external_id="groceries",
+        account_external_id="checking-1",
+        occurred_at="2026-10-10T12:00:00Z",
+        amount_minor=-4_200,
+        currency="USD",
+        description="MARKET",
+        merchant="Corner Market",
+        provider_category_primary="FOOD_AND_DRINK",
+        provider_category_detailed="FOOD_AND_DRINK_GROCERIES",
+        provider_category_confidence="VERY_HIGH",
+    )
+    apply_batch(ledger, connection_id, SyncBatch(added=(transaction,), next_checkpoint="p1"))
+    row = ledger.execute(
+        "SELECT t.id, c.name, t.category_source, t.provider_category_confidence "
+        "FROM transactions t JOIN categories c ON c.id = t.category_id"
+    ).fetchone()
+    assert tuple(row)[1:] == ("Groceries", "provider", "VERY_HIGH")
+
+    fun_id = ledger.execute("SELECT id FROM categories WHERE name = 'Fun'").fetchone()[0]
+    ledger.execute(
+        "UPDATE transactions SET category_id = ?, category_source = 'manual' WHERE id = ?",
+        (fun_id, row["id"]),
+    )
+    changed = NormalizedTransaction(**{**transaction.__dict__, "provider_category_detailed": "FOOD_AND_DRINK_RESTAURANT"})
+    apply_batch(ledger, connection_id, SyncBatch(modified=(changed,), next_checkpoint="p2"))
+    preserved = ledger.execute(
+        "SELECT c.name, t.category_source, t.provider_category_detailed "
+        "FROM transactions t JOIN categories c ON c.id = t.category_id WHERE t.id = ?",
+        (row["id"],),
+    ).fetchone()
+    assert tuple(preserved) == ("Fun", "manual", "FOOD_AND_DRINK_RESTAURANT")
+
+
 def test_pending_to_posted_keeps_one_canonical_row_and_user_fields(
     ledger: sqlite3.Connection,
 ) -> None:

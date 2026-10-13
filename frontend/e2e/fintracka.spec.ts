@@ -37,6 +37,11 @@ test("synthetic finance workflow", async ({ page }) => {
   await page.locator("tbody input[type=checkbox]").nth(1).check();
   await page.getByLabel("Categorize selected").selectOption({ label: "Fun" });
   await expect(page.getByRole("cell", { name: "Fun" })).toHaveCount(2);
+  await page.getByLabel("Correction scope").selectOption("one_time");
+  await page.locator(".category-cell select").first().selectOption({ label: "Dining" });
+  await expect(page.getByRole("status")).toContainText("This choice applies once");
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(page.getByRole("status")).toContainText("restored");
   await page.getByLabel("Filter by category").selectOption({ label: "Fun" });
   await expect(page.locator("tbody tr")).toHaveCount(2);
   await page.getByLabel("Filter by category").selectOption("");

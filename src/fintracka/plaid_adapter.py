@@ -313,6 +313,8 @@ def _transaction(raw: dict[str, object]) -> NormalizedTransaction:
     occurred_at = raw.get("datetime") or raw.get("authorized_datetime")
     if occurred_at is None:
         occurred_at = f"{raw.get('date')}T12:00:00-04:00"
+    raw_category = raw.get("personal_finance_category")
+    category = raw_category if isinstance(raw_category, dict) else {}
     return NormalizedTransaction(
         external_id=str(raw["transaction_id"]),
         account_external_id=str(raw["account_id"]),
@@ -324,6 +326,11 @@ def _transaction(raw: dict[str, object]) -> NormalizedTransaction:
         pending=bool(raw.get("pending", False)),
         pending_external_id=str(raw["pending_transaction_id"])
         if raw.get("pending_transaction_id") is not None
+        else None,
+        provider_category_primary=str(category["primary"]) if category.get("primary") else None,
+        provider_category_detailed=str(category["detailed"]) if category.get("detailed") else None,
+        provider_category_confidence=str(category["confidence_level"])
+        if category.get("confidence_level")
         else None,
     )
 
