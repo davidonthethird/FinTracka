@@ -7,11 +7,13 @@ import type { SankeyLinkProps, SankeyNodeProps } from "recharts";
 
 import { api } from "./api";
 import { currentMonth, currencyStep, formatMoney, majorInputToMinor, minorToMajorInput, movementWidths, totalsByCurrency } from "./format";
+import { PlanningPage } from "./planning/PlanningPage";
+import { ManualCashDialog } from "./transactions/ManualCashDialog";
 
-type OverviewData = { cash_minor: number; card_liabilities_minor: number; net_position_minor: number; income_minor: number; spending_minor: number; cash_income_minor: number; cash_spending_minor: number; cash_transfer_minor: number; opening_cash_minor: number | null };
+type OverviewData = { cash_minor: number; card_liabilities_minor: number; net_position_minor: number; income_minor: number; spending_minor: number; cash_income_minor: number; cash_spending_minor: number; cash_transfer_minor: number; off_bank_cash_spending_minor: number; opening_cash_minor: number | null };
 type SpendingOwner = "David" | "Ariela" | "Shared";
 type Account = { id: string; name: string; nickname?: string; nature: string; subtype?: string; currency: string; status: string; balance_minor?: number; include_overview: number; include_budget: number; include_net: number; include_export: number; spending_owner: SpendingOwner; updated_at: string };
-type Transaction = { id: string; account_id: string; local_date: string; amount_minor: number; currency: string; description: string; merchant?: string; category_id?: string; category?: string; category_source?: string; provider_category_confidence?: string; spending_owner?: SpendingOwner; spending_owner_effective?: SpendingOwner; notes?: string; pending: boolean; updated_at: string };
+type Transaction = { id: string; account_id: string; local_date: string; amount_minor: number; currency: string; description: string; merchant?: string; category_id?: string; category?: string; category_source?: string; provider_category_confidence?: string; spending_owner?: SpendingOwner; spending_owner_effective?: SpendingOwner; notes?: string; pending: boolean; manual_cash: boolean; is_cash_withdrawal: boolean; updated_at: string };
 type CategorizationScope = "one_time" | "future" | "past_and_future";
 type CategorizeResult = { transaction: Transaction; affected_count: number; undo_id: string };
 type Category = { id: string; name: string; category_type: string; reporting_behavior: string };
@@ -35,7 +37,7 @@ type OwnerSpending = { owner: SpendingOwner; amount_minor: number };
 
 const nav = [
   ["/", "Overview"], ["/accounts", "Accounts"], ["/transactions", "Transactions"],
-  ["/tracking-budget", "Tracking budget"], ["/envelope-budget", "Envelope budget"],
+  ["/planning", "Planning"], ["/envelope-budget", "Envelope budget"],
   ["/reports", "Reports"], ["/rules", "Rules"], ["/connections", "Connections"], ["/settings", "Settings"],
 ];
 
@@ -55,7 +57,8 @@ export function App() {
         <Route path="/" element={<OverviewPage />} />
         <Route path="/accounts" element={<AccountsPage />} />
         <Route path="/transactions" element={<TransactionsPage />} />
-        <Route path="/tracking-budget" element={<TrackingBudgetPage />} />
+        <Route path="/planning" element={<PlanningPage />} />
+        <Route path="/tracking-budget" element={<PlanningPage />} />
         <Route path="/envelope-budget" element={<EnvelopeBudgetPage />} />
         <Route path="/reports" element={<ReportsPage />} />
         <Route path="/rules" element={<RulesPage />} />
@@ -90,6 +93,7 @@ function OverviewPage() {
       <Metric label="Net position" value={formatMoney(data.net_position_minor)} />
       <Metric label="Month net" value={formatMoney(data.income_minor - data.spending_minor)} tone={data.income_minor >= data.spending_minor ? "teal" : "red"} />
     </section>
+    {data.off_bank_cash_spending_minor > 0 && <div className="notice"><strong>Cash spending entered manually</strong><span>{formatMoney(data.off_bank_cash_spending_minor)} is included in spending but not in observed bank-balance movement.</span></div>}
     <section className="instrument-panel cash-panel">
       <div className="section-heading"><div><p className="eyebrow">Cash movement</p><h2>Observed opening and cash-account activity</h2></div><span>{opening === null ? "Opening balance history unavailable" : "Opening balance observed"}</span></div>
       <div className="cash-strip">{["Opening cash", "Cash income", "Cash spending", "Transfers", "Latest cash"].map((label, index) => <div className={`cash-segment segment-${index}`} style={{ flexGrow: widths[index] }} key={label}><span>{label}</span><strong>{index === 0 && opening === null ? "Unavailable" : formatMoney(movement[index])}</strong></div>)}</div>
@@ -122,6 +126,7 @@ function TransactionsPage() {
   const [learningScope, setLearningScope] = useState<CategorizationScope>("past_and_future");
   const [undoId, setUndoId] = useState("");
   const [showAllTransfers, setShowAllTransfers] = useState(false);
+  const [cashDialog, setCashDialog] = useState<Transaction | "new">();
   const transactions = useTransactionPages(query, categoryFilter, ownerFilter, `${refresh}:${pageRevision}`);
   const categories = useData<Category[]>("/categories", refresh);
   const transfers = useData<TransferCandidate[]>("/transfers/candidates", refresh);
@@ -129,10 +134,11 @@ function TransactionsPage() {
     { id: "select", header: "", cell: ({ row }) => <input aria-label={`Select ${row.original.description}`} type="checkbox" checked={Boolean(selected[row.original.id])} onChange={(event) => setSelected({ ...selected, [row.original.id]: event.target.checked })} /> },
     { accessorKey: "local_date", header: "Date" },
     { accessorKey: "merchant", header: "Merchant", cell: ({ row }) => <span><strong>{row.original.merchant || row.original.description}</strong><small>{row.original.description}</small></span> },
-    { accessorKey: "category", header: "Category", cell: ({ row }) => <span className="category-cell"><select aria-label={`Category for ${row.original.merchant || row.original.description}`} value={row.original.category_id || ""} onChange={(event) => event.target.value && categorizeOne(row.original, event.target.value)}><option value="" disabled>Uncategorized</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><small>{categorySource(row.original)}</small></span> },
+    { accessorKey: "category", header: "Category", cell: ({ row }) => <span className="category-cell"><select aria-label={`Category for ${row.original.merchant || row.original.description}`} value={row.original.category_id || ""} onChange={(event) => event.target.value && categorizeOne(row.original, event.target.value)}><option value="" disabled>Uncategorized</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><small>{row.original.is_cash_withdrawal ? "Withdrawal · changes apply once" : categorySource(row.original)}</small></span> },
     { id: "spending_owner", header: "Spent by", cell: ({ row }) => row.original.spending_owner_effective ? <span className="owner-cell"><select aria-label={`Spent by for ${row.original.merchant || row.original.description}`} value={row.original.spending_owner || ""} onChange={(event) => changeSpendingOwner(row.original, event.target.value || null)}><option value="">Account default</option><option value="David">David</option><option value="Ariela">Ariela</option><option value="Shared">Shared</option></select><small>{row.original.spending_owner ? "Override" : row.original.spending_owner_effective}</small></span> : <span className="muted">—</span> },
     { accessorKey: "notes", header: "Notes" },
     { accessorKey: "amount_minor", header: "Amount", cell: ({ row }) => <b className={row.original.amount_minor < 0 ? "negative" : "positive"}>{formatMoney(row.original.amount_minor, row.original.currency)}</b> },
+    { id: "actions", header: "", cell: ({ row }) => row.original.manual_cash ? <span className="row-actions"><button className="text-button" onClick={() => setCashDialog(row.original)}>Edit</button><button className="text-button destructive" onClick={() => deleteCash(row.original)}>Delete</button></span> : null },
   ], [selected, categories.data, learningScope]);
   const table = useReactTable({ data: transactions.data?.items || [], columns, getCoreRowModel: getCoreRowModel() });
   async function categorize(categoryId: string) {
@@ -142,9 +148,10 @@ function TransactionsPage() {
   }
   async function categorizeOne(transaction: Transaction, categoryId: string) {
     try {
-      const result = await api<CategorizeResult>(`/transactions/${transaction.id}/categorize`, { method: "POST", body: JSON.stringify({ expected_updated_at: transaction.updated_at, category_id: categoryId, scope: learningScope }) });
+      const appliedScope = transaction.is_cash_withdrawal ? "one_time" : learningScope;
+      const result = await api<CategorizeResult>(`/transactions/${transaction.id}/categorize`, { method: "POST", body: JSON.stringify({ expected_updated_at: transaction.updated_at, category_id: categoryId, scope: appliedScope }) });
       setUndoId(result.undo_id);
-      const scopeMessage = learningScope === "one_time" ? "This choice applies once." : learningScope === "future" ? "Future matches will follow it." : "Past and future matches will follow it.";
+      const scopeMessage = appliedScope === "one_time" ? "This choice applies once." : appliedScope === "future" ? "Future matches will follow it." : "Past and future matches will follow it.";
       setMessage(`${result.affected_count} transaction${result.affected_count === 1 ? " was" : "s were"} categorized. ${scopeMessage}`);
       setRefresh((value) => value + 1);
     } catch (caught) { setMessage(caught instanceof Error ? caught.message : "Unable to categorize transaction"); }
@@ -164,13 +171,19 @@ function TransactionsPage() {
     setMessage("Transfer confirmed. Both sides are excluded from income and spending.");
     setRefresh((value) => value + 1);
   }
+  async function deleteCash(transaction: Transaction) {
+    if (!window.confirm(`Delete ${transaction.description}? The audit history will be retained.`)) return;
+    await api(`/transactions/${transaction.id}?expected_updated_at=${encodeURIComponent(transaction.updated_at)}`, { method: "DELETE" });
+    setMessage("Manual cash spending deleted."); setRefresh((value) => value + 1);
+  }
   const selectedRows = (transactions.data?.items || []).filter((row) => selected[row.id]);
   return <Page title="Transactions" note="Provider facts stay separate from your edits">
-    <div className="sticky-tools"><form onSubmit={(event) => { event.preventDefault(); transactions.cancelPending(); setQuery(search); setPageRevision((value) => value + 1); }}><input aria-label="Search transactions" placeholder="Search merchant or description" value={search} onChange={(event) => setSearch(event.target.value)} /><button>Search</button></form><select aria-label="Filter by category" value={categoryFilter} onChange={(event) => { transactions.cancelPending(); setSelected({}); setCategoryFilter(event.target.value); }}><option value="">All categories</option><option value="review">Review uncertain</option><option value="uncategorized">Uncategorized</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><select aria-label="Filter spending owner" value={ownerFilter} onChange={(event) => { transactions.cancelPending(); setSelected({}); setOwnerFilter(event.target.value); }}><option value="">Everyone</option><option value="David">David</option><option value="Ariela">Ariela</option><option value="Shared">Shared</option></select><select aria-label="Correction scope" value={learningScope} onChange={(event) => setLearningScope(event.target.value as CategorizationScope)}><option value="past_and_future">Past + future</option><option value="future">Future matches</option><option value="one_time">This transaction only</option></select><select aria-label="Categorize selected" value="" disabled={!selectedRows.length} onChange={(event) => event.target.value && categorize(event.target.value)}><option value="">Categorize selected…</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><button disabled={selectedRows.length !== 1} onClick={() => setSplitTransaction(selectedRows[0])}>Split</button><span>{selectedRows.length} selected</span></div>
+    <div className="sticky-tools"><form onSubmit={(event) => { event.preventDefault(); transactions.cancelPending(); setQuery(search); setPageRevision((value) => value + 1); }}><input aria-label="Search transactions" placeholder="Search merchant or description" value={search} onChange={(event) => setSearch(event.target.value)} /><button>Search</button></form><button onClick={() => setCashDialog("new")}>Add cash spending</button><select aria-label="Filter by category" value={categoryFilter} onChange={(event) => { transactions.cancelPending(); setSelected({}); setCategoryFilter(event.target.value); }}><option value="">All categories</option><option value="review">Review uncertain</option><option value="uncategorized">Uncategorized</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><select aria-label="Filter spending owner" value={ownerFilter} onChange={(event) => { transactions.cancelPending(); setSelected({}); setOwnerFilter(event.target.value); }}><option value="">Everyone</option><option value="David">David</option><option value="Ariela">Ariela</option><option value="Shared">Shared</option></select><select aria-label="Correction scope" value={learningScope} onChange={(event) => setLearningScope(event.target.value as CategorizationScope)}><option value="past_and_future">Past + future</option><option value="future">Future matches</option><option value="one_time">This transaction only</option></select><select aria-label="Categorize selected" value="" disabled={!selectedRows.length} onChange={(event) => event.target.value && categorize(event.target.value)}><option value="">Categorize selected…</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><button disabled={selectedRows.length !== 1} onClick={() => setSplitTransaction(selectedRows[0])}>Split</button><span>{selectedRows.length} selected</span></div>
     {message && <div className="notice success" role="status"><strong>Ledger updated.</strong><span>{message}</span>{undoId && <button className="quiet-button" onClick={undoLastCategorization}>Undo</button>}</div>}
     {transfers.data && transfers.data.length > 0 && <section className={`review-strip ${showAllTransfers ? "expanded" : ""}`}><div><p className="eyebrow">Review</p><strong>{transfers.data.length} possible transfer{transfers.data.length === 1 ? "" : "s"}</strong>{transfers.data.length > 3 && <button className="text-button" onClick={() => setShowAllTransfers(!showAllTransfers)}>{showAllTransfers ? "Show fewer" : "Review all"}</button>}</div>{transfers.data.slice(0, showAllTransfers ? undefined : 3).map((candidate) => <div key={`${candidate.transaction_a}-${candidate.transaction_b}`}><span><strong>{candidate.label_a} ↔ {candidate.label_b}</strong><small>{candidate.date_a}–{candidate.date_b} · {formatMoney(candidate.amount_minor, candidate.currency)} · {candidate.confidence}</small></span><button onClick={() => confirmTransfer(candidate)}>Confirm transfer</button></div>)}</section>}
     {transactions.loading ? <PageState text="Loading register…" /> : transactions.error ? <PageState error text={transactions.error} /> : <div className="table-wrap"><table className="register"><thead>{table.getHeaderGroups().map((group) => <tr key={group.id}>{group.headers.map((header) => <th key={header.id}>{flexRender(header.column.columnDef.header, header.getContext())}</th>)}</tr>)}</thead><tbody>{table.getRowModel().rows.map((row) => <tr key={row.id}>{row.getVisibleCells().map((cell) => <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}</tr>)}</tbody></table>{!table.getRowModel().rows.length && <PageState text="No transactions match these filters." />}{transactions.data?.next_cursor && <div className="load-more"><button disabled={transactions.loadingMore} onClick={transactions.loadMore}>{transactions.loadingMore ? "Loading…" : "Load older transactions"}</button></div>}</div>}
     {splitTransaction && <SplitEditor transaction={splitTransaction} categories={categories.data || []} onClose={() => setSplitTransaction(undefined)} onSaved={() => { setSplitTransaction(undefined); setSelected({}); setRefresh((value) => value + 1); }} />}
+    {cashDialog && <ManualCashDialog categories={categories.data || []} transaction={cashDialog === "new" ? undefined : cashDialog} onClose={() => setCashDialog(undefined)} onSaved={() => { setCashDialog(undefined); setRefresh((value) => value + 1); }} />}
   </Page>;
 }
 
