@@ -37,6 +37,10 @@ test("synthetic finance workflow", async ({ page }) => {
   await page.locator("tbody input[type=checkbox]").nth(1).check();
   await page.getByLabel("Categorize selected").selectOption({ label: "Fun" });
   await expect(page.getByRole("cell", { name: "Fun" })).toHaveCount(2);
+  await page.getByLabel("Filter by category").selectOption({ label: "Fun" });
+  await expect(page.locator("tbody tr")).toHaveCount(2);
+  await page.getByLabel("Filter by category").selectOption("");
+  await expect(page.locator("tbody tr")).toHaveCount(3);
   await page.locator("tbody input[type=checkbox]").first().check();
   await page.getByRole("button", { name: "Split" }).click();
   await expect(page.getByRole("dialog")).toContainText("Exact-sum editor");
@@ -88,6 +92,14 @@ test("synthetic finance workflow", async ({ page }) => {
   await page.getByRole("button", { name: "Save allocation" }).click();
   await expect(page.getByRole("status")).toContainText("Envelope allocation saved");
   await page.getByRole("link", { name: "Reports" }).click();
+  await expect(page.getByRole("heading", { name: "Income and spending flow" })).toBeVisible();
+  await page.getByRole("button", { name: /Show Fun transactions/ }).click();
+  await expect(page.getByRole("dialog", { name: "Fun transactions" })).toBeVisible();
+  await page.getByRole("button", { name: "Close flow details" }).click();
+  await page.getByRole("button", { name: "Show Lifestyle to Fun transactions" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Lifestyle to Fun transactions" })).toBeVisible();
+  await page.getByRole("button", { name: "Close flow details" }).click();
   await expect(page.getByRole("heading", { name: "Spending by category" })).toBeVisible();
 
   await page.getByRole("link", { name: "Rules" }).click();

@@ -80,6 +80,135 @@ def spending_by_category(connection: sqlite3.Connection, month: str) -> list[dic
     ]
 
 
+def cash_flow_paths(connection: sqlite3.Connection, month: str) -> dict[str, object]:
+    start, end = month_bounds(month)
+    ledger = ledger_entries(connection, start, end, account_flag="include_overview")
+    transaction_ids = sorted({entry.transaction_id for entry in ledger})
+    details: dict[str, sqlite3.Row] = {}
+    if transaction_ids:
+        details = {
+            row["id"]: row
+            for row in connection.execute(
+                f"""
+                SELECT id, provider_description description,
+                       COALESCE(NULLIF(user_merchant, ''), NULLIF(provider_merchant, ''), provider_description) merchant,
+                       notes
+                FROM transactions
+                WHERE id IN ({','.join('?' for _ in transaction_ids)})
+                """,
+                transaction_ids,
+            )
+        }
+    groups = {
+        row["id"]: (row["group_id"] or "ungrouped", row["group_name"] or "Other spending")
+        for row in connection.execute(
+            """
+            SELECT c.id, c.group_id, g.name group_name
+            FROM categories c LEFT JOIN category_groups g ON g.id = c.group_id
+            """
+        )
+    }
+    entries: list[dict[str, object]] = []
+    income: dict[tuple[str, str], dict[str, object]] = {}
+    expenses: dict[tuple[str, str, str, str], dict[str, object]] = {}
+    for index, entry in enumerate(ledger):
+        if entry.category_type == "transfer" or entry.reporting_behavior == "excluded":
+            continue
+        is_income = entry.category_type == "income" or entry.reporting_behavior == "income" or (
+            entry.category_id is None and entry.amount_minor > 0
+        )
+        is_expense = not is_income and (entry.category_type == "expense" or entry.amount_minor < 0)
+        if not is_income and not is_expense:
+            continue
+        detail = details[entry.transaction_id]
+        entry_id = f"{entry.transaction_id}:{index}"
+        entries.append(
+            {
+                "id": entry_id,
+                "transaction_id": entry.transaction_id,
+                "local_date": entry.local_date,
+                "merchant": detail["merchant"],
+                "description": detail["description"],
+                "category": entry.category or "Uncategorized",
+                "amount_minor": entry.amount_minor,
+                "currency": "USD",
+                "notes": detail["notes"],
+            }
+        )
+        category_key = entry.category_id or ("uncategorized-income" if is_income else "uncategorized-expense")
+        category_label = entry.category or "Uncategorized"
+        if is_income:
+            bucket = income.setdefault((category_key, category_label), {"amount": 0, "entry_ids": []})
+            bucket["amount"] = int(bucket["amount"]) + entry.amount_minor
+        else:
+            group_id, group_label = groups.get(entry.category_id or "", ("ungrouped", "Other spending"))
+            bucket = expenses.setdefault(
+                (group_id, group_label, category_key, category_label),
+                {"amount": 0, "entry_ids": []},
+            )
+            bucket["amount"] = int(bucket["amount"]) - entry.amount_minor
+        cast_ids = bucket["entry_ids"]
+        assert isinstance(cast_ids, list)
+        cast_ids.append(entry_id)
+
+    nodes: list[dict[str, object]] = []
+    links: list[dict[str, object]] = []
+
+    def add_node(identifier: str, label: str, kind: str, amount: int, entry_ids: list[str]) -> int:
+        nodes.append({"id": identifier, "label": label, "kind": kind, "amount_minor": amount, "entry_ids": entry_ids})
+        return len(nodes) - 1
+
+    positive_income = [(*key, value) for key, value in income.items() if int(value["amount"]) > 0]
+    positive_expenses = [(*key, value) for key, value in expenses.items() if int(value["amount"]) > 0]
+    refund_buckets = [value for value in expenses.values() if int(value["amount"]) < 0]
+    income_adjustments = [value for value in income.values() if int(value["amount"]) < 0]
+    refund_total = -sum(int(value["amount"]) for value in refund_buckets)
+    adjustment_total = -sum(int(value["amount"]) for value in income_adjustments)
+    source_total = sum(int(value["amount"]) for *_, value in positive_income) + refund_total
+    spending_total = sum(int(value["amount"]) for *_, value in positive_expenses)
+    required_total = spending_total + adjustment_total
+    funding_total = max(required_total - source_total, 0)
+    retained_total = max(source_total - required_total, 0)
+    hub_ids = [entry_id for *_, value in positive_income for entry_id in value["entry_ids"]]
+    hub_ids.extend(entry_id for value in refund_buckets for entry_id in value["entry_ids"])
+    hub = add_node("income", "Income", "hub", source_total + funding_total, hub_ids)
+
+    for category_id, label, value in sorted(positive_income, key=lambda item: (-int(item[2]["amount"]), item[1])):
+        amount = int(value["amount"])
+        entry_ids = list(value["entry_ids"])
+        source = add_node(f"income:{category_id}", label, "income", amount, entry_ids)
+        links.append({"source": source, "target": hub, "amount_minor": amount, "entry_ids": entry_ids})
+    if refund_total:
+        entry_ids = [entry_id for value in refund_buckets for entry_id in value["entry_ids"]]
+        source = add_node("refunds", "Refund offsets", "refund", refund_total, entry_ids)
+        links.append({"source": source, "target": hub, "amount_minor": refund_total, "entry_ids": entry_ids})
+    if funding_total:
+        source = add_node("funding-gap", "Prior cash", "funding", funding_total, [])
+        links.append({"source": source, "target": hub, "amount_minor": funding_total, "entry_ids": []})
+
+    grouped: dict[tuple[str, str], list[tuple[str, str, dict[str, object]]]] = {}
+    for group_id, group_label, category_id, category_label, value in positive_expenses:
+        grouped.setdefault((group_id, group_label), []).append((category_id, category_label, value))
+    for (group_id, group_label), categories in sorted(grouped.items(), key=lambda item: item[0][1]):
+        amount = sum(int(value["amount"]) for _, _, value in categories)
+        entry_ids = [entry_id for _, _, value in categories for entry_id in value["entry_ids"]]
+        group = add_node(f"group:{group_id}", group_label, "expense_group", amount, entry_ids)
+        links.append({"source": hub, "target": group, "amount_minor": amount, "entry_ids": entry_ids})
+        for category_id, category_label, value in sorted(categories, key=lambda item: (-int(item[2]["amount"]), item[1])):
+            category_amount = int(value["amount"])
+            category_ids = list(value["entry_ids"])
+            category = add_node(f"expense:{category_id}", category_label, "expense", category_amount, category_ids)
+            links.append({"source": group, "target": category, "amount_minor": category_amount, "entry_ids": category_ids})
+    if adjustment_total:
+        entry_ids = [entry_id for value in income_adjustments for entry_id in value["entry_ids"]]
+        target = add_node("income-adjustments", "Income adjustments", "adjustment", adjustment_total, entry_ids)
+        links.append({"source": hub, "target": target, "amount_minor": adjustment_total, "entry_ids": entry_ids})
+    if retained_total:
+        target = add_node("retained", "Money retained", "retained", retained_total, hub_ids)
+        links.append({"source": hub, "target": target, "amount_minor": retained_total, "entry_ids": hub_ids})
+    return {"month": month, "nodes": nodes, "links": links, "entries": entries}
+
+
 def overview(connection: sqlite3.Connection, month: str) -> Overview:
     balances = connection.execute(
         """

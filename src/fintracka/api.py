@@ -49,7 +49,7 @@ from fintracka.ledger import (
     transfer_candidates,
     update_transaction,
 )
-from fintracka.reports import cash_flow, overview, spending_by_category
+from fintracka.reports import cash_flow, cash_flow_paths, overview, spending_by_category
 from fintracka.readiness import filevault_enabled, readiness_report
 from fintracka.security import LocalSessions, host_allowed, origin_allowed
 from fintracka.plaid_adapter import PlaidAdapter
@@ -517,13 +517,15 @@ def create_app(
             clauses.append("(t.local_date < ? OR (t.local_date = ? AND t.id < ?))")
             parameters.extend((cursor_date, cursor_date, cursor_id))
         if search:
-            clauses.append("(t.provider_description LIKE ? ESCAPE '\\' OR COALESCE(t.user_merchant, t.provider_merchant, '') LIKE ? ESCAPE '\\')")
+            clauses.append("(t.provider_description LIKE ? ESCAPE '\\' OR COALESCE(t.user_merchant, t.provider_merchant, '') LIKE ? ESCAPE '\\' OR COALESCE(c.name, '') LIKE ? ESCAPE '\\')")
             escaped = "%" + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-            parameters.extend((escaped, escaped))
+            parameters.extend((escaped, escaped, escaped))
         if account_id:
             clauses.append("t.account_id = ?")
             parameters.append(account_id)
-        if category_id:
+        if category_id == "uncategorized":
+            clauses.append("t.category_id IS NULL")
+        elif category_id:
             clauses.append("t.category_id = ?")
             parameters.append(category_id)
         parameters.append(limit + 1)
@@ -726,6 +728,10 @@ def create_app(
     @app.get("/api/v1/reports/spending")
     def spending_route(database: Database, month: str) -> list[dict[str, str | int]]:
         return spending_by_category(database, month)
+
+    @app.get("/api/v1/reports/flow")
+    def flow_route(database: Database, month: str) -> dict[str, object]:
+        return cash_flow_paths(database, month)
 
     @app.get("/api/v1/reports/budget")
     def budget_report_route(database: Database, month: str) -> dict[str, object]:

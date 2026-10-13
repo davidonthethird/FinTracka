@@ -392,6 +392,11 @@ def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
     migrate(connection)
     connection_id = create_synthetic_ledger(connection, count=1)[0]
     apply_batch(connection, connection_id, synthetic_batches([connection_id])[connection_id])
+    fun_id = connection.execute("SELECT id FROM categories WHERE name = 'Fun'").fetchone()[0]
+    categorized_id = connection.execute(
+        "SELECT id FROM transactions WHERE provider_description NOT LIKE '%Fun%' LIMIT 1"
+    ).fetchone()[0]
+    connection.execute("UPDATE transactions SET category_id = ? WHERE id = ?", (fun_id, categorized_id))
     connection.close()
     app = create_app(path, bootstrap_token="bootstrap")
 
@@ -404,6 +409,15 @@ def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
         ).json()
         assert len(first["items"]) == len(second["items"]) == 1
         assert first["items"][0]["id"] != second["items"][0]["id"]
+        uncategorized = client.get(
+            "/api/v1/transactions", params={"category_id": "uncategorized"}
+        ).json()["items"]
+        assert uncategorized
+        assert all(item["category_id"] is None for item in uncategorized)
+        category_search = client.get(
+            "/api/v1/transactions", params={"search": "Fun"}
+        ).json()["items"]
+        assert any(item["id"] == categorized_id for item in category_search)
 
         transaction = first["items"][0]
         headers = {"origin": "http://testserver", "x-csrf-token": csrf}
@@ -419,6 +433,30 @@ def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
             headers=headers,
         )
         assert stale.status_code == 409
+
+
+def test_cash_flow_report_includes_clickable_transaction_drilldowns(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1, demo=True)[0]
+    apply_batch(connection, connection_id, synthetic_batches([connection_id])[connection_id])
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        response = client.get("/api/v1/reports/flow", params={"month": "2026-10"})
+
+    assert response.status_code == 200
+    report = response.json()
+    assert any(node["label"] == "Income" for node in report["nodes"])
+    assert any(node["label"] == "Groceries" for node in report["nodes"])
+    assert all(link["amount_minor"] > 0 for link in report["links"])
+    groceries = next(node for node in report["nodes"] if node["label"] == "Groceries")
+    assert groceries["entry_ids"]
+    assert {entry["id"] for entry in report["entries"]} >= set(groceries["entry_ids"])
+    assert all(entry["currency"] == "USD" for entry in report["entries"])
 
 
 def test_concurrent_account_edits_allow_only_one_expected_version(

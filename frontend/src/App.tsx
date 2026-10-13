@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Route, Routes, useNavigate } from "react-router-dom";
 import { usePlaidLink } from "react-plaid-link";
 import { ColumnDef, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Sankey, Tooltip, XAxis, YAxis } from "recharts";
+import type { SankeyLinkProps, SankeyNodeProps } from "recharts";
 
 import { api } from "./api";
 import { currentMonth, currencyStep, formatMoney, majorInputToMinor, minorToMajorInput, movementWidths, totalsByCurrency } from "./format";
@@ -22,6 +23,11 @@ type Provider = { id: string; name: string; enabled: boolean; environment?: stri
 type LinkSession = { link_token: string; expires_at: string; environment: string };
 type ReadinessCheck = { id: string; label: string; status: "pass" | "fail" | "warning"; blocking: boolean; detail: string };
 type ReadinessData = { ready: boolean; checks: ReadinessCheck[] };
+type FlowNode = { id: string; label: string; kind: string; amount_minor: number; entry_ids: string[] };
+type FlowLink = { source: number; target: number; amount_minor: number; entry_ids: string[] };
+type FlowEntry = { id: string; transaction_id: string; local_date: string; merchant: string; description: string; category: string; amount_minor: number; currency: string; notes?: string };
+type FlowReport = { month: string; nodes: FlowNode[]; links: FlowLink[]; entries: FlowEntry[] };
+type FlowSelection = { label: string; entry_ids: string[] };
 
 const nav = [
   ["/", "Overview"], ["/accounts", "Accounts"], ["/transactions", "Transactions"],
@@ -102,13 +108,14 @@ function AccountsPage() {
 function TransactionsPage() {
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("");
   const [pageRevision, setPageRevision] = useState(0);
   const [refresh, setRefresh] = useState(0);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [splitTransaction, setSplitTransaction] = useState<Transaction>();
   const [message, setMessage] = useState("");
   const [showAllTransfers, setShowAllTransfers] = useState(false);
-  const transactions = useTransactionPages(query, `${refresh}:${pageRevision}`);
+  const transactions = useTransactionPages(query, categoryFilter, `${refresh}:${pageRevision}`);
   const categories = useData<Category[]>("/categories", refresh);
   const transfers = useData<TransferCandidate[]>("/transfers/candidates", refresh);
   const columns = useMemo<ColumnDef<Transaction>[]>(() => [
@@ -132,7 +139,7 @@ function TransactionsPage() {
   }
   const selectedRows = (transactions.data?.items || []).filter((row) => selected[row.id]);
   return <Page title="Transactions" note="Provider facts stay separate from your edits">
-    <div className="sticky-tools"><form onSubmit={(event) => { event.preventDefault(); transactions.cancelPending(); setQuery(search); setPageRevision((value) => value + 1); }}><input aria-label="Search transactions" placeholder="Search merchant or description" value={search} onChange={(event) => setSearch(event.target.value)} /><button>Search</button></form><select aria-label="Categorize selected" defaultValue="" onChange={(event) => event.target.value && categorize(event.target.value)}><option value="">Categorize selected…</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><button disabled={selectedRows.length !== 1} onClick={() => setSplitTransaction(selectedRows[0])}>Split</button><span>{selectedRows.length} selected</span></div>
+    <div className="sticky-tools"><form onSubmit={(event) => { event.preventDefault(); transactions.cancelPending(); setQuery(search); setPageRevision((value) => value + 1); }}><input aria-label="Search transactions" placeholder="Search merchant or description" value={search} onChange={(event) => setSearch(event.target.value)} /><button>Search</button></form><select aria-label="Filter by category" value={categoryFilter} onChange={(event) => { transactions.cancelPending(); setSelected({}); setCategoryFilter(event.target.value); }}><option value="">All categories</option><option value="uncategorized">Uncategorized</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><select aria-label="Categorize selected" value="" disabled={!selectedRows.length} onChange={(event) => event.target.value && categorize(event.target.value)}><option value="">Categorize selected…</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><button disabled={selectedRows.length !== 1} onClick={() => setSplitTransaction(selectedRows[0])}>Split</button><span>{selectedRows.length} selected</span></div>
     {message && <div className="notice success" role="status"><strong>Ledger updated.</strong><span>{message}</span></div>}
     {transfers.data && transfers.data.length > 0 && <section className={`review-strip ${showAllTransfers ? "expanded" : ""}`}><div><p className="eyebrow">Review</p><strong>{transfers.data.length} possible transfer{transfers.data.length === 1 ? "" : "s"}</strong>{transfers.data.length > 3 && <button className="text-button" onClick={() => setShowAllTransfers(!showAllTransfers)}>{showAllTransfers ? "Show fewer" : "Review all"}</button>}</div>{transfers.data.slice(0, showAllTransfers ? undefined : 3).map((candidate) => <div key={`${candidate.transaction_a}-${candidate.transaction_b}`}><span><strong>{candidate.label_a} ↔ {candidate.label_b}</strong><small>{candidate.date_a}–{candidate.date_b} · {formatMoney(candidate.amount_minor, candidate.currency)} · {candidate.confidence}</small></span><button onClick={() => confirmTransfer(candidate)}>Confirm transfer</button></div>)}</section>}
     {transactions.loading ? <PageState text="Loading register…" /> : transactions.error ? <PageState error text={transactions.error} /> : <div className="table-wrap"><table className="register"><thead>{table.getHeaderGroups().map((group) => <tr key={group.id}>{group.headers.map((header) => <th key={header.id}>{flexRender(header.column.columnDef.header, header.getContext())}</th>)}</tr>)}</thead><tbody>{table.getRowModel().rows.map((row) => <tr key={row.id}>{row.getVisibleCells().map((cell) => <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}</tr>)}</tbody></table>{!table.getRowModel().rows.length && <PageState text="No transactions match these filters." />}{transactions.data?.next_cursor && <div className="load-more"><button disabled={transactions.loadingMore} onClick={transactions.loadMore}>{transactions.loadingMore ? "Loading…" : "Load older transactions"}</button></div>}</div>}
@@ -178,9 +185,12 @@ function EnvelopeBudgetPage() {
 
 function ReportsPage() {
   const [month, setMonth] = useState(currentMonth());
+  const [selection, setSelection] = useState<FlowSelection>();
   const flow = useData<{ income_minor: number; spending_minor: number; net_minor: number }>(`/reports/cash-flow?month=${month}`);
+  const paths = useData<FlowReport>(`/reports/flow?month=${month}`);
   const spending = useData<{ category: string; amount_minor: number }[]>(`/reports/spending?month=${month}`);
-  return <Page title="Reports" note="Ledger-backed, USD combined totals"><MonthControl value={month} setValue={setMonth} /><DataBoundary result={flow}>{(data) => <section className="metric-line compact"><Metric label="Income" value={formatMoney(data.income_minor)} tone="teal"/><Metric label="Spending" value={formatMoney(data.spending_minor)} tone="red"/><Metric label="Net" value={formatMoney(data.net_minor)} /></section>}</DataBoundary><section className="instrument-panel"><div className="section-heading"><h2>Spending by category</h2><span>{month}</span></div><DataBoundary result={spending}>{(rows) => rows.length ? <div className="bar-list">{rows.map((row) => <div key={row.category}><span>{row.category}</span><i><b style={{ width: `${Math.max(3, (row.amount_minor / Math.max(...rows.map((item) => item.amount_minor))) * 100)}%` }} /></i><strong>{formatMoney(row.amount_minor)}</strong></div>)}</div> : <Empty title="No categorized spending" text="Categorized expenses for this month will appear here." />}</DataBoundary></section></Page>;
+  useEffect(() => setSelection(undefined), [month]);
+  return <Page title="Reports" note="Ledger-backed, USD combined totals"><MonthControl value={month} setValue={setMonth} /><DataBoundary result={flow}>{(data) => <section className="metric-line compact"><Metric label="Income" value={formatMoney(data.income_minor)} tone="teal"/><Metric label="Spending" value={formatMoney(data.spending_minor)} tone="red"/><Metric label="Net" value={formatMoney(data.net_minor)} /></section>}</DataBoundary><section className="instrument-panel flow-panel"><div className="section-heading"><div><h2>Income and spending flow</h2><small>Select a stream to inspect its transactions</small></div><span>{month}</span></div><DataBoundary result={paths}>{(report) => report.links.length ? <CashFlowDiagram report={report} onSelect={setSelection} /> : <Empty title="No monthly flow yet" text="Income and spending paths will appear when this month has posted transactions." />}</DataBoundary></section><section className="instrument-panel"><div className="section-heading"><h2>Spending by category</h2><span>{month}</span></div><DataBoundary result={spending}>{(rows) => rows.length ? <div className="bar-list">{rows.map((row) => <div key={row.category}><span>{row.category}</span><i><b style={{ width: `${Math.max(3, (row.amount_minor / Math.max(...rows.map((item) => item.amount_minor))) * 100)}%` }} /></i><strong>{formatMoney(row.amount_minor)}</strong></div>)}</div> : <Empty title="No categorized spending" text="Categorized expenses for this month will appear here." />}</DataBoundary></section>{selection && paths.data && <FlowDrawer selection={selection} entries={paths.data.entries} onClose={() => setSelection(undefined)} />}</Page>;
 }
 
 function RulesPage() {
@@ -363,6 +373,50 @@ function SplitEditor({ transaction, categories, onClose, onSaved }: { transactio
   return <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="split-title"><div className="section-heading"><div><p className="eyebrow">Exact-sum editor</p><h2 id="split-title">Split {transaction.merchant || transaction.description}</h2></div><button className="quiet-button" onClick={onClose}>Close</button></div><form onSubmit={save}><p className="split-total">Parent total <strong>{formatMoney(transaction.amount_minor, transaction.currency)}</strong></p><label>First amount<input aria-label="First split amount" type="number" step={currencyStep(transaction.currency)} value={minorToMajorInput(firstMinor, transaction.currency)} onChange={(event) => setFirstMinor(majorInputToMinor(event.target.value, transaction.currency))} /></label><label>First category<select value={firstCategory} onChange={(event) => setFirstCategory(event.target.value)}><option value="">Uncategorized</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><label>Remaining amount<input aria-label="Remaining split amount" readOnly value={minorToMajorInput(secondMinor, transaction.currency)} /></label><label>Remaining category<select value={secondCategory} onChange={(event) => setSecondCategory(event.target.value)}><option value="">Uncategorized</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="quiet-button" onClick={onClose}>Cancel</button><button>Save exact split</button></div></form></section></div>;
 }
 
+function CashFlowDiagram({ report, onSelect }: { report: FlowReport; onSelect: (selection: FlowSelection) => void }) {
+  const data = {
+    nodes: report.nodes.map((node) => ({ ...node, name: node.label })),
+    links: report.links.map((link) => ({ ...link, value: link.amount_minor })),
+  };
+  return <div className="flow-chart" style={{ height: Math.max(390, report.nodes.length * 34) }}><ResponsiveContainer width="100%" height="100%"><Sankey data={data} nodePadding={18} nodeWidth={9} margin={{ top: 24, right: 185, bottom: 24, left: 155 }} node={(props) => <FlowNodeShape {...props} selectFlow={onSelect} />} link={(props) => <FlowLinkShape {...props} selectFlow={onSelect} />} /></ResponsiveContainer></div>;
+}
+
+function FlowNodeShape({ payload, x, y, width, height, selectFlow }: SankeyNodeProps & { selectFlow: (selection: FlowSelection) => void }) {
+  const node = payload as typeof payload & FlowNode;
+  const labelOnLeft = payload.depth >= 2;
+  const activate = () => selectFlow({ label: node.label, entry_ids: node.entry_ids });
+  return <g className="flow-node">
+    <rect x={x} y={y} width={Math.max(width, 12)} height={Math.max(height, 8)} fill={flowColor(node.kind)} rx={2} role="button" tabIndex={0} aria-label={`Show ${node.label} transactions`} onClick={activate} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activate(); } }} />
+    <text x={labelOnLeft ? x - 7 : x + width + 7} y={y + Math.max(height, 12) / 2 - 2} textAnchor={labelOnLeft ? "end" : "start"}><tspan>{node.label}</tspan><tspan x={labelOnLeft ? x - 7 : x + width + 7} dy="1.2em" className="flow-value">{formatMoney(node.amount_minor)}</tspan></text>
+  </g>;
+}
+
+function FlowLinkShape({ sourceX, targetX, sourceY, targetY, sourceControlX, targetControlX, linkWidth, payload, selectFlow }: SankeyLinkProps & { selectFlow: (selection: FlowSelection) => void }) {
+  const link = payload as typeof payload & FlowLink & { source: typeof payload.source & FlowNode; target: typeof payload.target & FlowNode };
+  const label = `${link.source.label} to ${link.target.label}`;
+  const activate = () => selectFlow({ label, entry_ids: link.entry_ids });
+  return <path d={`M${sourceX},${sourceY} C${sourceControlX},${sourceY} ${targetControlX},${targetY} ${targetX},${targetY}`} fill="none" stroke={flowColor(link.target.kind)} strokeOpacity={0.28} strokeWidth={Math.max(linkWidth, 2)} role="button" tabIndex={0} aria-label={`Show ${label} transactions`} onClick={activate} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activate(); } }} className="flow-link" />;
+}
+
+function FlowDrawer({ selection, entries, onClose }: { selection: FlowSelection; entries: FlowEntry[]; onClose: () => void }) {
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const selectedIds = new Set(selection.entry_ids);
+  const selected = entries.filter((entry) => selectedIds.has(entry.id)).sort((left, right) => right.local_date.localeCompare(left.local_date));
+  useEffect(() => {
+    closeButton.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => event.key === "Escape" && onClose();
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+  return <div className="flow-drawer-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="flow-drawer" role="dialog" aria-modal="true" aria-label={`${selection.label} transactions`}><div className="section-heading"><div><h2>{selection.label}</h2><small>{selected.length} contributing transaction{selected.length === 1 ? "" : "s"}</small></div><button ref={closeButton} className="quiet-button" aria-label="Close flow details" onClick={onClose}>Close</button></div>{selected.length ? <div className="flow-entries">{selected.map((entry) => <div key={entry.id}><span><strong>{entry.merchant}</strong><small>{entry.local_date} · {entry.category}{entry.notes ? ` · ${entry.notes}` : ""}</small></span><b className={entry.amount_minor < 0 ? "negative" : "positive"}>{formatMoney(entry.amount_minor, entry.currency)}</b></div>)}</div> : <Empty title="No direct transactions" text="This balancing path represents cash carried into the month rather than a transaction." />}</aside></div>;
+}
+
+function flowColor(kind: string): string {
+  if (kind === "expense" || kind === "expense_group" || kind === "adjustment") return "var(--red)";
+  if (kind === "retained" || kind === "funding") return "var(--amber)";
+  return "var(--teal)";
+}
+
 function describeRule(source: string): string {
   try {
     const conditions = JSON.parse(source) as Record<string, string | number | boolean>;
@@ -378,11 +432,11 @@ function useData<T>(path: string, refresh = 0): DataResult<T> {
   return result;
 }
 
-function useTransactionPages(query: string, refresh: string): DataResult<{ items: Transaction[]; next_cursor?: string }> & { loadingMore: boolean; loadMore: () => Promise<void>; cancelPending: () => void } {
+function useTransactionPages(query: string, category: string, refresh: string): DataResult<{ items: Transaction[]; next_cursor?: string }> & { loadingMore: boolean; loadMore: () => Promise<void>; cancelPending: () => void } {
   type PageResult = DataResult<{ items: Transaction[]; next_cursor?: string }> & { generation: number };
   const [result, setResult] = useState<PageResult>({ loading: true, generation: 0 });
   const [loadingMore, setLoadingMore] = useState(false);
-  const basePath = `/transactions?limit=100${query ? `&search=${encodeURIComponent(query)}` : ""}`;
+  const basePath = `/transactions?limit=100${query ? `&search=${encodeURIComponent(query)}` : ""}${category ? `&category_id=${encodeURIComponent(category)}` : ""}`;
   const generation = useRef(0);
   const loadMoreController = useRef<AbortController | undefined>(undefined);
   useEffect(() => {
