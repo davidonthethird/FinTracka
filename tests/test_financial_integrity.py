@@ -92,6 +92,10 @@ def test_transfer_candidates_require_opposite_amounts_and_confirmation_is_unique
 
     candidates = transfer_candidates(ledger)
     pair = next(candidate for candidate in candidates if {candidate.external_a, candidate.external_b} == {"transfer-out", "transfer-in"})
+    assert pair.label_a == "Transfer"
+    assert pair.label_b == "Transfer"
+    assert pair.amount_minor == 20_000
+    assert pair.currency == "USD"
     link_id = confirm_transfer(ledger, pair.transaction_a, pair.transaction_b)
     assert ledger.execute("SELECT status FROM transfer_links WHERE id = ?", (link_id,)).fetchone()[0] == "confirmed"
     with pytest.raises(IntegrityError, match="already"):
@@ -127,6 +131,11 @@ def test_csv_replay_is_blocked_and_overlapping_file_is_suggested(
 
 
 def _category(connection: sqlite3.Connection, name: str) -> str:
+    existing = connection.execute(
+        "SELECT id FROM categories WHERE name = ?", (name,)
+    ).fetchone()
+    if existing is not None:
+        return str(existing["id"])
     category_id = new_id()
     now = "2026-10-11T00:00:00Z"
     connection.execute(

@@ -86,7 +86,7 @@ def export_google(
 
 def _consistent_snapshot(connection: sqlite3.Connection) -> dict[str, list[list[object]]]:
     try:
-        connection.execute("BEGIN")
+        connection.execute("BEGIN IMMEDIATE")
         snapshot = build_snapshot(connection)
         connection.commit()
         return snapshot

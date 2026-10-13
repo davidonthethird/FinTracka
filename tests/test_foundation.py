@@ -75,7 +75,12 @@ def test_migrations_are_idempotent_and_install_core_constraints(tmp_path: Path) 
         } <= tables
         assert [
             row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ] == [1, 2, 3]
+        ] == [1, 2, 3, 4]
+        starter_categories = {
+            row[0]
+            for row in connection.execute("SELECT name FROM categories WHERE archived = 0")
+        }
+        assert {"Salary", "Groceries", "Housing", "Credit card payment", "Refunds & reimbursements"} <= starter_categories
         assert "environment" in {
             row[1] for row in connection.execute("PRAGMA table_info(provider_connections)")
         }

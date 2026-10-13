@@ -624,7 +624,7 @@ def test_management_reports_reconciliation_and_local_operation_jobs(tmp_path: Pa
         assert list((tmp_path / "backups").glob("fintracka-*.sqlite3"))
 
 
-def _category_payload(name: str = "Groceries") -> dict[str, str | int]:
+def _category_payload(name: str = "Test expense") -> dict[str, str | int]:
     return {
         "name": name,
         "category_type": "expense",

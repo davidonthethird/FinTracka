@@ -23,6 +23,12 @@ class TransferCandidate:
     transaction_b: str
     external_a: str
     external_b: str
+    label_a: str
+    label_b: str
+    date_a: str
+    date_b: str
+    amount_minor: int
+    currency: str
     confidence: str
 
 
@@ -204,6 +210,7 @@ def transfer_candidates(connection: sqlite3.Connection) -> list[TransferCandidat
     rows = connection.execute(
         """
         SELECT t.id, t.account_id, t.local_date, t.amount_minor, t.currency,
+               COALESCE(NULLIF(t.user_merchant, ''), NULLIF(t.provider_merchant, ''), t.provider_description) label,
                (SELECT external_id FROM transaction_external_ids e WHERE e.transaction_id = t.id ORDER BY CASE e.state WHEN 'posted' THEN 0 ELSE 1 END, e.external_id LIMIT 1) external_id
         FROM transactions t
         WHERE t.tombstoned = 0 AND t.pending = 0
@@ -229,6 +236,12 @@ def transfer_candidates(connection: sqlite3.Connection) -> list[TransferCandidat
                         right["id"],
                         left["external_id"] or left["id"],
                         right["external_id"] or right["id"],
+                        left["label"],
+                        right["label"],
+                        left["local_date"],
+                        right["local_date"],
+                        abs(left["amount_minor"]),
+                        left["currency"],
                         "high" if days <= 1 else "medium",
                     )
                 )

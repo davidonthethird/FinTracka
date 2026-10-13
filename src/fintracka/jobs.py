@@ -57,4 +57,3 @@ class JobRunner:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-

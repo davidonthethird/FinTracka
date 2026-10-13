@@ -174,6 +174,11 @@ def _category(
     category_type: str,
     reporting_behavior: str,
 ) -> str:
+    existing = connection.execute(
+        "SELECT id FROM categories WHERE name = ?", (name,)
+    ).fetchone()
+    if existing is not None:
+        return str(existing["id"])
     category_id = new_id()
     now = "2026-10-11T00:00:00Z"
     connection.execute(
