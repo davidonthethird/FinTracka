@@ -78,6 +78,7 @@ def test_excel_export_is_deterministic_replaces_deleted_rows_and_escapes_formula
     assert workbook.sheetnames == list(SHEET_ORDER)
     assert workbook["_FinTrackaMetadata"].sheet_state == "hidden"
     transaction_rows = list(workbook["Transactions"].values)
+    assert "Spending owner" in transaction_rows[0]
     assert len({row[0] for row in transaction_rows[1:]}) == len(transaction_rows) - 1
     formula_row = next(row for row in transaction_rows[1:] if row[0] == formula_id)
     assert formula_row[5].startswith("'=")

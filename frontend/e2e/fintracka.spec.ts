@@ -21,8 +21,10 @@ test("synthetic finance workflow", async ({ page }) => {
   await page.getByRole("link", { name: "Accounts" }).click();
   await page.getByRole("button", { name: "Edit" }).first().click();
   await page.getByLabel("Nickname").fill("Daily cash");
+  await page.getByLabel("Spending owner").selectOption("Ariela");
   await page.getByRole("button", { name: "Save account" }).click();
   await expect(page.getByText("Daily cash", { exact: true })).toBeVisible();
+  await expect(page.locator(".owner-badge").filter({ hasText: "Ariela" })).toBeVisible();
 
   await page.getByRole("link", { name: "Transactions" }).click();
   await expect(page.locator("tbody tr")).toHaveCount(100);
@@ -37,6 +39,11 @@ test("synthetic finance workflow", async ({ page }) => {
   await page.locator("tbody input[type=checkbox]").nth(1).check();
   await page.getByLabel("Categorize selected").selectOption({ label: "Fun" });
   await expect(page.getByRole("cell", { name: "Fun" })).toHaveCount(2);
+  await page.locator(".owner-cell select").first().selectOption("David");
+  await expect(page.getByRole("status")).toContainText("Spending assigned to David");
+  await page.getByLabel("Filter spending owner").selectOption("David");
+  await expect(page.locator("tbody tr")).toHaveCount(1);
+  await page.getByLabel("Filter spending owner").selectOption("");
   await page.getByLabel("Correction scope").selectOption("one_time");
   await page.locator(".category-cell select").first().selectOption({ label: "Dining" });
   await expect(page.getByRole("status")).toContainText("This choice applies once");

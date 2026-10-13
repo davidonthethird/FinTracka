@@ -36,6 +36,7 @@ class LedgerEntry:
     category: str | None
     category_type: str | None
     reporting_behavior: str | None
+    spending_owner: str
 
 
 def cash_flow(
@@ -77,6 +78,20 @@ def spending_by_category(connection: sqlite3.Connection, month: str) -> list[dic
         {"category_id": category_id, "category": name, "amount_minor": amount}
         for (category_id, name), amount in sorted(totals.items(), key=lambda item: (-item[1], item[0][1]))
         if amount != 0
+    ]
+
+
+def spending_by_owner(connection: sqlite3.Connection, month: str) -> list[dict[str, str | int]]:
+    start, end = month_bounds(month)
+    totals = {"David": 0, "Ariela": 0, "Shared": 0}
+    for entry in ledger_entries(connection, start, end, account_flag="include_overview"):
+        if entry.category_type != "expense" or entry.reporting_behavior == "excluded":
+            continue
+        totals[entry.spending_owner] -= entry.amount_minor
+    return [
+        {"owner": owner, "amount_minor": totals[owner]}
+        for owner in ("David", "Ariela", "Shared")
+        if totals[owner] != 0
     ]
 
 
@@ -285,7 +300,8 @@ def ledger_entries(
     rows = connection.execute(
         f"""
         WITH report_rows AS (
-            SELECT t.id transaction_id, t.local_date, t.amount_minor, t.category_id
+            SELECT t.id transaction_id, t.local_date, t.amount_minor, t.category_id,
+                   COALESCE(t.spending_owner, a.spending_owner) spending_owner
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
             WHERE t.has_splits = 0 AND t.tombstoned = 0 AND t.pending = 0
@@ -298,7 +314,8 @@ def ledger_entries(
                     AND (l.transaction_a_id = t.id OR l.transaction_b_id = t.id)
               )
             UNION ALL
-            SELECT t.id, t.local_date, s.amount_minor, COALESCE(s.category_id, t.category_id)
+            SELECT t.id, t.local_date, s.amount_minor, COALESCE(s.category_id, t.category_id),
+                   COALESCE(t.spending_owner, a.spending_owner)
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
             JOIN transaction_splits s ON s.parent_transaction_id = t.id
@@ -313,7 +330,7 @@ def ledger_entries(
               )
         )
         SELECT r.transaction_id, r.local_date, r.amount_minor, r.category_id,
-               c.name category, c.category_type, c.reporting_behavior
+               c.name category, c.category_type, c.reporting_behavior, r.spending_owner
         FROM report_rows r
         LEFT JOIN categories c ON c.id = r.category_id
         ORDER BY r.local_date, r.transaction_id, r.amount_minor

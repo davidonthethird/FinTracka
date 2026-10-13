@@ -55,6 +55,7 @@ def update_transaction(
     category_id: str | None | object = _UNSET,
     notes: str | None | object = _UNSET,
     user_merchant: str | None | object = _UNSET,
+    spending_owner: str | None | object = _UNSET,
 ) -> None:
     row = connection.execute("SELECT * FROM transactions WHERE id = ?", (transaction_id,)).fetchone()
     if row is None:
@@ -67,6 +68,10 @@ def update_transaction(
         changes["notes"] = notes
     if user_merchant is not _UNSET:
         changes["user_merchant"] = user_merchant
+    if spending_owner is not _UNSET:
+        if spending_owner not in {None, "David", "Ariela", "Shared"}:
+            raise IntegrityError("invalid spending owner")
+        changes["spending_owner"] = spending_owner
     if not changes:
         return
     now = _now()

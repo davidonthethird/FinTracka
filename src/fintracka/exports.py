@@ -103,12 +103,13 @@ def build_snapshot(connection: sqlite3.Connection) -> dict[str, list[list[object
         database_id = (value,)
     sheets: dict[str, list[list[object]]] = {}
     sheets["Transactions"] = _rows(
-        ["FinTracka ID", "Date", "Account", "Amount (minor units)", "Currency", "Description", "Merchant", "Category", "Notes", "Pending", "Last updated"],
+        ["FinTracka ID", "Date", "Account", "Amount (minor units)", "Currency", "Description", "Merchant", "Category", "Notes", "Pending", "Last updated", "Spending owner"],
         connection.execute(
             """
             SELECT t.id, t.local_date, a.name, t.amount_minor, t.currency,
                    t.provider_description, COALESCE(t.user_merchant, t.provider_merchant),
-                   c.name, t.notes, t.pending, t.updated_at
+                   c.name, t.notes, t.pending, t.updated_at,
+                   CASE WHEN c.category_type = 'expense' THEN COALESCE(t.spending_owner, a.spending_owner) END
             FROM transactions t JOIN accounts a ON a.id = t.account_id
             LEFT JOIN categories c ON c.id = t.category_id
             WHERE t.tombstoned = 0 AND a.include_export = 1
@@ -117,9 +118,9 @@ def build_snapshot(connection: sqlite3.Connection) -> dict[str, list[list[object
         ),
     )
     sheets["Accounts"] = _rows(
-        ["FinTracka ID", "Name", "Nickname", "Type", "Subtype", "Nature", "Currency", "Status", "Last updated"],
+        ["FinTracka ID", "Name", "Nickname", "Type", "Subtype", "Nature", "Currency", "Status", "Spending owner", "Last updated"],
         connection.execute(
-            "SELECT id, name, nickname, type, subtype, nature, currency, status, updated_at FROM accounts WHERE include_export = 1 ORDER BY nature, name, id"
+            "SELECT id, name, nickname, type, subtype, nature, currency, status, spending_owner, updated_at FROM accounts WHERE include_export = 1 ORDER BY nature, name, id"
         ),
     )
     sheets["Balances"] = _rows(

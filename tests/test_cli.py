@@ -98,6 +98,15 @@ def test_schedule_cli_install_status_and_remove(tmp_path, monkeypatch, capsys) -
     assert "installed and loaded" in capsys.readouterr().out
 
 
+def test_open_in_chrome_uses_macos_open_without_shell(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(cli_module.subprocess, "Popen", lambda command: calls.append(command))
+
+    cli_module._open_in_chrome("http://127.0.0.1:8787/#bootstrap=local")
+
+    assert calls == [["open", "-a", "Google Chrome", "http://127.0.0.1:8787/#bootstrap=local"]]
+
+
 class FakeKeyring:
     def __init__(self) -> None:
         self.values: dict[tuple[str, str], str] = {}

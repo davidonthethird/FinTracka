@@ -435,6 +435,57 @@ def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
         assert stale.status_code == 409
 
 
+def test_spending_owner_account_default_override_and_filter(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    apply_batch(connection, connection_id, synthetic_batches([connection_id])[connection_id])
+    account = connection.execute(
+        "SELECT id, updated_at FROM accounts WHERE provider_account_id = 'checking-1'"
+    ).fetchone()
+    groceries = connection.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()[0]
+    salary = connection.execute("SELECT id FROM categories WHERE name = 'Salary'").fetchone()[0]
+    grocery_id = connection.execute(
+        "SELECT transaction_id FROM transaction_external_ids WHERE external_id = 'groceries-1'"
+    ).fetchone()[0]
+    paycheck_id = connection.execute(
+        "SELECT transaction_id FROM transaction_external_ids WHERE external_id = 'paycheck-1'"
+    ).fetchone()[0]
+    connection.execute("UPDATE transactions SET category_id = ? WHERE id = ?", (groceries, grocery_id))
+    connection.execute("UPDATE transactions SET category_id = ? WHERE id = ?", (salary, paycheck_id))
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+        changed = client.patch(
+            f"/api/v1/accounts/{account['id']}",
+            json={"expected_updated_at": account["updated_at"], "spending_owner": "Ariela"},
+            headers=headers,
+        )
+        assert changed.status_code == 200 and changed.json()["spending_owner"] == "Ariela"
+
+        rows = client.get("/api/v1/transactions", params={"limit": 20}).json()["items"]
+        grocery = next(row for row in rows if row["id"] == grocery_id)
+        paycheck = next(row for row in rows if row["id"] == paycheck_id)
+        assert grocery["spending_owner_effective"] == "Ariela"
+        assert paycheck["spending_owner_effective"] is None
+
+        override = client.patch(
+            f"/api/v1/transactions/{grocery_id}",
+            json={"expected_updated_at": grocery["updated_at"], "spending_owner": "Shared"},
+            headers=headers,
+        )
+        assert override.status_code == 200
+        shared = client.get(
+            "/api/v1/transactions", params={"spending_owner": "Shared"}
+        ).json()["items"]
+        assert [row["id"] for row in shared] == [grocery_id]
+
+
 def test_inline_categorization_learns_past_and_future_merchant_matches(tmp_path: Path) -> None:
     path = tmp_path / "ledger.sqlite3"
     connection = connect(path)

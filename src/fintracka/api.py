@@ -51,7 +51,7 @@ from fintracka.ledger import (
     undo_categorization,
     update_transaction,
 )
-from fintracka.reports import cash_flow, cash_flow_paths, overview, spending_by_category
+from fintracka.reports import cash_flow, cash_flow_paths, overview, spending_by_category, spending_by_owner
 from fintracka.readiness import filevault_enabled, readiness_report
 from fintracka.security import LocalSessions, host_allowed, origin_allowed
 from fintracka.plaid_adapter import PlaidAdapter
@@ -93,6 +93,7 @@ class AccountPatch(StrictModel):
     include_budget: bool | None = None
     include_net: bool | None = None
     include_export: bool | None = None
+    spending_owner: Literal["David", "Ariela", "Shared"] | None = None
 
 
 class TransactionPatch(StrictModel):
@@ -100,6 +101,7 @@ class TransactionPatch(StrictModel):
     category_id: str | None = None
     notes: str | None = Field(default=None, max_length=2_000)
     user_merchant: str | None = Field(default=None, max_length=300)
+    spending_owner: Literal["David", "Ariela", "Shared"] | None = None
 
 
 class BulkTransactionPatch(TransactionPatch):
@@ -122,6 +124,8 @@ class TransactionResponse(StrictModel):
     category: str | None
     category_source: str | None
     provider_category_confidence: str | None
+    spending_owner: str | None
+    spending_owner_effective: str | None
     notes: str | None
     pending: bool
     updated_at: str
@@ -474,7 +478,7 @@ def create_app(
                 """
                 SELECT a.id, a.name, a.nickname, a.type, a.subtype, a.nature, a.currency,
                        a.status, a.include_overview, a.include_budget, a.include_net,
-                       a.include_export, a.updated_at,
+                       a.include_export, a.spending_owner, a.updated_at,
                        (SELECT b.current_minor FROM account_balance_snapshots b WHERE b.account_id = a.id ORDER BY b.observed_at DESC, b.id DESC LIMIT 1) balance_minor
                 FROM accounts a ORDER BY a.nature, a.name, a.id
                 """
@@ -489,6 +493,8 @@ def create_app(
             value = getattr(payload, field)
             if field.startswith("include_") and value is None:
                 raise HTTPException(status_code=422, detail=f"{field} cannot be null")
+            if field == "spending_owner" and value is None:
+                raise HTTPException(status_code=422, detail="spending_owner cannot be null")
             values[field] = int(value) if field.startswith("include_") else value
         now = _now()
         with _write_transaction(database):
@@ -528,6 +534,7 @@ def create_app(
         search: Annotated[str | None, Query(max_length=200)] = None,
         account_id: str | None = None,
         category_id: str | None = None,
+        spending_owner: Literal["David", "Ariela", "Shared"] | None = None,
     ) -> TransactionPage:
         clauses = ["t.tombstoned = 0"]
         parameters: list[object] = []
@@ -549,6 +556,9 @@ def create_app(
         elif category_id:
             clauses.append("t.category_id = ?")
             parameters.append(category_id)
+        if spending_owner:
+            clauses.append("c.category_type = 'expense' AND COALESCE(t.spending_owner, a.spending_owner) = ?")
+            parameters.append(spending_owner)
         parameters.append(limit + 1)
         rows = database.execute(
             f"""
@@ -556,8 +566,11 @@ def create_app(
                    t.provider_description description,
                    COALESCE(t.user_merchant, t.provider_merchant) merchant,
                    t.category_id, c.name category, t.category_source,
-                   t.provider_category_confidence, t.notes, t.pending, t.updated_at
-            FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
+                   t.provider_category_confidence, t.spending_owner,
+                   CASE WHEN c.category_type = 'expense' THEN COALESCE(t.spending_owner, a.spending_owner) END spending_owner_effective,
+                   t.notes, t.pending, t.updated_at
+            FROM transactions t JOIN accounts a ON a.id = t.account_id
+            LEFT JOIN categories c ON c.id = t.category_id
             WHERE {' AND '.join(clauses)}
             ORDER BY t.local_date DESC, t.id DESC LIMIT ?
             """,
@@ -791,6 +804,10 @@ def create_app(
     @app.get("/api/v1/reports/spending")
     def spending_route(database: Database, month: str) -> list[dict[str, str | int]]:
         return spending_by_category(database, month)
+
+    @app.get("/api/v1/reports/spending-owners")
+    def spending_owners_route(database: Database, month: str) -> list[dict[str, str | int]]:
+        return spending_by_owner(database, month)
 
     @app.get("/api/v1/reports/flow")
     def flow_route(database: Database, month: str) -> dict[str, object]:
@@ -1043,8 +1060,11 @@ def _transaction(connection: sqlite3.Connection, transaction_id: str) -> sqlite3
                t.provider_description description,
                COALESCE(t.user_merchant, t.provider_merchant) merchant,
                t.category_id, c.name category, t.category_source,
-               t.provider_category_confidence, t.notes, t.pending, t.updated_at
-        FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
+               t.provider_category_confidence, t.spending_owner,
+               CASE WHEN c.category_type = 'expense' THEN COALESCE(t.spending_owner, a.spending_owner) END spending_owner_effective,
+               t.notes, t.pending, t.updated_at
+        FROM transactions t JOIN accounts a ON a.id = t.account_id
+        LEFT JOIN categories c ON c.id = t.category_id
         WHERE t.id = ?
         """,
         (transaction_id,),

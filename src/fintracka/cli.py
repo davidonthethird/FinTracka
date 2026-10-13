@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import secrets
+import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from fintracka.api import create_app
@@ -30,13 +32,18 @@ def main(argv: list[str] | None = None) -> int:
         import uvicorn
 
         bootstrap = secrets.token_urlsafe(32)
-        print(f"Open http://127.0.0.1:{args.port}/#bootstrap={bootstrap}")
+        url = f"http://127.0.0.1:{args.port}/#bootstrap={bootstrap}"
+        print(f"Open {url}")
         static_dir = Path(__file__).parent.parent.parent / "frontend" / "dist"
         app = create_app(
             database_path,
             bootstrap_token=bootstrap,
             static_directory=static_dir if static_dir.is_dir() else None,
         )
+        if args.open_chrome:
+            timer = threading.Timer(0.75, _open_in_chrome, args=(url,))
+            timer.daemon = True
+            timer.start()
         uvicorn.run(app, host="127.0.0.1", port=args.port)
         return 0
     if args.command == "init-synthetic":
@@ -141,6 +148,7 @@ def _parser() -> argparse.ArgumentParser:
     serve = subparsers.add_parser("serve")
     serve.add_argument("--data-dir", type=Path, default=_default_data_directory())
     serve.add_argument("--port", type=int, default=8787)
+    serve.add_argument("--open-chrome", action="store_true")
     synthetic = subparsers.add_parser("init-synthetic")
     synthetic.add_argument("--data-dir", type=Path, default=_default_data_directory())
     configure = subparsers.add_parser("configure")
@@ -174,6 +182,10 @@ def _parser() -> argparse.ArgumentParser:
 
 def _default_data_directory() -> Path:
     return Path.home() / "Library" / "Application Support" / "FinTracka"
+
+
+def _open_in_chrome(url: str) -> None:
+    subprocess.Popen(["open", "-a", "Google Chrome", url])
 
 
 if __name__ == "__main__":

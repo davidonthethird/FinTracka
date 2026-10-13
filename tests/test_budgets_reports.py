@@ -17,7 +17,7 @@ from fintracka.db import connect, migrate
 from fintracka.ids import new_id
 from fintracka.ledger import confirm_transfer, update_transaction
 from fintracka.providers import NormalizedAccount, NormalizedTransaction, SyncBatch
-from fintracka.reports import cash_flow, cash_flow_paths, overview, spending_by_category
+from fintracka.reports import cash_flow, cash_flow_paths, overview, spending_by_category, spending_by_owner
 from fintracka.sync import apply_batch
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
 
@@ -65,6 +65,26 @@ def test_reports_exclude_transfers_and_non_usd_and_net_refunds(
     assert sorted(entry["amount_minor"] for entry in grocery_entries) == [-8_742, 1_000]
     assert next(node for node in paths["nodes"] if node["label"] == "Money retained")["amount_minor"] == 317_258
     assert all(entry["description"] != "Transfer" and entry["currency"] == "USD" for entry in paths["entries"])
+
+
+def test_spending_owner_inherits_from_account_and_allows_transaction_override(
+    ledger: sqlite3.Connection,
+) -> None:
+    groceries = _category(ledger, "Groceries", "expense", "ordinary")
+    transaction_id = _transaction_id(ledger, "groceries-1")
+    update_transaction(ledger, transaction_id, category_id=groceries)
+    ledger.execute(
+        "UPDATE accounts SET spending_owner = 'Ariela' WHERE provider_account_id = 'checking-1'"
+    )
+
+    assert spending_by_owner(ledger, "2026-10") == [
+        {"owner": "Ariela", "amount_minor": 8_742}
+    ]
+
+    update_transaction(ledger, transaction_id, spending_owner="Shared")
+    assert spending_by_owner(ledger, "2026-10") == [
+        {"owner": "Shared", "amount_minor": 8_742}
+    ]
 
 
 def test_tracking_and_envelope_budgets_remain_independent(
