@@ -6,6 +6,7 @@ import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from threading import Barrier
 
@@ -785,6 +786,193 @@ def test_management_reports_reconciliation_and_local_operation_jobs(tmp_path: Pa
         assert _wait_for_job(client, backup_job.json()["job_id"])["status"] == "succeeded"
         assert (tmp_path / "exports" / "FinTracka.xlsx").is_file()
         assert list((tmp_path / "backups").glob("fintracka-*.sqlite3"))
+
+
+def test_planning_api_manages_income_targets_and_returns_complete_snapshot(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    shopping = connection.execute("SELECT id FROM categories WHERE name = 'Shopping'").fetchone()[0]
+    tzedaka = connection.execute("SELECT id FROM categories WHERE name = 'Tzedaka'").fetchone()[0]
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+        salary_payload = {
+            "title": "Paycheck",
+            "income_type": "Salary",
+            "amount_minor": 590_001,
+            "effective_month": "2026-10",
+        }
+        assert client.post("/api/v1/planning/income-sources", json=salary_payload).status_code == 403
+        salary = client.post(
+            "/api/v1/planning/income-sources", json=salary_payload, headers=headers
+        )
+        assert salary.status_code == 201
+        assert set(salary.json()) == {
+            "source_id", "title", "income_type", "amount_minor", "active", "effective_month", "updated_at"
+        }
+        custom = client.post(
+            "/api/v1/planning/income-sources",
+            json={"title": "Rental", "income_type": "Custom", "amount_minor": 110_000, "effective_month": "2026-10"},
+            headers=headers,
+        )
+        assert custom.status_code == 201
+        target = client.put(
+            f"/api/v1/planning/targets/{shopping}",
+            json={"effective_month": "2026-10", "amount_minor": 40_000},
+            headers=headers,
+        )
+        assert target.status_code == 200
+
+        result = client.get("/api/v1/planning/2026-10", params={"average_months": 12})
+        assert result.status_code == 200
+        body = result.json()
+        assert body["planned_income_total_minor"] == 700_001
+        assert body["salary_total_minor"] == 590_001
+        assert body["tzedaka_minimum_minor"] == 59_001
+        assert {row["income_type"] for row in body["incomes"]} == {"Salary", "Custom"}
+        shopping_row = next(row for row in body["categories"] if row["category_id"] == shopping)
+        assert set(shopping_row) >= {
+            "historical_average_minor", "target_minor", "actual_minor", "remaining_minor",
+            "status", "trend", "transaction_ids",
+        }
+        assert shopping_row["target_minor"] == 40_000 and len(shopping_row["trend"]) == 12
+        assert body["surplus_shortfall_minor"] == body["planned_income_total_minor"] - body["target_total_minor"]
+
+        below = client.put(
+            f"/api/v1/planning/targets/{tzedaka}",
+            json={"effective_month": "2026-10", "amount_minor": 59_000},
+            headers=headers,
+        )
+        assert below.status_code == 422
+        assert below.json()["detail"] == {
+            "message": "Tzedaka target is below the Salary minimum",
+            "minimum_minor": 59_001,
+        }
+        assert "sql" not in below.text.lower()
+
+
+def test_planning_api_rejects_invalid_values_unexpected_fields_and_stale_edits(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    app = create_app(path, bootstrap_token="bootstrap")
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+        for params in (
+            {"average_months": 0},
+            {"average_months": 13},
+            {"average_months": 3, "spending_owner": "Nobody"},
+        ):
+            assert client.get("/api/v1/planning/2026-10", params=params).status_code == 422
+        assert client.get("/api/v1/planning/not-a-month", params={"average_months": 3}).status_code == 422
+        invalid_payloads = [
+            {"title": "Pay", "income_type": "Other", "amount_minor": 100, "effective_month": "2026-10"},
+            {"title": "Pay", "income_type": "Salary", "amount_minor": -1, "effective_month": "2026-10"},
+            {"title": "Pay", "income_type": "Salary", "amount_minor": 10**16, "effective_month": "2026-10"},
+            {"title": "Pay", "income_type": "Salary", "amount_minor": 100, "effective_month": "2026-10", "secret": "no"},
+        ]
+        for payload in invalid_payloads:
+            assert client.post("/api/v1/planning/income-sources", json=payload, headers=headers).status_code == 422
+        created = client.post(
+            "/api/v1/planning/income-sources",
+            json={"title": "Pay", "income_type": "Salary", "amount_minor": 100, "effective_month": "2026-10"},
+            headers=headers,
+        ).json()
+        stale = client.patch(
+            f"/api/v1/planning/income-sources/{created['source_id']}",
+            json={
+                "expected_updated_at": "2000-01-01T00:00:00Z", "title": "Changed",
+                "income_type": "Salary", "amount_minor": 100, "effective_month": "2026-11", "active": True,
+            },
+            headers=headers,
+        )
+        assert stale.status_code == 409
+
+
+def test_manual_cash_api_defaults_edits_deletes_and_protects_provider_rows(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    apply_batch(connection, connection_id, synthetic_batches([connection_id])[connection_id])
+    provider_id = connection.execute(
+        "SELECT id FROM transactions WHERE account_id IN (SELECT id FROM accounts WHERE connection_id = ?) LIMIT 1",
+        (connection_id,),
+    ).fetchone()[0]
+    shopping = connection.execute("SELECT id FROM categories WHERE name = 'Shopping'").fetchone()[0]
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+        created = client.post(
+            "/api/v1/transactions/manual-cash",
+            json={"title": "Cash purchase", "amount_minor": 2_500, "category_id": shopping},
+            headers=headers,
+        )
+        assert created.status_code == 201
+        item = created.json()
+        assert item["manual_cash"] is True and item["spending_owner_effective"] == "Shared"
+        assert item["local_date"] == date.today().isoformat()
+        listed = client.get("/api/v1/transactions", params={"search": "Cash purchase"}).json()["items"]
+        assert [row["id"] for row in listed] == [item["id"]]
+        edited = client.patch(
+            f"/api/v1/transactions/manual-cash/{item['id']}",
+            json={
+                "expected_updated_at": item["updated_at"], "title": "Edited cash", "amount_minor": 2_000,
+                "category_id": shopping, "local_date": "2026-10-12", "spending_owner": "David",
+            },
+            headers=headers,
+        )
+        assert edited.status_code == 200
+        assert edited.json()["amount_minor"] == -2_000
+        assert client.delete(
+            f"/api/v1/transactions/{item['id']}",
+            params={"expected_updated_at": edited.json()["updated_at"]},
+            headers=headers,
+        ).status_code == 204
+        assert client.delete(
+            f"/api/v1/transactions/{provider_id}",
+            params={"expected_updated_at": "anything"},
+            headers=headers,
+        ).status_code == 403
+
+
+def test_withdrawal_api_exposes_marker_and_forces_single_categorization(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    withdrawal = NormalizedTransaction(
+        "atm-api", "checking-1", "2026-10-13T12:00:00Z", -5_000, "USD", "ATM WITHDRAWAL",
+        is_cash_withdrawal=True,
+    )
+    apply_batch(connection, connection_id, SyncBatch(added=(withdrawal,), next_checkpoint="atm"))
+    transaction = dict(connection.execute(
+        "SELECT id, updated_at FROM transactions WHERE provider_description = 'ATM WITHDRAWAL'"
+    ).fetchone())
+    shopping = connection.execute("SELECT id FROM categories WHERE name = 'Shopping'").fetchone()[0]
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+        row = client.get("/api/v1/transactions", params={"search": "ATM WITHDRAWAL"}).json()["items"][0]
+        assert row["is_cash_withdrawal"] is True
+        result = client.post(
+            f"/api/v1/transactions/{transaction['id']}/categorize",
+            json={"expected_updated_at": transaction["updated_at"], "category_id": shopping, "scope": "past_and_future"},
+            headers=headers,
+        )
+        assert result.status_code == 200 and result.json()["affected_count"] == 1
 
 
 def _category_payload(name: str = "Test expense") -> dict[str, str | int]:

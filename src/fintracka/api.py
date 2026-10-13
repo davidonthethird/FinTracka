@@ -36,6 +36,12 @@ from fintracka.imports import DuplicateImportError, ImportError as CSVImportErro
 from fintracka.jobs import JobRunner, recover_interrupted_jobs
 from fintracka.keychain import KeychainSecrets, SecretStoreUnavailable
 from fintracka.locks import ProcessLock
+from fintracka.manual_cash import (
+    ManualCashError,
+    create_manual_cash,
+    delete_manual_cash,
+    update_manual_cash,
+)
 from fintracka.launchd import install_schedule, remove_schedule, schedule_status
 from fintracka.ledger import (
     ConflictError,
@@ -62,6 +68,15 @@ from fintracka.plaid_service import (
     repair_plaid_connection,
     revoke_plaid_connection,
     sync_plaid_connections,
+)
+from fintracka.planning import (
+    PlanningError,
+    create_income_source,
+    planning_snapshot,
+    set_income_override,
+    set_income_version,
+    set_recurring_target,
+    set_target_override,
 )
 
 
@@ -128,6 +143,8 @@ class TransactionResponse(StrictModel):
     spending_owner_effective: str | None
     notes: str | None
     pending: bool
+    manual_cash: bool
+    is_cash_withdrawal: bool
     updated_at: str
 
 
@@ -146,6 +163,44 @@ class CategorizeResponse(StrictModel):
     transaction: TransactionResponse
     affected_count: int
     undo_id: str
+
+
+class PlannedIncomeCreate(StrictModel):
+    title: StrictStr = Field(min_length=1, max_length=120)
+    income_type: Literal["Salary", "Custom"]
+    amount_minor: StrictInt = Field(ge=0, le=10**15)
+    effective_month: StrictStr = Field(pattern=r"^\d{4}-\d{2}$")
+
+
+class PlannedIncomePatch(PlannedIncomeCreate):
+    expected_updated_at: StrictStr
+    active: StrictBool
+
+
+class PlanningOverride(StrictModel):
+    amount_minor: StrictInt | None = Field(default=None, ge=0, le=10**15)
+
+
+class PlanningTargetUpdate(StrictModel):
+    effective_month: StrictStr = Field(pattern=r"^\d{4}-\d{2}$")
+    amount_minor: StrictInt = Field(ge=0, le=10**15)
+
+
+class ManualCashCreate(StrictModel):
+    title: StrictStr = Field(min_length=1, max_length=300)
+    amount_minor: StrictInt = Field(gt=0, le=10**15)
+    category_id: StrictStr = Field(min_length=1, max_length=100)
+    local_date: StrictStr | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    spending_owner: Literal["David", "Ariela", "Shared"] = "Shared"
+
+
+class ManualCashPatch(StrictModel):
+    expected_updated_at: StrictStr
+    title: StrictStr = Field(min_length=1, max_length=300)
+    amount_minor: StrictInt = Field(gt=0, le=10**15)
+    category_id: StrictStr = Field(min_length=1, max_length=100)
+    local_date: StrictStr = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    spending_owner: Literal["David", "Ariela", "Shared"]
 
 
 class RuleConditions(StrictModel):
@@ -569,8 +624,10 @@ def create_app(
                    t.category_id, c.name category, t.category_source,
                    t.provider_category_confidence, t.spending_owner,
                    CASE WHEN c.category_type = 'expense' THEN COALESCE(t.spending_owner, a.spending_owner) END spending_owner_effective,
-                   t.notes, t.pending, t.updated_at
+                   t.notes, t.pending, pc.provider = 'manual' manual_cash,
+                   t.is_cash_withdrawal, t.updated_at
             FROM transactions t JOIN accounts a ON a.id = t.account_id
+            JOIN provider_connections pc ON pc.id = a.connection_id
             LEFT JOIN categories c ON c.id = t.category_id
             WHERE {' AND '.join(clauses)}
             ORDER BY t.local_date DESC, t.id DESC LIMIT ?
@@ -582,6 +639,52 @@ def create_app(
         items = [TransactionResponse(**{**dict(row), "pending": bool(row["pending"])}) for row in visible]
         next_cursor = _encode_cursor(visible[-1]["local_date"], visible[-1]["id"]) if has_more else None
         return TransactionPage(items=items, next_cursor=next_cursor)
+
+    @app.post("/api/v1/transactions/manual-cash", response_model=TransactionResponse, status_code=201)
+    def create_manual_cash_route(payload: ManualCashCreate, database: Database) -> TransactionResponse:
+        try:
+            with _write_transaction(database):
+                transaction_id = create_manual_cash(
+                    database,
+                    payload.title,
+                    payload.amount_minor,
+                    payload.category_id,
+                    payload.local_date or date.today().isoformat(),
+                    payload.spending_owner,
+                )
+        except ManualCashError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return _transaction_response(database, transaction_id)
+
+    @app.patch("/api/v1/transactions/manual-cash/{transaction_id}", response_model=TransactionResponse)
+    def patch_manual_cash_route(
+        transaction_id: str, payload: ManualCashPatch, database: Database
+    ) -> TransactionResponse:
+        try:
+            with _write_transaction(database):
+                update_manual_cash(
+                    database,
+                    transaction_id,
+                    payload.expected_updated_at,
+                    payload.title,
+                    payload.amount_minor,
+                    payload.category_id,
+                    payload.local_date,
+                    payload.spending_owner,
+                )
+        except ManualCashError as error:
+            raise HTTPException(status_code=_manual_cash_status(error), detail=str(error)) from error
+        return _transaction_response(database, transaction_id)
+
+    @app.delete("/api/v1/transactions/{transaction_id}", status_code=204)
+    def delete_transaction_route(
+        transaction_id: str, expected_updated_at: str, database: Database
+    ) -> None:
+        try:
+            with _write_transaction(database):
+                delete_manual_cash(database, transaction_id, expected_updated_at)
+        except ManualCashError as error:
+            raise HTTPException(status_code=_manual_cash_status(error), detail=str(error)) from error
 
     @app.patch("/api/v1/transactions/{transaction_id}", response_model=TransactionResponse)
     def patch_transaction(transaction_id: str, payload: TransactionPatch, database: Database) -> TransactionResponse:
@@ -837,6 +940,83 @@ def create_app(
             )
         ]
 
+    @app.get("/api/v1/planning/{month}")
+    def planning_route(
+        month: str,
+        database: Database,
+        average_months: Annotated[int, Query(ge=1, le=12)] = 12,
+        spending_owner: Literal["David", "Ariela", "Shared"] | None = None,
+    ) -> dict[str, object]:
+        try:
+            return asdict(planning_snapshot(database, month, average_months, spending_owner))
+        except PlanningError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post("/api/v1/planning/income-sources", status_code=201)
+    def create_planned_income(payload: PlannedIncomeCreate, database: Database) -> dict[str, object]:
+        try:
+            with _write_transaction(database):
+                source_id = create_income_source(
+                    database, payload.title, payload.income_type, payload.amount_minor, payload.effective_month
+                )
+        except PlanningError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return _planned_income_version(database, source_id, payload.effective_month)
+
+    @app.patch("/api/v1/planning/income-sources/{source_id}")
+    def patch_planned_income(
+        source_id: str, payload: PlannedIncomePatch, database: Database
+    ) -> dict[str, object]:
+        try:
+            with _write_transaction(database):
+                current = database.execute(
+                    "SELECT updated_at FROM planning_income_sources WHERE id = ?", (source_id,)
+                ).fetchone()
+                if current is None:
+                    raise HTTPException(status_code=404, detail="planned income source not found")
+                if current["updated_at"] != payload.expected_updated_at:
+                    raise HTTPException(status_code=409, detail="planned income source changed; refresh and retry")
+                set_income_version(
+                    database, source_id, payload.title, payload.income_type,
+                    payload.amount_minor, payload.effective_month, payload.active,
+                )
+        except PlanningError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return _planned_income_version(database, source_id, payload.effective_month)
+
+    @app.put("/api/v1/planning/income-sources/{source_id}/overrides/{month}")
+    def update_income_override(
+        source_id: str, month: str, payload: PlanningOverride, database: Database
+    ) -> dict[str, object]:
+        try:
+            with _write_transaction(database):
+                set_income_override(database, source_id, month, payload.amount_minor)
+            return asdict(planning_snapshot(database, month, 12))
+        except PlanningError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.put("/api/v1/planning/targets/{category_id}")
+    def update_planning_target(
+        category_id: str, payload: PlanningTargetUpdate, database: Database
+    ) -> dict[str, object]:
+        try:
+            with _write_transaction(database):
+                set_recurring_target(database, category_id, payload.amount_minor, payload.effective_month)
+            return _planning_category(database, category_id, payload.effective_month)
+        except PlanningError as error:
+            raise HTTPException(status_code=422, detail=_planning_error_detail(error)) from error
+
+    @app.put("/api/v1/planning/targets/{category_id}/overrides/{month}")
+    def update_planning_target_override(
+        category_id: str, month: str, payload: PlanningOverride, database: Database
+    ) -> dict[str, object]:
+        try:
+            with _write_transaction(database):
+                set_target_override(database, category_id, month, payload.amount_minor)
+            return _planning_category(database, category_id, month)
+        except PlanningError as error:
+            raise HTTPException(status_code=422, detail=_planning_error_detail(error)) from error
+
     @app.get("/api/v1/budgets/tracking/{month}")
     def tracking_route(month: str, database: Database) -> list[dict[str, object]]:
         return [asdict(row) for row in tracking_budget(database, month)]
@@ -1063,8 +1243,10 @@ def _transaction(connection: sqlite3.Connection, transaction_id: str) -> sqlite3
                t.category_id, c.name category, t.category_source,
                t.provider_category_confidence, t.spending_owner,
                CASE WHEN c.category_type = 'expense' THEN COALESCE(t.spending_owner, a.spending_owner) END spending_owner_effective,
-               t.notes, t.pending, t.updated_at
+               t.notes, t.pending, pc.provider = 'manual' manual_cash,
+               t.is_cash_withdrawal, t.updated_at
         FROM transactions t JOIN accounts a ON a.id = t.account_id
+        JOIN provider_connections pc ON pc.id = a.connection_id
         LEFT JOIN categories c ON c.id = t.category_id
         WHERE t.id = ?
         """,
@@ -1073,6 +1255,56 @@ def _transaction(connection: sqlite3.Connection, transaction_id: str) -> sqlite3
     if row is None:
         raise HTTPException(status_code=404, detail="transaction not found")
     return row
+
+
+def _transaction_response(connection: sqlite3.Connection, transaction_id: str) -> TransactionResponse:
+    row = _transaction(connection, transaction_id)
+    return TransactionResponse(**{**dict(row), "pending": bool(row["pending"])})
+
+
+def _manual_cash_status(error: ManualCashError) -> int:
+    message = str(error)
+    if "not a manual cash entry" in message:
+        return 403
+    if "changed" in message:
+        return 409
+    return 422
+
+
+def _planning_error_detail(error: PlanningError) -> str | dict[str, object]:
+    if error.minimum_minor is not None:
+        return {"message": str(error), "minimum_minor": error.minimum_minor}
+    return str(error)
+
+
+def _planned_income_version(
+    connection: sqlite3.Connection, source_id: str, effective_month: str
+) -> dict[str, object]:
+    row = connection.execute(
+        """
+        SELECT v.source_id, v.title, v.income_type, v.amount_minor, v.active,
+               v.effective_month, s.updated_at
+        FROM planning_income_versions v
+        JOIN planning_income_sources s ON s.id = v.source_id
+        WHERE v.source_id = ? AND v.effective_month = ?
+        """,
+        (source_id, effective_month),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="planned income source not found")
+    result = dict(row)
+    result["active"] = bool(result["active"])
+    return result
+
+
+def _planning_category(
+    connection: sqlite3.Connection, category_id: str, month: str
+) -> dict[str, object]:
+    snapshot = planning_snapshot(connection, month, 12)
+    for category in snapshot.categories:
+        if category.category_id == category_id:
+            return asdict(category)
+    raise HTTPException(status_code=404, detail="category not found")
 
 
 @contextmanager
