@@ -39,7 +39,9 @@ def test_reports_exclude_transfers_and_non_usd_and_net_refunds(
     groceries = _category(ledger, "Groceries", "expense", "ordinary")
     update_transaction(ledger, _transaction_id(ledger, "paycheck-1"), category_id=income)
     update_transaction(ledger, _transaction_id(ledger, "groceries-1"), category_id=groceries)
-    connection_id = ledger.execute("SELECT id FROM provider_connections").fetchone()[0]
+    connection_id = ledger.execute(
+        "SELECT id FROM provider_connections WHERE provider = 'synthetic'"
+    ).fetchone()[0]
     batch = SyncBatch(
         accounts=(NormalizedAccount("euro-1", "Euro account", "depository", "checking", "asset", "EUR"),),
         added=(
@@ -92,7 +94,9 @@ def test_tracking_and_envelope_budgets_remain_independent(
 ) -> None:
     groceries = _category(ledger, "Groceries", "expense", "ordinary")
     update_transaction(ledger, _transaction_id(ledger, "groceries-1"), category_id=groceries)
-    connection_id = ledger.execute("SELECT id FROM provider_connections").fetchone()[0]
+    connection_id = ledger.execute(
+        "SELECT id FROM provider_connections WHERE provider = 'synthetic'"
+    ).fetchone()[0]
     apply_batch(
         ledger,
         connection_id,
@@ -146,7 +150,9 @@ def test_overview_uses_latest_included_usd_balances(ledger: sqlite3.Connection) 
 def test_overview_separates_cash_activity_and_confirmed_card_payments(
     ledger: sqlite3.Connection,
 ) -> None:
-    connection_id = ledger.execute("SELECT id FROM provider_connections").fetchone()[0]
+    connection_id = ledger.execute(
+        "SELECT id FROM provider_connections WHERE provider = 'synthetic'"
+    ).fetchone()[0]
     apply_batch(
         ledger,
         connection_id,

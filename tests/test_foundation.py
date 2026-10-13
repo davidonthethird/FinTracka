@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import stat
 from concurrent.futures import ThreadPoolExecutor
+from importlib.resources import files
 import uuid
 from datetime import date
 from pathlib import Path
@@ -75,12 +76,25 @@ def test_migrations_are_idempotent_and_install_core_constraints(tmp_path: Path) 
         } <= tables
         assert [
             row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ] == [1, 2, 3, 4, 5, 6, 7]
+        ] == [1, 2, 3, 4, 5, 6, 7, 8]
         starter_categories = {
             row[0]
             for row in connection.execute("SELECT name FROM categories WHERE archived = 0")
         }
         assert {"Salary", "Groceries", "Housing", "Credit card payment", "Refunds & reimbursements"} <= starter_categories
+        tzedaka = connection.execute(
+            "SELECT c.id, g.name FROM categories c JOIN category_groups g ON g.id = c.group_id WHERE c.name = 'Tzedaka'"
+        ).fetchone()
+        assert tuple(tzedaka) == ("01a13243-efa9-7b54-b1f7-dea052230fcb", "Tzedaka")
+        assert connection.execute("SELECT 1 FROM categories WHERE name = 'Giving'").fetchone() is None
+        manual = connection.execute(
+            """
+            SELECT pc.provider, a.name, a.include_overview, a.include_budget, a.include_net, a.include_export
+            FROM accounts a JOIN provider_connections pc ON pc.id = a.connection_id
+            WHERE pc.provider = 'manual'
+            """
+        ).fetchone()
+        assert tuple(manual) == ("manual", "Manual cash", 1, 1, 0, 1)
         assert "environment" in {
             row[1] for row in connection.execute("PRAGMA table_info(provider_connections)")
         }
@@ -92,8 +106,122 @@ def test_migrations_are_idempotent_and_install_core_constraints(tmp_path: Path) 
                 VALUES ('x', 'synthetic', 'bank', 'Bank', '2026-10-11T00:00:00Z')
                 """
             )
+
+        source_id = new_id()
+        connection.execute(
+            "INSERT INTO planning_income_sources (id, created_at, updated_at) VALUES (?, '2026-10-13T00:00:00Z', '2026-10-13T00:00:00Z')",
+            (source_id,),
+        )
+        invalid_versions = (
+            ("2026-1", "Salary", 100),
+            ("2026-10", "Gift", 100),
+            ("2026-10", "Salary", -1),
+        )
+        for month, income_type, amount in invalid_versions:
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    """
+                    INSERT INTO planning_income_versions
+                    (id, source_id, effective_month, title, income_type, amount_minor, currency, active, created_at, updated_at)
+                    VALUES (?, ?, ?, 'Pay', ?, ?, 'USD', 1, '2026-10-13T00:00:00Z', '2026-10-13T00:00:00Z')
+                    """,
+                    (new_id(), source_id, month, income_type, amount),
+                )
+        transaction_id = new_id()
+        connection.execute(
+            """
+            INSERT INTO transactions
+            (id, account_id, local_date, amount_minor, currency, provider_description, created_at, updated_at)
+            VALUES (?, '01a13243-efa9-7b54-b1f7-dea052230fd1', '2026-10-13', -100, 'USD', 'Cash',
+                    '2026-10-13T00:00:00Z', '2026-10-13T00:00:00Z')
+            """,
+            (transaction_id,),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("UPDATE transactions SET is_cash_withdrawal = 2 WHERE id = ?", (transaction_id,))
     finally:
         connection.close()
+
+
+def test_planning_migration_preserves_giving_identity_and_legacy_target(tmp_path: Path) -> None:
+    connection = connect(tmp_path / "legacy.sqlite3")
+    try:
+        _migrate_through(connection, 7)
+        giving_id = connection.execute("SELECT id FROM categories WHERE name = 'Giving'").fetchone()[0]
+        institution_id, connection_id, account_id, transaction_id, rule_id = [new_id() for _ in range(5)]
+        now = "2026-10-13T00:00:00Z"
+        connection.execute(
+            "INSERT INTO institutions VALUES (?, 'synthetic', 'legacy-bank', 'Legacy bank', ?)",
+            (institution_id, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO provider_connections
+            (id, provider, external_connection_id, institution_id, status, created_at, updated_at, environment)
+            VALUES (?, 'synthetic', 'legacy-item', ?, 'active', ?, ?, NULL)
+            """,
+            (connection_id, institution_id, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO accounts
+            (id, connection_id, provider_account_id, name, type, nature, currency, created_at, updated_at)
+            VALUES (?, ?, 'legacy-account', 'Legacy checking', 'depository', 'asset', 'USD', ?, ?)
+            """,
+            (account_id, connection_id, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO transactions
+            (id, account_id, local_date, amount_minor, currency, provider_description, category_id, category_source, created_at, updated_at)
+            VALUES (?, ?, '2026-10-01', -1800, 'USD', 'CHARITY', ?, 'manual', ?, ?)
+            """,
+            (transaction_id, account_id, giving_id, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO categorization_rules
+            (id, name, priority, conditions_json, category_id, created_at, updated_at)
+            VALUES (?, 'Giving rule', 10, '{"description_contains":"CHARITY"}', ?, ?, ?)
+            """,
+            (rule_id, giving_id, now, now),
+        )
+        connection.execute(
+            "INSERT INTO tracking_budget_targets VALUES (?, '2026-10', 50000, 'USD')",
+            (giving_id,),
+        )
+
+        migrate(connection)
+
+        assert tuple(connection.execute(
+            "SELECT id, name FROM categories WHERE id = ?", (giving_id,)
+        ).fetchone()) == (giving_id, "Tzedaka")
+        assert connection.execute("SELECT category_id FROM transactions WHERE id = ?", (transaction_id,)).fetchone()[0] == giving_id
+        assert connection.execute("SELECT category_id FROM categorization_rules WHERE id = ?", (rule_id,)).fetchone()[0] == giving_id
+        assert tuple(connection.execute(
+            "SELECT category_id, month, amount_minor, currency FROM planning_target_overrides"
+        ).fetchone()) == (giving_id, "2026-10", 50000, "USD")
+    finally:
+        connection.close()
+
+
+def _migrate_through(connection: sqlite3.Connection, maximum_version: int) -> None:
+    connection.execute(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)"
+    )
+    migration_root = files("fintracka").joinpath("migrations")
+    for resource in sorted(migration_root.iterdir(), key=lambda item: item.name):
+        if resource.suffix != ".sql":
+            continue
+        version = int(resource.name.split("_", 1)[0])
+        if version > maximum_version:
+            continue
+        name = resource.name.replace("'", "''")
+        connection.executescript(
+            "BEGIN IMMEDIATE;\n"
+            + resource.read_text(encoding="utf-8")
+            + f"\nINSERT INTO schema_migrations VALUES ({version}, '{name}', '2026-10-13T00:00:00Z');\nCOMMIT;"
+        )
 
 def test_request_connection_can_cross_fastapi_worker_threads(tmp_path) -> None:
     connection = connect(tmp_path / "ledger.sqlite3")

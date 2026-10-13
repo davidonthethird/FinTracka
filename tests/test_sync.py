@@ -27,7 +27,9 @@ def test_three_bank_fixture_has_checking_savings_and_multiple_cards(
     for connection_id, batch in synthetic_batches(connection_ids).items():
         apply_batch(ledger, connection_id, batch)
 
-    assert ledger.execute("SELECT COUNT(*) FROM institutions").fetchone()[0] == 3
+    assert ledger.execute(
+        "SELECT COUNT(*) FROM institutions WHERE provider = 'synthetic'"
+    ).fetchone()[0] == 3
     types = [row[0] for row in ledger.execute("SELECT subtype FROM accounts")]
     assert "checking" in types
     assert "savings" in types

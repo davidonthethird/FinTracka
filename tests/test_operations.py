@@ -63,7 +63,9 @@ def test_excel_export_is_deterministic_replaces_deleted_rows_and_escapes_formula
     ledger_path: Path, tmp_path: Path
 ) -> None:
     connection = connect(ledger_path)
-    connection_id = connection.execute("SELECT id FROM provider_connections").fetchone()[0]
+    connection_id = connection.execute(
+        "SELECT id FROM provider_connections WHERE provider = 'synthetic'"
+    ).fetchone()[0]
     dangerous = NormalizedTransaction(
         "formula", "checking-1", "2026-10-10T12:00:00Z", -100, "USD", "=HYPERLINK(\"https://evil\")"
     )

@@ -75,7 +75,9 @@ def test_splits_must_sum_exactly_and_replace_parent_in_reporting(
 def test_transfer_candidates_require_opposite_amounts_and_confirmation_is_unique(
     ledger: sqlite3.Connection,
 ) -> None:
-    connection_id = ledger.execute("SELECT id FROM provider_connections").fetchone()[0]
+    connection_id = ledger.execute(
+        "SELECT id FROM provider_connections WHERE provider = 'synthetic'"
+    ).fetchone()[0]
     _add_account(ledger, connection_id, "savings-extra")
     apply_batch(
         ledger,

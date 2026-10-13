@@ -408,6 +408,7 @@ def create_app(
                        pc.last_success_at, pc.last_error_code, pc.updated_at
                 FROM provider_connections pc
                 LEFT JOIN institutions i ON i.id = pc.institution_id
+                WHERE pc.provider != 'manual'
                 ORDER BY pc.created_at, pc.id
                 """
             )
