@@ -10,7 +10,7 @@ from openpyxl import load_workbook
 
 from fintracka.backups import backup_database, restore_database
 from fintracka.db import connect, migrate
-from fintracka.exports import SHEET_ORDER, export_excel, export_google
+from fintracka.exports import SHEET_ORDER, build_snapshot, export_excel, export_google
 from fintracka.google_sheets import (
     DRIVE_FILE_SCOPE,
     GoogleSheetsGateway,
@@ -26,6 +26,8 @@ from fintracka.launchd import (
     schedule_status,
 )
 from fintracka.locks import ProcessLock, ProcessLockError
+from fintracka.manual_cash import create_manual_cash
+from fintracka.planning import create_income_source, set_recurring_target
 from fintracka.providers import NormalizedTransaction, SyncBatch
 from fintracka.sync import apply_batch
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
@@ -108,6 +110,49 @@ def test_google_export_replaces_complete_sheets_in_bounded_batches(ledger_path: 
     assert {name: rows for name, rows in gateway.sheets.items() if name != "_FinTrackaMetadata"} == first
     assert all(size <= 2 for size in gateway.batch_sizes)
     assert gateway.protected == set(SHEET_ORDER)
+    connection.close()
+
+
+def test_export_includes_effective_planning_and_manual_cash_deterministically(
+    ledger_path: Path,
+) -> None:
+    connection = connect(ledger_path)
+    salary = create_income_source(connection, "Paycheck", "Salary", 590_001, "2026-01")
+    custom = create_income_source(connection, "=Rental", "Custom", 110_000, "2026-01")
+    shopping = connection.execute("SELECT id FROM categories WHERE name = 'Shopping'").fetchone()[0]
+    tzedaka = connection.execute("SELECT id FROM categories WHERE name = 'Tzedaka'").fetchone()[0]
+    set_recurring_target(connection, shopping, 40_000, "2026-01")
+    manual_id = create_manual_cash(connection, "Cash gift", 2_500, tzedaka, "2026-10-13", "Shared")
+
+    first = build_snapshot(connection)
+    second = build_snapshot(connection)
+
+    assert "Planned Income" in SHEET_ORDER
+    assert first["Planned Income"] == second["Planned Income"]
+    income_rows = first["Planned Income"]
+    assert {row[0] for row in income_rows[1:]} >= {f"{salary}:2026-01", f"{custom}:2026-12"}
+    rental = next(row for row in income_rows[1:] if row[0] == f"{custom}:2026-01")
+    assert rental[2] == "'=Rental" and rental[3] == "Custom"
+
+    monthly = first["Monthly Budget"]
+    assert len({row[1] for row in monthly[1:]}) == 12
+    october_shopping = next(
+        row for row in monthly[1:] if row[1] == "2026-10" and row[2] == "Shopping"
+    )
+    assert october_shopping[3:12] == [0, 40_000, 0, 40_000, 0, 700_001, 590_001, 12, "USD"]
+    october_tzedaka = next(
+        row for row in monthly[1:] if row[1] == "2026-10" and row[2] == "Tzedaka"
+    )
+    assert october_tzedaka[4] == 59_001
+    assert october_tzedaka[5] == 2_500
+    yearly_tzedaka = next(row for row in first["Yearly Budget"][1:] if row[2] == "Tzedaka")
+    assert yearly_tzedaka[4] == 59_001 * 12 and yearly_tzedaka[5] == 2_500
+
+    transaction_rows = first["Transactions"]
+    manual = next(row for row in transaction_rows[1:] if row[0] == manual_id)
+    assert transaction_rows[0][-1] == "Manual cash"
+    assert manual[-1] == "Yes"
+    assert [row[0] for row in transaction_rows[1:]].count(manual_id) == 1
     connection.close()
 
 

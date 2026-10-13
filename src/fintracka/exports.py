@@ -12,6 +12,7 @@ from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from fintracka.ids import new_id
+from fintracka.planning import planning_snapshot
 from fintracka.reports import spending_by_category
 
 SHEET_ORDER = (
@@ -21,6 +22,7 @@ SHEET_ORDER = (
     "Balance History",
     "Categories",
     "Auto-categorization Rules",
+    "Planned Income",
     "Monthly Budget",
     "Yearly Budget",
     "Spending Trends",
@@ -103,14 +105,16 @@ def build_snapshot(connection: sqlite3.Connection) -> dict[str, list[list[object
         database_id = (value,)
     sheets: dict[str, list[list[object]]] = {}
     sheets["Transactions"] = _rows(
-        ["FinTracka ID", "Date", "Account", "Amount (minor units)", "Currency", "Description", "Merchant", "Category", "Notes", "Pending", "Last updated", "Spending owner"],
+        ["FinTracka ID", "Date", "Account", "Amount (minor units)", "Currency", "Description", "Merchant", "Category", "Notes", "Pending", "Last updated", "Spending owner", "Manual cash"],
         connection.execute(
             """
             SELECT t.id, t.local_date, a.name, t.amount_minor, t.currency,
                    t.provider_description, COALESCE(t.user_merchant, t.provider_merchant),
                    c.name, t.notes, t.pending, t.updated_at,
-                   CASE WHEN c.category_type = 'expense' THEN COALESCE(t.spending_owner, a.spending_owner) END
+                   CASE WHEN c.category_type = 'expense' THEN COALESCE(t.spending_owner, a.spending_owner) END,
+                   CASE WHEN pc.provider = 'manual' THEN 'Yes' ELSE 'No' END
             FROM transactions t JOIN accounts a ON a.id = t.account_id
+            JOIN provider_connections pc ON pc.id = a.connection_id
             LEFT JOIN categories c ON c.id = t.category_id
             WHERE t.tombstoned = 0 AND a.include_export = 1
             ORDER BY t.local_date, t.id
@@ -153,18 +157,11 @@ def build_snapshot(connection: sqlite3.Connection) -> dict[str, list[list[object
             "SELECT r.id, r.priority, r.name, r.enabled, r.conditions_json, c.name, r.updated_at FROM categorization_rules r JOIN categories c ON c.id = r.category_id ORDER BY r.priority, r.id"
         ),
     )
-    sheets["Monthly Budget"] = _rows(
-        ["FinTracka ID", "Month", "Category", "Target (minor units)", "Currency", "Last updated"],
-        connection.execute(
-            "SELECT t.category_id || ':' || t.month, t.month, c.name, t.amount_minor, t.currency, c.updated_at FROM tracking_budget_targets t JOIN categories c ON c.id = t.category_id ORDER BY t.month, c.sort_order, c.name"
-        ),
-    )
-    sheets["Yearly Budget"] = _rows(
-        ["FinTracka ID", "Year", "Category", "Target (minor units)", "Currency", "Last updated"],
-        connection.execute(
-            "SELECT t.category_id || ':' || substr(t.month, 1, 4), substr(t.month, 1, 4), c.name, SUM(t.amount_minor), t.currency, MAX(c.updated_at) FROM tracking_budget_targets t JOIN categories c ON c.id = t.category_id GROUP BY t.category_id, substr(t.month, 1, 4), c.name, t.currency ORDER BY substr(t.month, 1, 4), c.sort_order, c.name"
-        ),
-    )
+    export_year = datetime.now().year
+    planned_income, monthly_budget, yearly_budget = _planning_rows(connection, export_year)
+    sheets["Planned Income"] = planned_income
+    sheets["Monthly Budget"] = monthly_budget
+    sheets["Yearly Budget"] = yearly_budget
     trends: list[list[object]] = [["FinTracka ID", "Month", "Category", "Spending (minor units)", "Last updated"]]
     months = [row[0] for row in connection.execute("SELECT DISTINCT substr(local_date, 1, 7) FROM transactions WHERE tombstoned = 0 ORDER BY 1")]
     exported_at = _now()
@@ -181,6 +178,69 @@ def build_snapshot(connection: sqlite3.Connection) -> dict[str, list[list[object
         *[[f"rows:{name}", count] for name, count in row_counts.items()],
     ]
     return sheets
+
+
+def _planning_rows(
+    connection: sqlite3.Connection, year: int
+) -> tuple[list[list[object]], list[list[object]], list[list[object]]]:
+    income_rows: list[list[object]] = [[
+        "FinTracka ID", "Month", "Title", "Type", "Amount (minor units)",
+        "Currency", "Last updated",
+    ]]
+    monthly_rows: list[list[object]] = [[
+        "FinTracka ID", "Month", "Category", "Historical average (minor units)",
+        "Target (minor units)", "Actual (minor units)", "Remaining (minor units)",
+        "Tzedaka minimum (minor units)", "Planned income (minor units)",
+        "Salary (minor units)", "Average window (months)", "Currency", "Last updated",
+    ]]
+    category_updated = {
+        row["id"]: row["updated_at"]
+        for row in connection.execute("SELECT id, updated_at FROM categories")
+    }
+    monthly_snapshots = []
+    for number in range(1, 13):
+        month = f"{year:04d}-{number:02d}"
+        snapshot = planning_snapshot(connection, month, 12)
+        monthly_snapshots.append(snapshot)
+        for income in snapshot.incomes:
+            income_rows.append([
+                f"{income.source_id}:{month}", month, _safe(income.title), income.income_type,
+                income.amount_minor, "USD", income.updated_at,
+            ])
+        for category in snapshot.categories:
+            monthly_rows.append([
+                f"{category.category_id}:{month}", month, category.category,
+                category.historical_average_minor, category.target_minor, category.actual_minor,
+                category.remaining_minor, category.tzedaka_minimum_minor,
+                snapshot.planned_income_total_minor, snapshot.salary_total_minor,
+                snapshot.average_months, "USD", category_updated[category.category_id],
+            ])
+
+    yearly_rows: list[list[object]] = [[
+        "FinTracka ID", "Year", "Category", "Historical average (minor units)",
+        "Target (minor units)", "Actual (minor units)", "Remaining (minor units)",
+        "Tzedaka minimum (minor units)", "Planned income (minor units)",
+        "Salary (minor units)", "Average window (months)", "Currency", "Last updated",
+    ]]
+    if monthly_snapshots:
+        for position, category in enumerate(monthly_snapshots[0].categories):
+            categories = [snapshot.categories[position] for snapshot in monthly_snapshots]
+            yearly_rows.append([
+                f"{category.category_id}:{year}", str(year), category.category,
+                _rounded_average(sum(row.historical_average_minor for row in categories), 12),
+                sum(row.target_minor for row in categories),
+                sum(row.actual_minor for row in categories),
+                sum(row.remaining_minor for row in categories),
+                sum(row.tzedaka_minimum_minor for row in categories),
+                sum(snapshot.planned_income_total_minor for snapshot in monthly_snapshots),
+                sum(snapshot.salary_total_minor for snapshot in monthly_snapshots),
+                12, "USD", category_updated[category.category_id],
+            ])
+    return income_rows, monthly_rows, yearly_rows
+
+
+def _rounded_average(total: int, count: int) -> int:
+    return (total + count // 2) // count if total >= 0 else -((-total + count // 2) // count)
 
 
 def _rows(headers: list[str], cursor: sqlite3.Cursor) -> list[list[object]]:
