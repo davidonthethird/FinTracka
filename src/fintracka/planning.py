@@ -41,6 +41,7 @@ class PlanningCategory:
     trend: tuple[PlanningTrendPoint, ...]
     transaction_ids: tuple[str, ...]
     tzedaka_minimum_minor: int
+    updated_at: str
 
 
 @dataclass(frozen=True)
@@ -158,6 +159,7 @@ def set_recurring_target(
         """,
         (new_id(), category_id, effective_month, amount_minor, now, now),
     )
+    connection.execute("UPDATE categories SET updated_at = ? WHERE id = ?", (now, category_id))
     _audit(connection, "planning_target_set", "budget", category_id, now)
 
 
@@ -186,6 +188,7 @@ def set_target_override(
             """,
             (category_id, month, amount_minor, now),
         )
+    connection.execute("UPDATE categories SET updated_at = ? WHERE id = ?", (now, category_id))
     _audit(connection, "planning_target_override_set", "budget", category_id, now)
 
 
@@ -227,7 +230,7 @@ def planning_snapshot(
     targets = _effective_targets(connection, month)
     category_rows = connection.execute(
         """
-        SELECT c.id, c.name
+        SELECT c.id, c.name, c.updated_at
         FROM categories c LEFT JOIN category_groups g ON g.id = c.group_id
         WHERE c.archived = 0 AND c.category_type = 'expense'
         ORDER BY COALESCE(g.sort_order, 999), c.sort_order, c.name, c.id
@@ -260,6 +263,7 @@ def planning_snapshot(
                 trend,
                 tuple(sorted(transaction_ids.get(category_id, set()))),
                 minimum,
+                row["updated_at"],
             )
         )
     target_total = sum(row.target_minor for row in categories)
@@ -289,9 +293,9 @@ def _effective_incomes(connection: sqlite3.Connection, month: str) -> tuple[Plan
         )
         SELECT r.source_id, r.title, r.income_type,
                COALESCE(o.amount_minor, r.amount_minor) amount_minor,
-               CASE WHEN o.updated_at IS NOT NULL AND o.updated_at > r.updated_at
-                    THEN o.updated_at ELSE r.updated_at END updated_at
+               s.updated_at
         FROM ranked r
+        JOIN planning_income_sources s ON s.id = r.source_id
         LEFT JOIN planning_income_overrides o
           ON o.source_id = r.source_id AND o.month = ? AND o.currency = 'USD'
         WHERE r.position = 1 AND r.active = 1

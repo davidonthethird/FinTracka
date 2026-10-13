@@ -82,6 +82,23 @@ def test_withdrawal_categorization_is_always_one_time(ledger: sqlite3.Connection
         "SELECT category_id FROM transactions WHERE id = ?", (identifiers[1],)
     ).fetchone()[0] is None
 
+    ordinary = new_id()
+    protected = new_id()
+    ledger.executemany(
+        """
+        INSERT INTO transactions
+        (id, account_id, local_date, amount_minor, currency, provider_description,
+         provider_merchant, is_cash_withdrawal, created_at, updated_at)
+        VALUES (?, ?, '2026-10-13', -2000, 'USD', 'SAME MERCHANT', 'Same Merchant', ?, ?, ?)
+        """,
+        [(ordinary, account_id, 0, now, now), (protected, account_id, 1, now, now)],
+    )
+    learned = categorize_transaction(ledger, ordinary, shopping, "past_and_future")
+    assert learned.affected_count == 1
+    assert ledger.execute(
+        "SELECT category_id FROM transactions WHERE id = ?", (protected,)
+    ).fetchone()[0] is None
+
 
 def test_splits_must_sum_exactly_and_replace_parent_in_reporting(
     ledger: sqlite3.Connection,

@@ -435,7 +435,6 @@ def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
         )
         assert stale.status_code == 409
 
-
 def test_spending_owner_account_default_override_and_filter(tmp_path: Path) -> None:
     path = tmp_path / "ledger.sqlite3"
     connection = connect(path)
@@ -792,8 +791,10 @@ def test_planning_api_manages_income_targets_and_returns_complete_snapshot(tmp_p
     path = tmp_path / "ledger.sqlite3"
     connection = connect(path)
     migrate(connection)
-    shopping = connection.execute("SELECT id FROM categories WHERE name = 'Shopping'").fetchone()[0]
-    tzedaka = connection.execute("SELECT id FROM categories WHERE name = 'Tzedaka'").fetchone()[0]
+    shopping_row = connection.execute("SELECT id, updated_at FROM categories WHERE name = 'Shopping'").fetchone()
+    tzedaka_row = connection.execute("SELECT id, updated_at FROM categories WHERE name = 'Tzedaka'").fetchone()
+    shopping, shopping_updated = shopping_row
+    tzedaka, tzedaka_updated = tzedaka_row
     connection.close()
     app = create_app(path, bootstrap_token="bootstrap")
 
@@ -823,7 +824,7 @@ def test_planning_api_manages_income_targets_and_returns_complete_snapshot(tmp_p
         assert custom.status_code == 201
         target = client.put(
             f"/api/v1/planning/targets/{shopping}",
-            json={"effective_month": "2026-10", "amount_minor": 40_000},
+            json={"expected_updated_at": shopping_updated, "effective_month": "2026-10", "amount_minor": 40_000},
             headers=headers,
         )
         assert target.status_code == 200
@@ -845,7 +846,7 @@ def test_planning_api_manages_income_targets_and_returns_complete_snapshot(tmp_p
 
         below = client.put(
             f"/api/v1/planning/targets/{tzedaka}",
-            json={"effective_month": "2026-10", "amount_minor": 59_000},
+            json={"expected_updated_at": tzedaka_updated, "effective_month": "2026-10", "amount_minor": 59_000},
             headers=headers,
         )
         assert below.status_code == 422
@@ -892,6 +893,43 @@ def test_planning_api_rejects_invalid_values_unexpected_fields_and_stale_edits(t
             headers=headers,
         )
         assert stale.status_code == 409
+
+        november = client.patch(
+            f"/api/v1/planning/income-sources/{created['source_id']}",
+            json={
+                "expected_updated_at": created["updated_at"], "title": "Pay",
+                "income_type": "Salary", "amount_minor": 200,
+                "effective_month": "2026-11", "active": True,
+            },
+            headers=headers,
+        )
+        assert november.status_code == 200
+        october = client.get("/api/v1/planning/2026-10", params={"average_months": 3}).json()
+        october_income = october["incomes"][0]
+        assert october_income["updated_at"] == november.json()["updated_at"]
+        historical_edit = client.patch(
+            f"/api/v1/planning/income-sources/{created['source_id']}",
+            json={
+                "expected_updated_at": october_income["updated_at"], "title": "Old Pay",
+                "income_type": "Salary", "amount_minor": 150,
+                "effective_month": "2026-10", "active": True,
+            },
+            headers=headers,
+        )
+        assert historical_edit.status_code == 200
+
+        shopping = next(row for row in client.get("/api/v1/categories").json() if row["name"] == "Shopping")
+        target_payload = {
+            "expected_updated_at": shopping["updated_at"],
+            "effective_month": "2026-10",
+            "amount_minor": 1_000,
+        }
+        assert client.put(
+            f"/api/v1/planning/targets/{shopping['id']}", json=target_payload, headers=headers
+        ).status_code == 200
+        assert client.put(
+            f"/api/v1/planning/targets/{shopping['id']}", json=target_payload, headers=headers
+        ).status_code == 409
 
 
 def test_manual_cash_api_defaults_edits_deletes_and_protects_provider_rows(tmp_path: Path) -> None:
@@ -943,6 +981,43 @@ def test_manual_cash_api_defaults_edits_deletes_and_protects_provider_rows(tmp_p
             params={"expected_updated_at": "anything"},
             headers=headers,
         ).status_code == 403
+
+        split_cash = client.post(
+            "/api/v1/transactions/manual-cash",
+            json={"title": "Split cash", "amount_minor": 10_000, "category_id": shopping},
+            headers=headers,
+        ).json()
+        assert client.post(
+            f"/api/v1/transactions/{split_cash['id']}/split",
+            json={
+                "expected_updated_at": split_cash["updated_at"],
+                "splits": [
+                    {"amount_minor": -4_000, "category_id": shopping},
+                    {"amount_minor": -6_000, "category_id": shopping},
+                ],
+            },
+            headers=headers,
+        ).status_code == 200
+        split_cash = client.get(
+            "/api/v1/transactions", params={"search": "Split cash"}
+        ).json()["items"][0]
+        rejected = client.patch(
+            f"/api/v1/transactions/manual-cash/{split_cash['id']}",
+            json={
+                "expected_updated_at": split_cash["updated_at"], "title": "Split cash",
+                "amount_minor": 20_000, "category_id": shopping,
+                "local_date": split_cash["local_date"], "spending_owner": "Shared",
+            },
+            headers=headers,
+        )
+        assert rejected.status_code == 422 and "splits" in rejected.text
+        drilldown = client.get(
+            f"/api/v1/planning/2026-10/categories/{shopping}/transactions",
+            params={"spending_owner": "Shared"},
+        )
+        assert drilldown.status_code == 200
+        split_rows = [row for row in drilldown.json() if row["transaction_id"] == split_cash["id"]]
+        assert len(split_rows) == 2 and sum(row["amount_minor"] for row in split_rows) == -10_000
 
 
 def test_withdrawal_api_exposes_marker_and_forces_single_categorization(tmp_path: Path) -> None:

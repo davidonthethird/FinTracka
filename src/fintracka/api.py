@@ -57,7 +57,15 @@ from fintracka.ledger import (
     undo_categorization,
     update_transaction,
 )
-from fintracka.reports import cash_flow, cash_flow_paths, overview, spending_by_category, spending_by_owner
+from fintracka.reports import (
+    cash_flow,
+    cash_flow_paths,
+    ledger_entries,
+    month_bounds,
+    overview,
+    spending_by_category,
+    spending_by_owner,
+)
 from fintracka.readiness import filevault_enabled, readiness_report
 from fintracka.security import LocalSessions, host_allowed, origin_allowed
 from fintracka.plaid_adapter import PlaidAdapter
@@ -178,10 +186,12 @@ class PlannedIncomePatch(PlannedIncomeCreate):
 
 
 class PlanningOverride(StrictModel):
+    expected_updated_at: StrictStr
     amount_minor: StrictInt | None = Field(default=None, ge=0, le=10**15)
 
 
 class PlanningTargetUpdate(StrictModel):
+    expected_updated_at: StrictStr
     effective_month: StrictStr = Field(pattern=r"^\d{4}-\d{2}$")
     amount_minor: StrictInt = Field(ge=0, le=10**15)
 
@@ -952,6 +962,51 @@ def create_app(
         except PlanningError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
+    @app.get("/api/v1/planning/{month}/categories/{category_id}/transactions")
+    def planning_category_transactions(
+        month: str,
+        category_id: str,
+        database: Database,
+        spending_owner: Literal["David", "Ariela", "Shared"] | None = None,
+    ) -> list[dict[str, object]]:
+        try:
+            snapshot = planning_snapshot(database, month, 1, spending_owner)
+        except PlanningError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        category = next((row for row in snapshot.categories if row.category_id == category_id), None)
+        if category is None:
+            raise HTTPException(status_code=404, detail="category not found")
+        start, end = month_bounds(month)
+        entries = [
+            entry
+            for entry in ledger_entries(database, start, end, account_flag="include_budget")
+            if entry.category_id == category_id
+            and entry.category_type == "expense"
+            and entry.reporting_behavior != "excluded"
+            and (spending_owner is None or entry.spending_owner == spending_owner)
+        ]
+        identifiers = sorted({entry.transaction_id for entry in entries})
+        details = {
+            row["id"]: row
+            for row in database.execute(
+                f"SELECT id, provider_description, COALESCE(user_merchant, provider_merchant) merchant, notes, currency FROM transactions WHERE id IN ({','.join('?' for _ in identifiers)})",
+                identifiers,
+            )
+        } if identifiers else {}
+        return [
+            {
+                "id": f"{entry.transaction_id}:{index}",
+                "transaction_id": entry.transaction_id,
+                "local_date": entry.local_date,
+                "description": details[entry.transaction_id]["provider_description"],
+                "merchant": details[entry.transaction_id]["merchant"],
+                "notes": details[entry.transaction_id]["notes"],
+                "amount_minor": entry.amount_minor,
+                "currency": details[entry.transaction_id]["currency"],
+            }
+            for index, entry in enumerate(entries)
+        ]
+
     @app.post("/api/v1/planning/income-sources", status_code=201)
     def create_planned_income(payload: PlannedIncomeCreate, database: Database) -> dict[str, object]:
         try:
@@ -990,6 +1045,13 @@ def create_app(
     ) -> dict[str, object]:
         try:
             with _write_transaction(database):
+                _require_revision(
+                    database,
+                    "planning_income_sources",
+                    source_id,
+                    payload.expected_updated_at,
+                    "planned income source",
+                )
                 set_income_override(database, source_id, month, payload.amount_minor)
             return asdict(planning_snapshot(database, month, 12))
         except PlanningError as error:
@@ -1001,6 +1063,9 @@ def create_app(
     ) -> dict[str, object]:
         try:
             with _write_transaction(database):
+                _require_revision(
+                    database, "categories", category_id, payload.expected_updated_at, "planning target"
+                )
                 set_recurring_target(database, category_id, payload.amount_minor, payload.effective_month)
             return _planning_category(database, category_id, payload.effective_month)
         except PlanningError as error:
@@ -1012,6 +1077,9 @@ def create_app(
     ) -> dict[str, object]:
         try:
             with _write_transaction(database):
+                _require_revision(
+                    database, "categories", category_id, payload.expected_updated_at, "planning target"
+                )
                 set_target_override(database, category_id, month, payload.amount_minor)
             return _planning_category(database, category_id, month)
         except PlanningError as error:
@@ -1305,6 +1373,20 @@ def _planning_category(
         if category.category_id == category_id:
             return asdict(category)
     raise HTTPException(status_code=404, detail="category not found")
+
+
+def _require_revision(
+    connection: sqlite3.Connection,
+    table: Literal["planning_income_sources", "categories"],
+    entity_id: str,
+    expected_updated_at: str,
+    label: str,
+) -> None:
+    row = connection.execute(f"SELECT updated_at FROM {table} WHERE id = ?", (entity_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"{label} not found")
+    if row["updated_at"] != expected_updated_at:
+        raise HTTPException(status_code=409, detail=f"{label} changed; refresh and retry")
 
 
 @contextmanager

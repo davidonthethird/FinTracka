@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from fintracka.db import connect, migrate
+from fintracka.ids import new_id
 from fintracka.manual_cash import (
     ManualCashError,
     create_manual_cash,
@@ -97,6 +98,28 @@ def test_manual_cash_mutations_reject_provider_owned_transactions_without_change
         delete_manual_cash(ledger, provider["id"], provider["updated_at"])
 
     assert tuple(ledger.execute("SELECT * FROM transactions WHERE id = ?", (provider["id"],)).fetchone()) == before
+
+
+def test_manual_cash_amount_edit_rejects_existing_splits(ledger: sqlite3.Connection) -> None:
+    shopping = _category(ledger, "Shopping")
+    transaction_id = create_manual_cash(
+        ledger, "Split cash", 10_000, shopping, "2026-10-13", "Shared"
+    )
+    row = ledger.execute("SELECT updated_at FROM transactions WHERE id = ?", (transaction_id,)).fetchone()
+    ledger.execute("UPDATE transactions SET has_splits = 1 WHERE id = ?", (transaction_id,))
+    ledger.executemany(
+        "INSERT INTO transaction_splits (id, parent_transaction_id, amount_minor, category_id, created_at) VALUES (?, ?, ?, ?, '2026-10-13T00:00:00Z')",
+        [(new_id(), transaction_id, -4_000, shopping), (new_id(), transaction_id, -6_000, shopping)],
+    )
+
+    with pytest.raises(ManualCashError, match="splits"):
+        update_manual_cash(
+            ledger, transaction_id, row["updated_at"], "Split cash", 20_000,
+            shopping, "2026-10-13", "Shared",
+        )
+
+    assert cash_flow(ledger, "2026-10").spending_minor == 10_000
+    assert ledger.execute("SELECT amount_minor FROM transactions WHERE id = ?", (transaction_id,)).fetchone()[0] == -10_000
 
 
 def _category(connection: sqlite3.Connection, name: str) -> str:

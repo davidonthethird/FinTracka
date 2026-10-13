@@ -13,6 +13,7 @@ const row: PlanningCategory = {
   trend: [],
   transaction_ids: [],
   tzedaka_minimum_minor: 0,
+  updated_at: "2026-10-13T00:00:00Z",
 };
 
 describe("planning view model", () => {

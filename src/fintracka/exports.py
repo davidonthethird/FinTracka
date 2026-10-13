@@ -209,7 +209,7 @@ def _planning_rows(
             ])
         for category in snapshot.categories:
             monthly_rows.append([
-                f"{category.category_id}:{month}", month, category.category,
+                f"{category.category_id}:{month}", month, _safe(category.category),
                 category.historical_average_minor, category.target_minor, category.actual_minor,
                 category.remaining_minor, category.tzedaka_minimum_minor,
                 snapshot.planned_income_total_minor, snapshot.salary_total_minor,
@@ -226,7 +226,7 @@ def _planning_rows(
         for position, category in enumerate(monthly_snapshots[0].categories):
             categories = [snapshot.categories[position] for snapshot in monthly_snapshots]
             yearly_rows.append([
-                f"{category.category_id}:{year}", str(year), category.category,
+                f"{category.category_id}:{year}", str(year), _safe(category.category),
                 _rounded_average(sum(row.historical_average_minor for row in categories), 12),
                 sum(row.target_minor for row in categories),
                 sum(row.actual_minor for row in categories),

@@ -162,7 +162,11 @@ def categorize_transaction(
             row
             for row in connection.execute("SELECT * FROM transactions WHERE tombstoned = 0")
             if row["id"] == transaction_id
-            or (row["category_source"] != "manual" and _matches(row, conditions))
+            or (
+                row["category_source"] != "manual"
+                and not row["is_cash_withdrawal"]
+                and _matches(row, conditions)
+            )
         ]
 
     now = _now()

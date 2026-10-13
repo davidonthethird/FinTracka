@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
 import { formatMoney } from "../format";
+import { ManualCashDialog } from "../transactions/ManualCashDialog";
 import { CategoryDrawer } from "./CategoryDrawer";
 import { PlanningFlow } from "./PlanningFlow";
 import { planningPath, type PlanningCategory, type PlanningIncome, type PlanningSnapshot } from "./model";
@@ -19,26 +20,36 @@ export function PlanningPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [returnFocus, setReturnFocus] = useState<HTMLButtonElement | null>(null);
   const [editingIncome, setEditingIncome] = useState<PlanningIncome>();
+  const [cashCategoryId, setCashCategoryId] = useState<string>();
   const incomeTitle = useRef<HTMLInputElement>(null);
-  const load = useCallback(async () => {
+  const categoryRequest = useRef(0);
+  useEffect(() => {
+    const controller = new AbortController();
     setError("");
-    try { setData(await api<PlanningSnapshot>(planningPath(month, averageMonths, owner))); }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to load planning"); }
+    api<PlanningSnapshot>(planningPath(month, averageMonths, owner), { signal: controller.signal })
+      .then(setData)
+      .catch((caught) => {
+        if (!controller.signal.aborted) setError(caught instanceof Error ? caught.message : "Unable to load planning");
+      });
+    return () => controller.abort();
   }, [month, averageMonths, owner, revision]);
-  useEffect(() => { void load(); }, [load]);
 
   async function openCategory(category: PlanningCategory, trigger: HTMLButtonElement) {
+    const request = ++categoryRequest.current;
     setReturnFocus(trigger); setSelected(category);
     try {
-      const result = await api<{ items: Transaction[] }>(`/transactions?category_id=${encodeURIComponent(category.category_id)}&limit=200`);
-      setTransactions(result.items.filter((item) => item.local_date.startsWith(month)));
-    } catch { setTransactions([]); }
+      const ownerQuery = owner ? `?spending_owner=${encodeURIComponent(owner)}` : "";
+      const result = await api<Transaction[]>(`/planning/${month}/categories/${encodeURIComponent(category.category_id)}/transactions${ownerQuery}`);
+      if (request === categoryRequest.current) setTransactions(result);
+    } catch { if (request === categoryRequest.current) setTransactions([]); }
   }
   async function saveTarget(amountMinor: number, oneMonth: boolean) {
     if (!selected) return;
     await api(oneMonth ? `/planning/targets/${selected.category_id}/overrides/${month}` : `/planning/targets/${selected.category_id}`, {
       method: "PUT",
-      body: JSON.stringify(oneMonth ? { amount_minor: amountMinor } : { effective_month: month, amount_minor: amountMinor }),
+      body: JSON.stringify(oneMonth
+        ? { expected_updated_at: selected.updated_at, amount_minor: amountMinor }
+        : { expected_updated_at: selected.updated_at, effective_month: month, amount_minor: amountMinor }),
     });
     setSelected(undefined); setRevision((value) => value + 1);
   }
@@ -48,13 +59,28 @@ export function PlanningPage() {
     const form = new FormData(formElement);
     const payload = { title: form.get("title"), income_type: form.get("type"), amount_minor: Math.round(Number(form.get("amount")) * 100), effective_month: month };
     try {
-      if (editingIncome) {
+      if (editingIncome && form.get("scope") === "month") {
+        await api(`/planning/income-sources/${editingIncome.source_id}/overrides/${month}`, {
+          method: "PUT",
+          body: JSON.stringify({ expected_updated_at: editingIncome.updated_at, amount_minor: payload.amount_minor }),
+        });
+      } else if (editingIncome) {
         await api(`/planning/income-sources/${editingIncome.source_id}`, { method: "PATCH", body: JSON.stringify({ ...payload, expected_updated_at: editingIncome.updated_at, active: true }) });
       } else {
         await api("/planning/income-sources", { method: "POST", body: JSON.stringify(payload) });
       }
       formElement.reset(); setEditingIncome(undefined); setRevision((value) => value + 1);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to save income source"); }
+  }
+  async function deactivateIncome(income: PlanningIncome) {
+    await api(`/planning/income-sources/${income.source_id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        expected_updated_at: income.updated_at, title: income.title, income_type: income.income_type,
+        amount_minor: income.amount_minor, effective_month: month, active: false,
+      }),
+    });
+    setEditingIncome(undefined); setRevision((value) => value + 1);
   }
   useEffect(() => { if (editingIncome) incomeTitle.current?.focus(); }, [editingIncome]);
 
@@ -65,13 +91,14 @@ export function PlanningPage() {
       <label className="window-control">Average window: <strong>{averageMonths} months</strong><input aria-label="Average window" type="range" min="1" max="12" value={averageMonths} onChange={(event) => setAverageMonths(Number(event.target.value))} /></label>
       <label>Spending view<select aria-label="Spending owner" value={owner} onChange={(event) => setOwner(event.target.value)}><option value="">Everyone</option><option>David</option><option>Ariela</option><option>Shared</option></select></label>
     </section>
-    <section className="instrument-panel income-editor"><div className="section-heading"><div><p className="eyebrow">Recurring plan</p><h2>{editingIncome ? `Edit ${editingIncome.title}` : "Add planned income"}</h2></div>{editingIncome && <button className="quiet-button" onClick={() => setEditingIncome(undefined)}>Cancel edit</button>}</div><form onSubmit={saveIncome} key={editingIncome?.source_id || "new"}><label>Title<input ref={incomeTitle} required name="title" maxLength={120} defaultValue={editingIncome?.title || ""} placeholder="Paycheck or rental" /></label><label>Type<select name="type" defaultValue={editingIncome?.income_type || "Salary"}><option>Salary</option><option>Custom</option></select></label><label>Monthly amount<input required name="amount" type="number" min="0" step="0.01" defaultValue={editingIncome ? (editingIncome.amount_minor / 100).toFixed(2) : ""} /></label><button>{editingIncome ? "Save income" : "Add income"}</button></form>{data?.incomes.length ? <div className="income-edit-list">{data.incomes.map((income) => <button className="text-button" key={income.source_id} onClick={() => setEditingIncome(income)}>Edit {income.title}</button>)}</div> : null}</section>
+    <section className="instrument-panel income-editor"><div className="section-heading"><div><p className="eyebrow">Recurring plan</p><h2>{editingIncome ? `Edit ${editingIncome.title}` : "Add planned income"}</h2></div>{editingIncome && <button className="quiet-button" onClick={() => setEditingIncome(undefined)}>Cancel edit</button>}</div><form onSubmit={saveIncome} key={editingIncome?.source_id || "new"}><label>Title<input ref={incomeTitle} required name="title" maxLength={120} defaultValue={editingIncome?.title || ""} placeholder="Paycheck or rental" /></label><label>Type<select name="type" defaultValue={editingIncome?.income_type || "Salary"}><option>Salary</option><option>Custom</option></select></label><label>Monthly amount<input required name="amount" type="number" min="0" step="0.01" defaultValue={editingIncome ? (editingIncome.amount_minor / 100).toFixed(2) : ""} /></label>{editingIncome && <label>Apply<select name="scope" defaultValue="recurring"><option value="recurring">This and future months</option><option value="month">This month only</option></select></label>}<button>{editingIncome ? "Save income" : "Add income"}</button></form>{data?.incomes.length ? <div className="income-edit-list">{data.incomes.map((income) => <span key={income.source_id}><button className="text-button" onClick={() => setEditingIncome(income)}>Edit {income.title}</button><button className="text-button destructive" onClick={() => deactivateIncome(income)}>Stop from {month}</button></span>)}</div> : null}</section>
     {error && <div className="notice error" role="alert">{error}</div>}
     {!data ? <div className="page-state">Reading the plan…</div> : <>
       <section className="planning-summary"><span>Planned income<strong>{formatMoney(data.planned_income_total_minor)}</strong></span><span>Category targets<strong>{formatMoney(data.target_total_minor)}</strong></span><span>Surplus / shortfall<strong className={data.surplus_shortfall_minor < 0 ? "negative" : "positive"}>{formatMoney(data.surplus_shortfall_minor)}</strong></span><span>Tzedaka minimum<strong>{formatMoney(data.tzedaka_minimum_minor)}</strong><small>10% of Salary</small></span></section>
       {owner && <p className="owner-plan-note">Showing {owner} actuals and averages. Targets remain household targets.</p>}
       <section className="instrument-panel planning-canvas"><div className="planning-legend"><span className="average">Historical average</span><span className="target">Your target</span><span className="actual">Spent this month</span></div><PlanningFlow incomes={data.incomes} categories={data.categories} total={data.planned_income_total_minor} onCategory={openCategory} /></section>
     </>}
-    {selected && <CategoryDrawer category={selected} transactions={transactions} onClose={() => setSelected(undefined)} returnFocus={returnFocus} onSaveTarget={saveTarget} />}
+    {selected && <CategoryDrawer category={selected} transactions={transactions} onClose={() => setSelected(undefined)} returnFocus={returnFocus} onSaveTarget={saveTarget} onAddCash={() => { setCashCategoryId(selected.category_id); setSelected(undefined); }} />}
+    {cashCategoryId && data && <ManualCashDialog defaultCategoryId={cashCategoryId} categories={data.categories.map((category) => ({ id: category.category_id, name: category.category, category_type: "expense" }))} onClose={() => setCashCategoryId(undefined)} onSaved={() => { setCashCategoryId(undefined); setRevision((value) => value + 1); }} />}
   </div>;
 }

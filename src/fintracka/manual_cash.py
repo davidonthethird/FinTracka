@@ -74,6 +74,8 @@ def update_manual_cash(
         raise ManualCashError("transaction changed; refresh and retry")
     if row["tombstoned"]:
         raise ManualCashError("manual cash transaction is deleted")
+    if row["has_splits"] and row["amount_minor"] != -amount_minor:
+        raise ManualCashError("remove or update splits before changing the cash amount")
     now = _now()
     connection.execute(
         """

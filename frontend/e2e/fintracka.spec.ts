@@ -103,6 +103,22 @@ test("synthetic finance workflow", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Edit Rental" })).toBeVisible();
   await page.getByLabel("Average window").fill("6");
   await expect(page.getByText("Average window:").locator(".." )).toContainText("6 months");
+  await page.route("**/api/v1/planning/2026-10?**", async (route) => {
+    try {
+      const owner = new URL(route.request().url()).searchParams.get("spending_owner");
+      if (!owner) return await route.continue();
+      if (owner === "David") await new Promise((resolve) => setTimeout(resolve, 300));
+      const response = await route.fetch();
+      const body = await response.json();
+      const shopping = body.categories.find((row: { category: string }) => row.category === "Shopping");
+      shopping.actual_minor = owner === "David" ? 11_111 : 22_222;
+      await route.fulfill({ response, json: body });
+    } catch { /* the older request is expected to be aborted */ }
+  });
+  await page.getByLabel("Spending owner").selectOption("David");
+  await page.getByLabel("Spending owner").selectOption("Ariela");
+  await expect(page.getByRole("button", { name: /Shopping/ })).toContainText("Spent $222.22");
+  await page.unroute("**/api/v1/planning/2026-10?**");
   await page.getByLabel("Spending owner").selectOption("David");
   await expect(page.getByText("Showing David actuals and averages")).toBeVisible();
   await page.getByRole("button", { name: /Housing/ }).click();
@@ -112,6 +128,8 @@ test("synthetic finance workflow", async ({ page }) => {
   await page.getByRole("button", { name: "Save target" }).click();
   await page.getByRole("button", { name: /Tzedaka/ }).click();
   await expect(page.getByLabel("Monthly target")).toHaveAttribute("min", "590.00");
+  await page.getByRole("button", { name: "Add Tzedaka cash spending" }).click();
+  await expect(page.getByRole("dialog", { name: "Add cash spending" }).locator('select[name="category"]')).toHaveValue(/.+/);
   await page.keyboard.press("Escape");
 
   await page.getByRole("link", { name: "Transactions" }).click();

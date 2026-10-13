@@ -151,6 +151,18 @@ def test_cash_withdrawal_defaults_to_other_and_giving_maps_to_tzedaka(
     }
     assert rows == {"ATM WITHDRAWAL": ("Other", 1), "HOOD GIVING": ("Tzedaka", 0)}
 
+    provider_loses_detail = NormalizedTransaction(
+        "atm", "checking-1", "2026-10-10T12:00:00Z", -20_000, "USD", "ATM 1234",
+        is_cash_withdrawal=False,
+    )
+    apply_batch(
+        ledger, connection_id,
+        SyncBatch(modified=(provider_loses_detail,), next_checkpoint="cash-2"),
+    )
+    assert ledger.execute(
+        "SELECT is_cash_withdrawal FROM transactions WHERE provider_description = 'ATM 1234'"
+    ).fetchone()[0] == 1
+
 
 def test_pending_to_posted_keeps_one_canonical_row_and_user_fields(
     ledger: sqlite3.Connection,

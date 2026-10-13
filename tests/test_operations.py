@@ -122,6 +122,7 @@ def test_export_includes_effective_planning_and_manual_cash_deterministically(
     shopping = connection.execute("SELECT id FROM categories WHERE name = 'Shopping'").fetchone()[0]
     tzedaka = connection.execute("SELECT id FROM categories WHERE name = 'Tzedaka'").fetchone()[0]
     set_recurring_target(connection, shopping, 40_000, "2026-01")
+    connection.execute("UPDATE categories SET name = '=Shopping formula' WHERE id = ?", (shopping,))
     manual_id = create_manual_cash(connection, "Cash gift", 2_500, tzedaka, "2026-10-13", "Shared")
 
     first = build_snapshot(connection)
@@ -137,7 +138,7 @@ def test_export_includes_effective_planning_and_manual_cash_deterministically(
     monthly = first["Monthly Budget"]
     assert len({row[1] for row in monthly[1:]}) == 12
     october_shopping = next(
-        row for row in monthly[1:] if row[1] == "2026-10" and row[2] == "Shopping"
+        row for row in monthly[1:] if row[1] == "2026-10" and row[2] == "'=Shopping formula"
     )
     assert october_shopping[3:12] == [0, 40_000, 0, 40_000, 0, 700_001, 590_001, 12, "USD"]
     october_tzedaka = next(

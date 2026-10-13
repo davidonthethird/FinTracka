@@ -19,6 +19,7 @@ export type PlanningCategory = {
   trend: PlanningTrendPoint[];
   transaction_ids: string[];
   tzedaka_minimum_minor: number;
+  updated_at: string;
 };
 export type PlanningSnapshot = {
   month: string;

@@ -165,6 +165,7 @@ def _upsert_transaction(
         "SELECT account_id, local_date, posted_at, amount_minor, currency, provider_description, provider_merchant, pending, tombstoned, provider_category_primary, provider_category_detailed, provider_category_confidence, is_cash_withdrawal FROM transactions WHERE id = ?",
         (transaction_id,),
     ).fetchone()
+    withdrawal = int(transaction.is_cash_withdrawal or (before is not None and before["is_cash_withdrawal"]))
     provider_values = (
         account_id,
         local_date(transaction.occurred_at).isoformat(),
@@ -178,7 +179,7 @@ def _upsert_transaction(
         transaction.provider_category_primary,
         transaction.provider_category_detailed,
         transaction.provider_category_confidence,
-        int(transaction.is_cash_withdrawal),
+        withdrawal,
     )
     provider_category_id = _provider_category_id(connection, transaction)
     if before is None:
