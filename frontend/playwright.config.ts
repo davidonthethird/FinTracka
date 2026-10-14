@@ -13,7 +13,7 @@ export default defineConfig({
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: "FINTRACKA_E2E_PORT=8788 PYTHONPATH=../src ../.venv/bin/python ../e2e/server.py",
+    command: "FINTRACKA_E2E_PORT=8788 PYTHONPATH=../src python ../e2e/server.py",
     url: "http://127.0.0.1:8788/api/v1/health",
     reuseExistingServer: false,
     timeout: 30_000,
