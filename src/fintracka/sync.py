@@ -87,8 +87,8 @@ def _upsert_account(
         """
         INSERT INTO accounts (
             id, connection_id, provider_account_id, name, type, subtype, nature,
-            mask, currency, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            mask, currency, include_savings, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(connection_id, provider_account_id) DO UPDATE SET
             name = excluded.name,
             type = excluded.type,
@@ -109,6 +109,7 @@ def _upsert_account(
             account.nature,
             account.mask,
             account.currency,
+            int(account.subtype == "savings"),
             now,
             now,
         ),

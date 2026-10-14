@@ -68,6 +68,14 @@ from fintracka.reports import (
 )
 from fintracka.readiness import filevault_enabled, readiness_report
 from fintracka.security import LocalSessions, host_allowed, origin_allowed
+from fintracka.savings import (
+    ManualAssetError,
+    create_manual_asset,
+    deactivate_manual_asset,
+    get_manual_asset,
+    savings_summary,
+    update_manual_asset,
+)
 from fintracka.plaid_adapter import PlaidAdapter
 from fintracka.plaid_service import (
     PlaidNotConfigured,
@@ -123,6 +131,7 @@ class AccountPatch(StrictModel):
     include_budget: bool | None = None
     include_net: bool | None = None
     include_export: bool | None = None
+    include_savings: bool | None = None
     spending_owner: Literal["David", "Ariela", "Shared"] | None = None
 
 
@@ -196,6 +205,18 @@ class SubcategoryAssign(StrictModel):
 
 
 class SubcategoryReprocess(StrictModel):
+    expected_updated_at: StrictStr
+
+
+class ManualAssetCreate(StrictModel):
+    title: StrictStr = Field(min_length=1, max_length=120)
+    kind: Literal["savings", "investment", "other"]
+    owner: Literal["David", "Ariela", "Shared"]
+    current_value_minor: StrictInt = Field(ge=0, le=10**15)
+    as_of_date: StrictStr = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class ManualAssetPatch(ManualAssetCreate):
     expected_updated_at: StrictStr
 
 
@@ -570,7 +591,7 @@ def create_app(
                 """
                 SELECT a.id, a.name, a.nickname, a.type, a.subtype, a.nature, a.currency,
                        a.status, a.include_overview, a.include_budget, a.include_net,
-                       a.include_export, a.spending_owner, a.updated_at,
+                       a.include_export, a.include_savings, a.spending_owner, a.updated_at,
                        (SELECT b.current_minor FROM account_balance_snapshots b WHERE b.account_id = a.id ORDER BY b.observed_at DESC, b.id DESC LIMIT 1) balance_minor
                 FROM accounts a ORDER BY a.nature, a.name, a.id
                 """
@@ -1066,6 +1087,65 @@ def create_app(
         except PlanningError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
+    @app.get("/api/v1/savings/{month}")
+    def savings_route(
+        month: str,
+        database: Database,
+        owner: Literal["David", "Ariela", "Shared"] | None = None,
+    ) -> dict[str, object]:
+        try:
+            return asdict(savings_summary(database, month, owner))
+        except ManualAssetError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post("/api/v1/savings/assets", status_code=201)
+    def create_manual_asset_route(
+        payload: ManualAssetCreate, database: Database
+    ) -> dict[str, object]:
+        try:
+            with _write_transaction(database):
+                identifier = create_manual_asset(
+                    database,
+                    payload.title,
+                    payload.kind,
+                    payload.owner,
+                    payload.current_value_minor,
+                    payload.as_of_date,
+                )
+        except ManualAssetError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return get_manual_asset(database, identifier)
+
+    @app.patch("/api/v1/savings/assets/{asset_id}")
+    def update_manual_asset_route(
+        asset_id: str, payload: ManualAssetPatch, database: Database
+    ) -> dict[str, object]:
+        try:
+            with _write_transaction(database):
+                update_manual_asset(
+                    database,
+                    asset_id,
+                    payload.expected_updated_at,
+                    payload.title,
+                    payload.kind,
+                    payload.owner,
+                    payload.current_value_minor,
+                    payload.as_of_date,
+                )
+        except ManualAssetError as error:
+            raise HTTPException(status_code=_manual_asset_status(error), detail=str(error)) from error
+        return get_manual_asset(database, asset_id)
+
+    @app.delete("/api/v1/savings/assets/{asset_id}", status_code=204)
+    def deactivate_manual_asset_route(
+        asset_id: str, expected_updated_at: str, database: Database
+    ) -> None:
+        try:
+            with _write_transaction(database):
+                deactivate_manual_asset(database, asset_id, expected_updated_at)
+        except ManualAssetError as error:
+            raise HTTPException(status_code=_manual_asset_status(error), detail=str(error)) from error
+
     @app.get("/api/v1/planning/{month}/categories/{category_id}/transactions")
     def planning_category_transactions(
         month: str,
@@ -1448,6 +1528,15 @@ def _manual_cash_status(error: ManualCashError) -> int:
     message = str(error)
     if "not a manual cash entry" in message:
         return 403
+    if "changed" in message:
+        return 409
+    return 422
+
+
+def _manual_asset_status(error: ManualAssetError) -> int:
+    message = str(error)
+    if "not found" in message:
+        return 404
     if "changed" in message:
         return 409
     return 422

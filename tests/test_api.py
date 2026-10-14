@@ -1238,6 +1238,59 @@ def test_planning_api_includes_forecast_coverage_and_subcategory_totals(tmp_path
         assert details[0]["subcategory"] == "Clothing"
 
 
+def test_savings_api_manages_assets_and_account_scope(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    apply_batch(connection, connection_id, synthetic_batches([connection_id])[connection_id])
+    checking = dict(connection.execute(
+        "SELECT id, updated_at FROM accounts WHERE provider_account_id = 'checking-1'"
+    ).fetchone())
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+        scoped = client.patch(
+            f"/api/v1/accounts/{checking['id']}",
+            json={"expected_updated_at": checking["updated_at"], "include_savings": True},
+            headers=headers,
+        )
+        assert scoped.status_code == 200 and scoped.json()["include_savings"] == 1
+        payload = {
+            "title": "Brokerage", "kind": "investment", "owner": "Shared",
+            "current_value_minor": 123_456, "as_of_date": "2026-10-13",
+        }
+        assert client.post("/api/v1/savings/assets", json=payload).status_code == 403
+        assert client.post(
+            "/api/v1/savings/assets", json={**payload, "secret": "no"}, headers=headers
+        ).status_code == 422
+        created = client.post("/api/v1/savings/assets", json=payload, headers=headers)
+        assert created.status_code == 201
+        asset = created.json()
+        summary = client.get("/api/v1/savings/2026-10").json()
+        assert summary["investments_minor"] == 123_456
+        stale = client.patch(
+            f"/api/v1/savings/assets/{asset['id']}",
+            json={**payload, "expected_updated_at": "stale"}, headers=headers,
+        )
+        assert stale.status_code == 409
+        changed = client.patch(
+            f"/api/v1/savings/assets/{asset['id']}",
+            json={**payload, "expected_updated_at": asset["updated_at"], "current_value_minor": 200_000},
+            headers=headers,
+        )
+        assert changed.status_code == 200
+        assert client.delete(
+            f"/api/v1/savings/assets/{asset['id']}",
+            params={"expected_updated_at": changed.json()["updated_at"]}, headers=headers,
+        ).status_code == 204
+        assert client.get("/api/v1/savings/2026-10").json()["investments_minor"] == 0
+
+
 def _category_payload(name: str = "Test expense") -> dict[str, str | int]:
     return {
         "name": name,
