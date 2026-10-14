@@ -1050,6 +1050,194 @@ def test_withdrawal_api_exposes_marker_and_forces_single_categorization(tmp_path
         assert result.status_code == 200 and result.json()["affected_count"] == 1
 
 
+def test_transaction_api_hides_transfers_by_default_and_filter_survives_search_and_cursor(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    rows = (
+        NormalizedTransaction(
+            "ordinary", "checking-1", "2026-10-13T12:00:00Z", -1_000, "USD", "BOOK STORE"
+        ),
+        NormalizedTransaction(
+            "transfer", "checking-1", "2026-10-12T12:00:00Z", -2_000, "USD", "SAVINGS TRANSFER",
+            provider_category_primary="TRANSFER_OUT",
+        ),
+        NormalizedTransaction(
+            "card", "checking-1", "2026-10-11T12:00:00Z", -3_000, "USD", "CARD PAYMENT",
+            provider_category_primary="TRANSFER_OUT",
+            provider_category_detailed="TRANSFER_OUT_CREDIT_CARD_PAYMENT",
+        ),
+    )
+    apply_batch(connection, connection_id, SyncBatch(added=rows, next_checkpoint="filters"))
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        ordinary = client.get("/api/v1/transactions").json()["items"]
+        assert [row["description"] for row in ordinary] == ["BOOK STORE"]
+        assert client.get(
+            "/api/v1/transactions", params={"search": "PAYMENT"}
+        ).json()["items"] == []
+        included = client.get(
+            "/api/v1/transactions", params={"include_transfers": True, "limit": 1}
+        ).json()
+        second = client.get(
+            "/api/v1/transactions",
+            params={
+                "include_transfers": True,
+                "limit": 1,
+                "cursor": included["next_cursor"],
+            },
+        ).json()
+        assert included["items"][0]["description"] == "BOOK STORE"
+        assert second["items"][0]["description"] == "SAVINGS TRANSFER"
+        searched = client.get(
+            "/api/v1/transactions",
+            params={"include_transfers": True, "search": "PAYMENT"},
+        ).json()["items"]
+        assert [row["description"] for row in searched] == ["CARD PAYMENT"]
+
+
+def test_subcategory_api_validates_revisions_security_and_parent_relationships(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    transaction = NormalizedTransaction(
+        "lowes-api", "checking-1", "2026-10-10T12:00:00Z", -8_500, "USD", "LOWE'S", "LOWE'S",
+        provider_category_primary="GENERAL_MERCHANDISE",
+        provider_category_detailed="GENERAL_MERCHANDISE_HOME_IMPROVEMENT",
+    )
+    apply_batch(connection, connection_id, SyncBatch(added=(transaction,), next_checkpoint="sub-api"))
+    shopping = dict(connection.execute(
+        "SELECT id, updated_at FROM categories WHERE name = 'Shopping'"
+    ).fetchone())
+    dining = connection.execute("SELECT id FROM categories WHERE name = 'Dining'").fetchone()[0]
+    dining_child = connection.execute(
+        "SELECT id FROM subcategories WHERE category_id = ? LIMIT 1", (dining,)
+    ).fetchone()[0]
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+        transaction_row = client.get(
+            "/api/v1/transactions", params={"search": "LOWE'S"}
+        ).json()["items"][0]
+        assert transaction_row["subcategory"] == "Home improvement"
+        assert all(
+            row["category_id"] == shopping["id"]
+            for row in client.get(
+                "/api/v1/subcategories", params={"category_id": shopping["id"]}
+            ).json()
+        )
+        payload = {
+            "expected_updated_at": shopping["updated_at"],
+            "category_id": shopping["id"],
+            "name": "Tools",
+        }
+        assert client.post("/api/v1/subcategories", json=payload).status_code == 403
+        assert client.post(
+            "/api/v1/subcategories", json=payload, headers={**headers, "origin": "https://evil.example"}
+        ).status_code == 403
+        assert client.post(
+            "/api/v1/subcategories", json={**payload, "unexpected": True}, headers=headers
+        ).status_code == 422
+        created = client.post("/api/v1/subcategories", json=payload, headers=headers)
+        assert created.status_code == 201
+        tools = created.json()["id"]
+        stale = client.post(
+            f"/api/v1/transactions/{transaction_row['id']}/subcategory",
+            json={
+                "expected_updated_at": "2000-01-01T00:00:00Z",
+                "subcategory_id": tools,
+                "scope": "future",
+            },
+            headers=headers,
+        )
+        assert stale.status_code == 409
+        invalid = client.post(
+            f"/api/v1/transactions/{transaction_row['id']}/subcategory",
+            json={
+                "expected_updated_at": transaction_row["updated_at"],
+                "subcategory_id": dining_child,
+                "scope": "one_time",
+            },
+            headers=headers,
+        )
+        assert invalid.status_code == 422
+        assigned = client.post(
+            f"/api/v1/transactions/{transaction_row['id']}/subcategory",
+            json={
+                "expected_updated_at": transaction_row["updated_at"],
+                "subcategory_id": tools,
+                "scope": "future",
+            },
+            headers=headers,
+        )
+        assert assigned.status_code == 200
+        assert assigned.json()["transaction"]["subcategory"] == "Tools"
+        connection = connect(path)
+        rule = dict(connection.execute(
+            "SELECT id, updated_at FROM transaction_subcategory_rules WHERE origin = 'user'"
+        ).fetchone())
+        connection.close()
+        assert client.post(
+            f"/api/v1/subcategory-rules/{rule['id']}/reprocess",
+            json={"expected_updated_at": "stale", "unexpected": True},
+            headers=headers,
+        ).status_code == 422
+        assert client.post(
+            f"/api/v1/subcategory-rules/{rule['id']}/reprocess",
+            json={"expected_updated_at": "stale"}, headers=headers,
+        ).status_code == 409
+        reprocessed = client.post(
+            f"/api/v1/subcategory-rules/{rule['id']}/reprocess",
+            json={"expected_updated_at": rule["updated_at"]}, headers=headers,
+        )
+        assert reprocessed.status_code == 200
+
+
+def test_planning_api_includes_forecast_coverage_and_subcategory_totals(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    transaction = NormalizedTransaction(
+        "macys-plan", "checking-1", "2026-10-10T12:00:00Z", -12_500, "USD", "MACY'S", "MACY'S",
+        provider_category_primary="GENERAL_MERCHANDISE",
+        provider_category_detailed="GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES",
+    )
+    apply_batch(connection, connection_id, SyncBatch(added=(transaction,), next_checkpoint="plan-sub"))
+    shopping = connection.execute("SELECT id FROM categories WHERE name = 'Shopping'").fetchone()[0]
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        body = client.get("/api/v1/planning/2026-10", params={"average_months": 12}).json()
+        assert set(body) >= {
+            "usable_average_months", "earliest_usable_month", "percent_used_basis_points",
+            "projected_spending_minor", "projected_surplus_shortfall_minor", "status",
+        }
+        category = next(row for row in body["categories"] if row["category_id"] == shopping)
+        assert next(row for row in category["subcategories"] if row["subcategory"] == "Clothing")[
+            "actual_minor"
+        ] == 12_500
+        details = client.get(
+            f"/api/v1/planning/2026-10/categories/{shopping}/transactions"
+        ).json()
+        assert details[0]["subcategory"] == "Clothing"
+
+
 def _category_payload(name: str = "Test expense") -> dict[str, str | int]:
     return {
         "name": name,

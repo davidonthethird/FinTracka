@@ -34,6 +34,13 @@ class PlanningTrendPoint:
 
 
 @dataclass(frozen=True)
+class PlanningSubcategory:
+    subcategory_id: str | None
+    subcategory: str
+    actual_minor: int
+
+
+@dataclass(frozen=True)
 class PlanningCategory:
     category_id: str
     category: str
@@ -45,6 +52,7 @@ class PlanningCategory:
     percent_used_basis_points: int | None
     percent_remaining_basis_points: int | None
     projected_minor: int | None
+    subcategories: tuple[PlanningSubcategory, ...]
     trend: tuple[PlanningTrendPoint, ...]
     transaction_ids: tuple[str, ...]
     tzedaka_minimum_minor: int
@@ -235,9 +243,22 @@ def planning_snapshot(
     activity: dict[tuple[str, str], int] = {}
     daily_activity: dict[tuple[str, str], int] = {}
     transaction_ids: dict[str, set[str]] = {}
-    for entry in ledger_entries(
-        connection, first_start, selected_end, account_flag="include_budget"
-    ):
+    subcategory_activity: dict[tuple[str, str | None, str], int] = {}
+    entries = ledger_entries(connection, first_start, selected_end, account_flag="include_budget")
+    entry_ids = sorted({entry.transaction_id for entry in entries})
+    transaction_subcategories = {
+        row["id"]: (row["subcategory_id"], row["subcategory"], row["subcategory_category_id"])
+        for row in connection.execute(
+            f"""
+            SELECT t.id, t.subcategory_id, s.name subcategory,
+                   s.category_id subcategory_category_id
+            FROM transactions t LEFT JOIN subcategories s ON s.id = t.subcategory_id
+            WHERE t.id IN ({','.join('?' for _ in entry_ids)})
+            """,
+            entry_ids,
+        )
+    } if entry_ids else {}
+    for entry in entries:
         if (
             entry.category_id is None
             or entry.category_type != "expense"
@@ -252,6 +273,13 @@ def planning_snapshot(
         daily_activity[daily_key] = daily_activity.get(daily_key, 0) - entry.amount_minor
         if entry_month == month:
             transaction_ids.setdefault(entry.category_id, set()).add(entry.transaction_id)
+            child_id, child_name, child_category_id = transaction_subcategories.get(
+                entry.transaction_id, (None, None, None)
+            )
+            if child_category_id != entry.category_id:
+                child_id, child_name = None, None
+            child_key = (entry.category_id, child_id, child_name or "No subcategory")
+            subcategory_activity[child_key] = subcategory_activity.get(child_key, 0) - entry.amount_minor
     targets = _effective_targets(connection, month)
     category_rows = connection.execute(
         """
@@ -290,6 +318,13 @@ def planning_snapshot(
         percent_used = _basis_points(actual, target) if target > 0 and actual >= 0 else None
         percent_remaining = _basis_points(remaining, target) if target > 0 and actual >= 0 else None
         status = _category_status(target, actual, remaining, projection)
+        subcategories = tuple(
+            PlanningSubcategory(child_id, name, amount)
+            for (parent_id, child_id, name), amount in sorted(
+                subcategory_activity.items(), key=lambda item: (-item[1], item[0][2])
+            )
+            if parent_id == category_id and amount != 0
+        )
         categories.append(
             PlanningCategory(
                 category_id,
@@ -302,6 +337,7 @@ def planning_snapshot(
                 percent_used,
                 percent_remaining,
                 projection,
+                subcategories,
                 trend,
                 tuple(sorted(transaction_ids.get(category_id, set()))),
                 minimum,

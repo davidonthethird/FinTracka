@@ -86,6 +86,13 @@ from fintracka.planning import (
     set_recurring_target,
     set_target_override,
 )
+from fintracka.subcategories import (
+    SubcategoryError,
+    assign_subcategory,
+    create_subcategory,
+    list_subcategories,
+    reprocess_subcategory_rule,
+)
 
 
 class StrictModel(BaseModel):
@@ -146,6 +153,9 @@ class TransactionResponse(StrictModel):
     category_id: str | None
     category: str | None
     category_source: str | None
+    subcategory_id: str | None
+    subcategory: str | None
+    subcategory_source: str | None
     provider_category_confidence: str | None
     spending_owner: str | None
     spending_owner_effective: str | None
@@ -171,6 +181,22 @@ class CategorizeResponse(StrictModel):
     transaction: TransactionResponse
     affected_count: int
     undo_id: str
+
+
+class SubcategoryCreate(StrictModel):
+    expected_updated_at: StrictStr
+    category_id: StrictStr
+    name: StrictStr = Field(min_length=1, max_length=80)
+
+
+class SubcategoryAssign(StrictModel):
+    expected_updated_at: StrictStr
+    subcategory_id: StrictStr
+    scope: Literal["one_time", "future", "past_and_future"]
+
+
+class SubcategoryReprocess(StrictModel):
+    expected_updated_at: StrictStr
 
 
 class PlannedIncomeCreate(StrictModel):
@@ -601,9 +627,12 @@ def create_app(
         account_id: str | None = None,
         category_id: str | None = None,
         spending_owner: Literal["David", "Ariela", "Shared"] | None = None,
+        include_transfers: bool = False,
     ) -> TransactionPage:
         clauses = ["t.tombstoned = 0"]
         parameters: list[object] = []
+        if not include_transfers:
+            clauses.append("COALESCE(c.category_type, '') != 'transfer'")
         if cursor:
             cursor_date, cursor_id = _decode_cursor(cursor)
             clauses.append("(t.local_date < ? OR (t.local_date = ? AND t.id < ?))")
@@ -632,6 +661,7 @@ def create_app(
                    t.provider_description description,
                    COALESCE(t.user_merchant, t.provider_merchant) merchant,
                    t.category_id, c.name category, t.category_source,
+                   t.subcategory_id, s.name subcategory, t.subcategory_source,
                    t.provider_category_confidence, t.spending_owner,
                    CASE WHEN c.category_type = 'expense' THEN COALESCE(t.spending_owner, a.spending_owner) END spending_owner_effective,
                    t.notes, t.pending, pc.provider = 'manual' manual_cash,
@@ -639,6 +669,7 @@ def create_app(
             FROM transactions t JOIN accounts a ON a.id = t.account_id
             JOIN provider_connections pc ON pc.id = a.connection_id
             LEFT JOIN categories c ON c.id = t.category_id
+            LEFT JOIN subcategories s ON s.id = t.subcategory_id
             WHERE {' AND '.join(clauses)}
             ORDER BY t.local_date DESC, t.id DESC LIMIT ?
             """,
@@ -649,6 +680,30 @@ def create_app(
         items = [TransactionResponse(**{**dict(row), "pending": bool(row["pending"])}) for row in visible]
         next_cursor = _encode_cursor(visible[-1]["local_date"], visible[-1]["id"]) if has_more else None
         return TransactionPage(items=items, next_cursor=next_cursor)
+
+    @app.get("/api/v1/subcategories")
+    def subcategories_route(
+        database: Database, category_id: str | None = None
+    ) -> list[dict[str, object]]:
+        return list_subcategories(database, category_id)
+
+    @app.post("/api/v1/subcategories", status_code=201)
+    def create_subcategory_route(
+        payload: SubcategoryCreate, database: Database
+    ) -> dict[str, object]:
+        try:
+            with _write_transaction(database):
+                _require_revision(
+                    database,
+                    "categories",
+                    payload.category_id,
+                    payload.expected_updated_at,
+                    "category",
+                )
+                identifier = create_subcategory(database, payload.category_id, payload.name)
+        except SubcategoryError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return next(row for row in list_subcategories(database) if row["id"] == identifier)
 
     @app.post("/api/v1/transactions/manual-cash", response_model=TransactionResponse, status_code=201)
     def create_manual_cash_route(payload: ManualCashCreate, database: Database) -> TransactionResponse:
@@ -741,6 +796,55 @@ def create_app(
             affected_count=result.affected_count,
             undo_id=result.undo_id,
         )
+
+    @app.post("/api/v1/transactions/{transaction_id}/subcategory")
+    def assign_subcategory_route(
+        transaction_id: str,
+        payload: SubcategoryAssign,
+        database: Database,
+    ) -> dict[str, object]:
+        try:
+            with _write_transaction(database):
+                _require_revision(
+                    database,
+                    "transactions",
+                    transaction_id,
+                    payload.expected_updated_at,
+                    "transaction",
+                )
+                result = assign_subcategory(
+                    database, transaction_id, payload.subcategory_id, payload.scope
+                )
+        except SubcategoryError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        row = _transaction(database, transaction_id)
+        return {
+            "transaction": TransactionResponse(
+                **{**dict(row), "pending": bool(row["pending"])}
+            ).model_dump(),
+            "affected_count": result.affected_count,
+            "undo_id": result.undo_id,
+        }
+
+    @app.post("/api/v1/subcategory-rules/{rule_id}/reprocess")
+    def reprocess_subcategory_route(
+        rule_id: str,
+        payload: SubcategoryReprocess,
+        database: Database,
+    ) -> dict[str, int]:
+        try:
+            with _write_transaction(database):
+                _require_revision(
+                    database,
+                    "transaction_subcategory_rules",
+                    rule_id,
+                    payload.expected_updated_at,
+                    "subcategory rule",
+                )
+                count = reprocess_subcategory_rule(database, rule_id)
+        except SubcategoryError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {"affected_count": count}
 
     @app.post("/api/v1/categorizations/{undo_id}/undo")
     def undo_categorization_route(
@@ -989,7 +1093,13 @@ def create_app(
         details = {
             row["id"]: row
             for row in database.execute(
-                f"SELECT id, provider_description, COALESCE(user_merchant, provider_merchant) merchant, notes, currency FROM transactions WHERE id IN ({','.join('?' for _ in identifiers)})",
+                f"""
+                SELECT t.id, t.provider_description,
+                       COALESCE(t.user_merchant, t.provider_merchant) merchant,
+                       t.notes, t.currency, t.subcategory_id, s.name subcategory
+                FROM transactions t LEFT JOIN subcategories s ON s.id = t.subcategory_id
+                WHERE t.id IN ({','.join('?' for _ in identifiers)})
+                """,
                 identifiers,
             )
         } if identifiers else {}
@@ -1003,6 +1113,8 @@ def create_app(
                 "notes": details[entry.transaction_id]["notes"],
                 "amount_minor": entry.amount_minor,
                 "currency": details[entry.transaction_id]["currency"],
+                "subcategory_id": details[entry.transaction_id]["subcategory_id"],
+                "subcategory": details[entry.transaction_id]["subcategory"],
             }
             for index, entry in enumerate(entries)
         ]
@@ -1309,6 +1421,7 @@ def _transaction(connection: sqlite3.Connection, transaction_id: str) -> sqlite3
                t.provider_description description,
                COALESCE(t.user_merchant, t.provider_merchant) merchant,
                t.category_id, c.name category, t.category_source,
+               t.subcategory_id, s.name subcategory, t.subcategory_source,
                t.provider_category_confidence, t.spending_owner,
                CASE WHEN c.category_type = 'expense' THEN COALESCE(t.spending_owner, a.spending_owner) END spending_owner_effective,
                t.notes, t.pending, pc.provider = 'manual' manual_cash,
@@ -1316,6 +1429,7 @@ def _transaction(connection: sqlite3.Connection, transaction_id: str) -> sqlite3
         FROM transactions t JOIN accounts a ON a.id = t.account_id
         JOIN provider_connections pc ON pc.id = a.connection_id
         LEFT JOIN categories c ON c.id = t.category_id
+        LEFT JOIN subcategories s ON s.id = t.subcategory_id
         WHERE t.id = ?
         """,
         (transaction_id,),
@@ -1377,7 +1491,9 @@ def _planning_category(
 
 def _require_revision(
     connection: sqlite3.Connection,
-    table: Literal["planning_income_sources", "categories"],
+    table: Literal[
+        "planning_income_sources", "categories", "transactions", "transaction_subcategory_rules"
+    ],
     entity_id: str,
     expected_updated_at: str,
     label: str,
