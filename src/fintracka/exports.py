@@ -21,7 +21,9 @@ SHEET_ORDER = (
     "Balances",
     "Balance History",
     "Categories",
+    "Subcategories",
     "Auto-categorization Rules",
+    "Manual Assets",
     "Planned Income",
     "Monthly Budget",
     "Yearly Budget",
@@ -105,17 +107,19 @@ def build_snapshot(connection: sqlite3.Connection) -> dict[str, list[list[object
         database_id = (value,)
     sheets: dict[str, list[list[object]]] = {}
     sheets["Transactions"] = _rows(
-        ["FinTracka ID", "Date", "Account", "Amount (minor units)", "Currency", "Description", "Merchant", "Category", "Notes", "Pending", "Last updated", "Spending owner", "Manual cash"],
+        ["FinTracka ID", "Date", "Account", "Amount (minor units)", "Currency", "Description", "Merchant", "Category ID", "Category", "Subcategory ID", "Subcategory", "Notes", "Pending", "Last updated", "Spending owner", "Manual cash"],
         connection.execute(
             """
             SELECT t.id, t.local_date, a.name, t.amount_minor, t.currency,
                    t.provider_description, COALESCE(t.user_merchant, t.provider_merchant),
-                   c.name, t.notes, t.pending, t.updated_at,
+                   t.category_id, c.name, t.subcategory_id, s.name,
+                   t.notes, t.pending, t.updated_at,
                    CASE WHEN c.category_type = 'expense' THEN COALESCE(t.spending_owner, a.spending_owner) END,
                    CASE WHEN pc.provider = 'manual' THEN 'Yes' ELSE 'No' END
             FROM transactions t JOIN accounts a ON a.id = t.account_id
             JOIN provider_connections pc ON pc.id = a.connection_id
             LEFT JOIN categories c ON c.id = t.category_id
+            LEFT JOIN subcategories s ON s.id = t.subcategory_id
             WHERE t.tombstoned = 0 AND a.include_export = 1
             ORDER BY t.local_date, t.id
             """
@@ -151,10 +155,30 @@ def build_snapshot(connection: sqlite3.Connection) -> dict[str, list[list[object
             "SELECT c.id, g.name, c.name, c.category_type, c.reporting_behavior, c.archived, c.updated_at FROM categories c LEFT JOIN category_groups g ON g.id = c.group_id ORDER BY c.sort_order, c.name, c.id"
         ),
     )
+    sheets["Subcategories"] = _rows(
+        ["FinTracka ID", "Category ID", "Category", "Subcategory", "Sort order", "Archived", "Last updated"],
+        connection.execute(
+            """
+            SELECT s.id, s.category_id, c.name, s.name, s.sort_order, s.archived, s.updated_at
+            FROM subcategories s JOIN categories c ON c.id = s.category_id
+            ORDER BY c.sort_order, c.name, s.sort_order, s.name, s.id
+            """
+        ),
+    )
     sheets["Auto-categorization Rules"] = _rows(
         ["FinTracka ID", "Priority", "Name", "Enabled", "Conditions", "Category", "Last updated"],
         connection.execute(
             "SELECT r.id, r.priority, r.name, r.enabled, r.conditions_json, c.name, r.updated_at FROM categorization_rules r JOIN categories c ON c.id = r.category_id ORDER BY r.priority, r.id"
+        ),
+    )
+    sheets["Manual Assets"] = _rows(
+        ["FinTracka ID", "Title", "Kind", "Owner", "Current value (minor units)", "Currency", "As of date", "Last updated"],
+        connection.execute(
+            """
+            SELECT id, title, kind, owner, current_value_minor, currency, as_of_date, updated_at
+            FROM manual_assets WHERE active = 1
+            ORDER BY kind, title, id
+            """
         ),
     )
     export_year = datetime.now().year

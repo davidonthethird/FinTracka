@@ -29,6 +29,8 @@ from fintracka.locks import ProcessLock, ProcessLockError
 from fintracka.manual_cash import create_manual_cash
 from fintracka.planning import create_income_source, set_recurring_target
 from fintracka.providers import NormalizedTransaction, SyncBatch
+from fintracka.savings import create_manual_asset, deactivate_manual_asset
+from fintracka.subcategories import create_subcategory
 from fintracka.sync import apply_batch
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
 
@@ -154,6 +156,64 @@ def test_export_includes_effective_planning_and_manual_cash_deterministically(
     assert transaction_rows[0][-1] == "Manual cash"
     assert manual[-1] == "Yes"
     assert [row[0] for row in transaction_rows[1:]].count(manual_id) == 1
+    connection.close()
+
+
+def test_export_includes_stable_subcategories_and_active_manual_assets(
+    ledger_path: Path,
+) -> None:
+    connection = connect(ledger_path)
+    transaction = connection.execute("SELECT id FROM transactions LIMIT 1").fetchone()
+    assert transaction is not None
+    category_id = connection.execute(
+        "SELECT id FROM categories WHERE category_type = 'expense' ORDER BY sort_order LIMIT 1"
+    ).fetchone()[0]
+    connection.execute(
+        "UPDATE transactions SET category_id = ?, category_source = 'manual' WHERE id = ?",
+        (category_id, transaction["id"]),
+    )
+    subcategory_id = create_subcategory(connection, category_id, "+Home detail")
+    connection.execute(
+        "UPDATE categories SET name = '@Parent category' WHERE id = ?", (category_id,)
+    )
+    connection.execute(
+        "UPDATE transactions SET subcategory_id = ?, subcategory_source = 'manual' WHERE id = ?",
+        (subcategory_id, transaction["id"]),
+    )
+    active_asset = create_manual_asset(
+        connection, "=Emergency reserve", "savings", "Shared", 123_456, "2026-10-14"
+    )
+    inactive_asset = create_manual_asset(
+        connection, "+Old reserve", "other", "David", 200, "2026-10-01"
+    )
+    inactive_updated = connection.execute(
+        "SELECT updated_at FROM manual_assets WHERE id = ?", (inactive_asset,)
+    ).fetchone()[0]
+    deactivate_manual_asset(connection, inactive_asset, inactive_updated)
+
+    first = build_snapshot(connection)
+    second = build_snapshot(connection)
+
+    transaction_header = first["Transactions"][0]
+    assert transaction_header[7:11] == [
+        "Category ID", "Category", "Subcategory ID", "Subcategory"
+    ]
+    exported_transaction = next(
+        row for row in first["Transactions"][1:] if row[0] == transaction["id"]
+    )
+    assert exported_transaction[7:11] == [
+        category_id, "'@Parent category", subcategory_id, "'+Home detail"
+    ]
+    assert first["Subcategories"] == second["Subcategories"]
+    assert first["Manual Assets"] == second["Manual Assets"]
+    assert [row[0] for row in first["Manual Assets"][1:]] == [active_asset]
+    assert first["Manual Assets"][1][1] == "'=Emergency reserve"
+
+    active_updated = connection.execute(
+        "SELECT updated_at FROM manual_assets WHERE id = ?", (active_asset,)
+    ).fetchone()[0]
+    deactivate_manual_asset(connection, active_asset, active_updated)
+    assert build_snapshot(connection)["Manual Assets"] == [first["Manual Assets"][0]]
     connection.close()
 
 
