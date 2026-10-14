@@ -76,7 +76,7 @@ def test_migrations_are_idempotent_and_install_core_constraints(tmp_path: Path) 
         } <= tables
         assert [
             row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ] == list(range(1, 10))
+        ] == list(range(1, 11))
         starter_categories = {
             row[0]
             for row in connection.execute("SELECT name FROM categories WHERE archived = 0")
@@ -205,7 +205,7 @@ def test_planning_migration_preserves_giving_identity_and_legacy_target(tmp_path
         connection.close()
 
 
-def test_migration_009_adds_coverage_subcategories_and_manual_assets(tmp_path: Path) -> None:
+def test_migrations_009_and_010_add_and_backfill_subcategories(tmp_path: Path) -> None:
     connection = connect(tmp_path / "legacy.sqlite3")
     try:
         _migrate_through(connection, 8)
@@ -248,16 +248,34 @@ def test_migration_009_adds_coverage_subcategories_and_manual_assets(tmp_path: P
             """
             INSERT INTO transactions
             (id, account_id, local_date, amount_minor, currency, provider_description,
-             category_id, category_source, created_at, updated_at)
-            VALUES (?, ?, '2026-07-01', -1000, 'USD', 'OLD PURCHASE', ?, 'provider', ?, ?)
+             provider_merchant, category_id, category_source, created_at, updated_at)
+            VALUES (?, ?, '2026-07-01', -1000, 'USD', 'OLD PURCHASE', 'Lowe''s', ?, 'provider', ?, ?)
             """,
             (transaction_id, checking_id, shopping_id, now, now),
         )
-        before_transactions = {
-            row[0] for row in connection.execute("SELECT id FROM transactions")
-        }
         before_categories = {
             row[0] for row in connection.execute("SELECT id FROM categories")
+        }
+
+        _apply_migration(connection, 9)
+        manual_transaction_id = new_id()
+        clothing_id = connection.execute(
+            "SELECT id FROM subcategories WHERE category_id = ? AND name = 'Clothing'",
+            (shopping_id,),
+        ).fetchone()[0]
+        connection.execute(
+            """
+            INSERT INTO transactions
+            (id, account_id, local_date, amount_minor, currency, provider_description,
+             provider_merchant, category_id, category_source, subcategory_id,
+             subcategory_source, created_at, updated_at)
+            VALUES (?, ?, '2026-07-02', -2000, 'USD', 'MANUAL PURCHASE', 'Macy''s',
+                    ?, 'manual', ?, 'manual', ?, ?)
+            """,
+            (manual_transaction_id, checking_id, shopping_id, clothing_id, now, now),
+        )
+        before_transactions = {
+            row[0] for row in connection.execute("SELECT id FROM transactions")
         }
 
         migrate(connection)
@@ -267,7 +285,7 @@ def test_migration_009_adds_coverage_subcategories_and_manual_assets(tmp_path: P
             for row in connection.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
-        ] == list(range(1, 10))
+        ] == list(range(1, 11))
         assert connection.execute(
             "SELECT history_available_from FROM provider_connections WHERE id = ?",
             (connection_id,),
@@ -282,6 +300,18 @@ def test_migration_009_adds_coverage_subcategories_and_manual_assets(tmp_path: P
         assert {row[0] for row in connection.execute("SELECT id FROM transactions")} == before_transactions
         assert {row[0] for row in connection.execute("SELECT id FROM categories")} == before_categories
         assert connection.execute("SELECT COUNT(*) FROM transaction_subcategory_rules").fetchone()[0] >= 40
+        assert tuple(connection.execute(
+            """
+            SELECT s.name, t.subcategory_source
+            FROM transactions t JOIN subcategories s ON s.id = t.subcategory_id
+            WHERE t.id = ?
+            """,
+            (transaction_id,),
+        ).fetchone()) == ("Home improvement", "provider")
+        assert tuple(connection.execute(
+            "SELECT subcategory_id, subcategory_source FROM transactions WHERE id = ?",
+            (manual_transaction_id,),
+        ).fetchone()) == (clothing_id, "manual")
         assert connection.execute(
             """
             SELECT COUNT(*) FROM subcategories s JOIN categories c ON c.id = s.category_id
@@ -331,12 +361,21 @@ def _migrate_through(connection: sqlite3.Connection, maximum_version: int) -> No
         version = int(resource.name.split("_", 1)[0])
         if version > maximum_version:
             continue
-        name = resource.name.replace("'", "''")
-        connection.executescript(
-            "BEGIN IMMEDIATE;\n"
-            + resource.read_text(encoding="utf-8")
-            + f"\nINSERT INTO schema_migrations VALUES ({version}, '{name}', '2026-10-13T00:00:00Z');\nCOMMIT;"
-        )
+        _apply_migration(connection, version)
+
+
+def _apply_migration(connection: sqlite3.Connection, version: int) -> None:
+    migration_root = files("fintracka").joinpath("migrations")
+    resource = next(
+        item for item in migration_root.iterdir()
+        if item.suffix == ".sql" and int(item.name.split("_", 1)[0]) == version
+    )
+    name = resource.name.replace("'", "''")
+    connection.executescript(
+        "BEGIN IMMEDIATE;\n"
+        + resource.read_text(encoding="utf-8")
+        + f"\nINSERT INTO schema_migrations VALUES ({version}, '{name}', '2026-10-13T00:00:00Z');\nCOMMIT;"
+    )
 
 def test_request_connection_can_cross_fastapi_worker_threads(tmp_path) -> None:
     connection = connect(tmp_path / "ledger.sqlite3")
