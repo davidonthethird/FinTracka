@@ -7,7 +7,7 @@ import pytest
 
 from fintracka.db import connect, migrate
 from fintracka.ids import new_id
-from fintracka.imports import DuplicateImportError, commit_csv
+from fintracka.imports import DuplicateImportError, commit_csv, preview_csv
 from fintracka.ledger import (
     IntegrityError,
     apply_rules,
@@ -174,8 +174,56 @@ def test_csv_replay_is_blocked_and_overlapping_file_is_suggested(
     assert result.imported_count == 1 and result.duplicate_suggestions == 0
     with pytest.raises(DuplicateImportError):
         commit_csv(ledger, account_id, "first-again.csv", first)
+    preview = preview_csv(ledger, second, account_id=account_id)
+    assert preview.row_count == 1 and preview.duplicate_suggestions == 1
     overlap = commit_csv(ledger, account_id, "second.csv", second)
     assert overlap.imported_count == 1 and overlap.duplicate_suggestions == 1
+
+
+def test_csv_import_normalizes_common_bank_headers(
+    ledger: sqlite3.Connection,
+) -> None:
+    account_id = ledger.execute("SELECT id FROM accounts WHERE provider_account_id = 'checking-1'").fetchone()[0]
+    capital_one = (
+        b"Transaction Date,Posted Date,Card No.,Description,Category,Debit,Credit\n"
+        b"10/01/2026,10/02/2026,1234,HOME STORE,Merchandise,45.67,\n"
+        b"10/03/2026,10/04/2026,1234,MERCHANT REFUND,Payment/Credit,,12.34\n"
+    )
+    bank_of_america = (
+        b"Posted Date,Reference Number,Payee,Address,Amount\n"
+        b'10/05/2026,987,"GROCERY, STORE",,-20.00\n'
+    )
+
+    assert commit_csv(ledger, account_id, "capital-one.csv", capital_one).imported_count == 2
+    assert commit_csv(ledger, account_id, "bank-of-america.csv", bank_of_america).imported_count == 1
+    rows = ledger.execute(
+        "SELECT local_date, amount_minor, currency, provider_description FROM transactions WHERE provider_description IN ('HOME STORE', 'MERCHANT REFUND', 'GROCERY, STORE') ORDER BY local_date"
+    ).fetchall()
+
+    assert [tuple(row) for row in rows] == [
+        ("2026-10-01", -4567, "USD", "HOME STORE"),
+        ("2026-10-03", 1234, "USD", "MERCHANT REFUND"),
+        ("2026-10-05", -2000, "USD", "GROCERY, STORE"),
+    ]
+
+
+def test_csv_import_applies_existing_categorization_rules(
+    ledger: sqlite3.Connection,
+) -> None:
+    account_id = ledger.execute("SELECT id FROM accounts WHERE provider_account_id = 'checking-1'").fetchone()[0]
+    groceries = _category(ledger, "Groceries")
+    create_rule(ledger, "Older groceries", 1, {"description_contains": "OLDER GROCERIES"}, groceries)
+
+    commit_csv(
+        ledger,
+        account_id,
+        "older.csv",
+        b"date,amount,currency,description\n2025-09-01,-22.50,USD,OLDER GROCERIES\n",
+    )
+
+    assert tuple(ledger.execute(
+        "SELECT category_id, category_source FROM transactions WHERE provider_description = 'OLDER GROCERIES'"
+    ).fetchone()) == (groceries, "rule")
 
 
 def _category(connection: sqlite3.Connection, name: str) -> str:

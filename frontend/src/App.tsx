@@ -7,6 +7,7 @@ import type { SankeyLinkProps, SankeyNodeProps } from "recharts";
 
 import { api } from "./api";
 import { currentMonth, currencyStep, formatMoney, majorInputToMinor, minorToMajorInput, movementWidths, totalsByCurrency } from "./format";
+import { HistoryImportPage } from "./imports/HistoryImportPage";
 import { PlanningPage } from "./planning/PlanningPage";
 import { SavingsPage } from "./savings/SavingsPage";
 import { ManualCashDialog } from "./transactions/ManualCashDialog";
@@ -38,7 +39,7 @@ type FlowSelection = { label: string; entry_ids: string[] };
 type OwnerSpending = { owner: SpendingOwner; amount_minor: number };
 
 const nav = [
-  ["/", "Overview"], ["/accounts", "Accounts"], ["/transactions", "Transactions"],
+  ["/", "Overview"], ["/accounts", "Accounts"], ["/transactions", "Transactions"], ["/history-import", "History import"],
   ["/planning", "Planning"], ["/savings", "Savings"], ["/envelope-budget", "Envelope budget"],
   ["/reports", "Reports"], ["/rules", "Rules"], ["/connections", "Connections"], ["/settings", "Settings"],
 ];
@@ -59,6 +60,7 @@ export function App() {
         <Route path="/" element={<OverviewPage />} />
         <Route path="/accounts" element={<AccountsPage />} />
         <Route path="/transactions" element={<TransactionsPage />} />
+        <Route path="/history-import" element={<HistoryImportPage />} />
         <Route path="/planning" element={<PlanningPage />} />
         <Route path="/savings" element={<SavingsPage />} />
         <Route path="/tracking-budget" element={<PlanningPage />} />

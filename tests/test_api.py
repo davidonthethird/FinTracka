@@ -741,6 +741,12 @@ def test_management_reports_reconciliation_and_local_operation_jobs(tmp_path: Pa
         import_payload = {"account_id": account["id"], "filename": "statement.csv", "content_base64": encoded}
         preview = client.post("/api/v1/imports/csv/preview", json=import_payload, headers=headers)
         assert preview.status_code == 200 and preview.json()["row_count"] == 1
+        missing_account = client.post(
+            "/api/v1/imports/csv/preview",
+            json={**import_payload, "account_id": "missing-account"},
+            headers=headers,
+        )
+        assert missing_account.status_code == 422 and missing_account.json()["detail"] == "account not found"
         assert client.post("/api/v1/imports/csv/commit", json=import_payload, headers=headers).status_code == 201
         assert client.post("/api/v1/imports/csv/commit", json=import_payload, headers=headers).status_code == 409
         oversized = {**import_payload, "content_base64": "A" * 6_700_001}

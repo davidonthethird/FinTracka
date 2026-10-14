@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fintracka.ids import new_id
+from fintracka.ledger import apply_rules
 from fintracka.money import MoneyError, minor_units
 
 
@@ -31,21 +32,29 @@ class ImportPreview:
     file_hash: str
     row_count: int
     already_imported: bool
+    duplicate_suggestions: int
 
 
 def preview_csv(
     connection: sqlite3.Connection,
     content: bytes,
     *,
+    account_id: str | None = None,
     max_bytes: int = 5_000_000,
 ) -> ImportPreview:
     file_hash, _, rows = _read_csv(content, max_bytes=max_bytes)
+    if account_id is not None and connection.execute(
+        "SELECT 1 FROM accounts WHERE id = ?", (account_id,)
+    ).fetchone() is None:
+        raise ImportError("account not found")
+    duplicates = 0
     for index, row in enumerate(rows, start=1):
-        _parsed_row(row, index)
+        parsed = _parsed_row(row, index)
+        duplicates += int(account_id is not None and _is_duplicate(connection, account_id, parsed))
     imported = connection.execute(
         "SELECT 1 FROM import_batches WHERE file_hash = ?", (file_hash,)
     ).fetchone() is not None
-    return ImportPreview(file_hash, len(rows), imported)
+    return ImportPreview(file_hash, len(rows), imported, duplicates)
 
 
 def commit_csv(
@@ -85,6 +94,7 @@ def commit_csv(
                 "INSERT INTO import_rows (batch_id, row_index, transaction_id, row_hash) VALUES (?, ?, ?, ?)",
                 (batch_id, index, transaction_id, row_hash),
             )
+        apply_rules(connection)
         connection.execute(
             "UPDATE import_batches SET status = 'committed', committed_at = ? WHERE id = ?",
             (now, batch_id),
@@ -109,11 +119,9 @@ def _insert_row(
     row: dict[str, str],
     now: str,
 ) -> tuple[str, bool]:
-    local_date, amount, currency, description = _parsed_row(row, index)
-    duplicate = connection.execute(
-        "SELECT 1 FROM transactions WHERE account_id = ? AND local_date = ? AND amount_minor = ? AND currency = ? AND provider_description = ? AND tombstoned = 0",
-        (account_id, local_date, amount, currency, description),
-    ).fetchone() is not None
+    parsed = _parsed_row(row, index)
+    local_date, amount, currency, description = parsed
+    duplicate = _is_duplicate(connection, account_id, parsed)
     transaction_id = new_id()
     instant = f"{local_date}T12:00:00Z"
     connection.execute(
@@ -131,6 +139,18 @@ def _insert_row(
     return transaction_id, duplicate
 
 
+def _is_duplicate(
+    connection: sqlite3.Connection,
+    account_id: str,
+    parsed: tuple[str, int, str, str],
+) -> bool:
+    local_date, amount, currency, description = parsed
+    return connection.execute(
+        "SELECT 1 FROM transactions WHERE account_id = ? AND local_date = ? AND amount_minor = ? AND currency = ? AND provider_description = ? AND tombstoned = 0",
+        (account_id, local_date, amount, currency, description),
+    ).fetchone() is not None
+
+
 def _read_csv(content: bytes, *, max_bytes: int) -> tuple[str, list[str], list[dict[str, str]]]:
     if len(content) > max_bytes:
         raise ImportError("CSV exceeds the size limit")
@@ -140,9 +160,8 @@ def _read_csv(content: bytes, *, max_bytes: int) -> tuple[str, list[str], list[d
     except UnicodeDecodeError as error:
         raise ImportError("CSV must be UTF-8") from error
     reader = csv.DictReader(io.StringIO(text))
-    required = {"date", "amount", "currency", "description"}
-    if reader.fieldnames is None or not required <= set(reader.fieldnames):
-        raise ImportError("CSV requires date, amount, currency, and description columns")
+    if reader.fieldnames is None:
+        raise ImportError("CSV requires a header row")
     rows = list(reader)
     if not rows:
         raise ImportError("CSV has no data rows")
@@ -150,16 +169,48 @@ def _read_csv(content: bytes, *, max_bytes: int) -> tuple[str, list[str], list[d
 
 
 def _parsed_row(row: dict[str, str], index: int) -> tuple[str, int, str, str]:
-    try:
-        local_date = datetime.strptime(row["date"], "%Y-%m-%d").date().isoformat()
-    except (KeyError, ValueError) as error:
-        raise ImportError(f"row {index} has an invalid date") from error
-    currency = row["currency"]
-    amount = minor_units(row["amount"], currency)
-    description = row["description"].strip()
+    date_text = _field(row, "date", "transaction date", "posted date")
+    local_date = None
+    for date_format in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+        try:
+            local_date = datetime.strptime(date_text, date_format).date().isoformat()
+            break
+        except ValueError:
+            pass
+    if local_date is None:
+        raise ImportError(f"row {index} has an invalid date")
+    currency = (_field(row, "currency") or "USD").upper()
+    amount_text = _field(row, "amount")
+    if amount_text:
+        amount = minor_units(_money_text(amount_text), currency)
+    else:
+        debit = _field(row, "debit")
+        credit = _field(row, "credit")
+        if not debit and not credit:
+            raise ImportError(f"row {index} has no amount, debit, or credit")
+        amount = minor_units(_money_text(credit or "0"), currency) - minor_units(
+            _money_text(debit or "0"), currency
+        )
+    description = _field(row, "description", "payee", "merchant", "name")
     if not description:
         raise ImportError(f"row {index} has no description")
     return local_date, amount, currency, description
+
+
+def _field(row: dict[str, str], *names: str) -> str:
+    normalized = {
+        " ".join(key.strip().lower().replace("_", " ").split()): (value or "").strip()
+        for key, value in row.items()
+        if key is not None
+    }
+    return next((normalized[name] for name in names if normalized.get(name)), "")
+
+
+def _money_text(value: str) -> str:
+    cleaned = value.strip().replace(",", "").replace("$", "")
+    if cleaned.startswith("(") and cleaned.endswith(")"):
+        return f"-{cleaned[1:-1]}"
+    return cleaned
 
 
 def _now() -> str:

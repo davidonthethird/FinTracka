@@ -6,7 +6,7 @@ Only accounts, balances, and transactions are permitted. Payment initiation, acc
 
 ## Plaid lifecycle
 
-1. Backend creates a Link token with `products=[transactions]`, US country, one stable local user ID, and no webhook.
+1. Backend creates a Link token with `products=[transactions]`, `transactions.days_requested=730`, US country, one stable local user ID, and no webhook. This applies only when creating a new Item; existing Items retain their original history window.
 2. React opens Plaid Link. The public token is posted once to the backend.
 3. Backend exchanges it, stores the access token in macOS Keychain, and stores only the Keychain reference and Item metadata in SQLite.
 4. Initial `/transactions/sync` starts without a cursor. All pages must complete before data and `next_cursor` commit together.

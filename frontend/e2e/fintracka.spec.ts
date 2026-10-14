@@ -167,6 +167,22 @@ test("synthetic finance workflow", async ({ page }) => {
   await expect(page.locator("tbody tr")).toHaveCount(100);
   await page.unroute("**/api/v1/transactions**");
 
+  await page.getByRole("link", { name: "History import" }).click();
+  await page.getByLabel("Account").selectOption({ index: 1 });
+  await page.getByLabel("CSV file").setInputFiles({
+    name: "older-history.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("Transaction Date,Description,Debit,Credit\n09/01/2025,OLDER GROCERIES,22.50,\n"),
+  });
+  await page.getByRole("button", { name: "Preview history" }).click();
+  await expect(page.getByRole("status")).toContainText("1 transaction ready");
+  await page.getByRole("button", { name: "Import history" }).click();
+  await expect(page.getByRole("status")).toContainText("1 transaction imported");
+  await page.getByRole("link", { name: "Transactions" }).click();
+  await page.getByLabel("Search transactions").fill("OLDER GROCERIES");
+  await page.getByRole("button", { name: "Search" }).click();
+  await expect(page.getByText("OLDER GROCERIES", { exact: true }).first()).toBeVisible();
+
   await page.getByRole("link", { name: "Planning" }).click();
   const inactiveToggle = page.getByLabel("Show inactive categories");
   await expect(inactiveToggle).toBeVisible();

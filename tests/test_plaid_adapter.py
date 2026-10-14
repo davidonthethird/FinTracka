@@ -63,6 +63,7 @@ def test_link_requests_transactions_only_and_completion_returns_no_token() -> No
     assert session.link_token == "link-token"
     assert session.environment == "production"
     assert client.link_requests[0]["products"] == ["transactions"]
+    assert client.link_requests[0]["transactions"] == {"days_requested": 730}
     assert "auth" not in json.dumps(client.link_requests[0]).lower()
     assert connected.external_connection_id == "item-1"
     assert not hasattr(connected, "access_token")

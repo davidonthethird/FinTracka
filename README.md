@@ -7,6 +7,8 @@ FinTracka is a single-user, local-first personal finance application for macOS. 
 - Imports balances and transactions from Plaid without giving FinTracka bank credentials.
 - Keeps provider facts separate from manual categories, merchants, notes, ownership, and splits.
 - Automatically categorizes transactions and learns corrections for one transaction, future matches, or past and future matches.
+- Requests up to 730 days of history whenever a new Plaid connection is created.
+- Imports older CSV history into an existing account without creating another Plaid Item.
 - Supports category and subcategory filtering, manual cash spending, transfer review, and David/Ariela/Shared spending ownership.
 - Shows monthly Planning with historical averages, targets, current spending, projected month-end spending, and category detail drawers.
 - Maintains a 10%-of-Salary Tzedaka minimum in Planning.
@@ -63,9 +65,10 @@ The first browser visit exchanges a short-lived, one-use bootstrap token for an 
 1. Use **Connections** to connect, repair, disconnect, or sync a bank.
 2. Use **Accounts** to set nicknames, spending ownership, reporting scope, and Savings inclusion.
 3. Use **Transactions** to search, filter, correct categories/subcategories, add cash spending, and review transfers.
-4. Use **Planning** to enter recurring income, compare usual spending with targets and actuals, and adjust category targets.
-5. Use **Savings** for connected savings balances and manually tracked investments or other assets.
-6. Use **Settings** for readiness checks, Google authorization, exports, backups, scheduling, and theme.
+4. Use **History import** to preview and import older bank CSV files into the matching account. Supported files can use Date, Transaction Date, or Posted Date; Description or Payee; and either Amount or separate Debit/Credit columns. Currency defaults to USD.
+5. Use **Planning** to enter recurring income, compare usual spending with targets and actuals, and adjust category targets.
+6. Use **Savings** for connected savings balances and manually tracked investments or other assets.
+7. Use **Settings** for readiness checks, Google authorization, exports, backups, scheduling, and theme.
 
 Data and corrections persist in the local SQLite ledger when the browser or application closes. Spreadsheets are exports only; edits made in them are not imported.
 
@@ -101,6 +104,8 @@ Scheduled work runs only while the Mac is awake. Local backups are retained acco
 Before Plaid Link opens, FinTracka checks Python 3.14, FileVault, macOS Keychain, Plaid credentials, and a verified local SQLite backup. Missing off-device backup coverage is shown as a prominent, non-blocking testing warning.
 
 Start with one institution, compare account names and balances, sync transactions, and reconcile a statement exactly before expanding use. Bank credentials are entered only inside Plaid Link and never pass through FinTracka.
+
+Plaid's history window cannot be expanded after Transactions has already been initialized on an Item. Do not disconnect and reconnect an existing Trial Item merely to request more history: removing it does not restore the lifetime Trial slot. Use **History import** for older records instead.
 
 ## Verification
 

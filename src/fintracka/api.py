@@ -1360,7 +1360,7 @@ def create_app(
     def preview_csv_route(payload: CSVImportRequest, database: Database) -> dict[str, object]:
         content = _decode_csv(payload.content_base64)
         try:
-            return asdict(preview_csv(database, content))
+            return asdict(preview_csv(database, content, account_id=payload.account_id))
         except (CSVImportError, ValueError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 

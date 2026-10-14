@@ -54,6 +54,7 @@ class OfficialPlaidClient:
         from plaid.model.country_code import CountryCode
         from plaid.model.link_token_create_request import LinkTokenCreateRequest
         from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
+        from plaid.model.link_token_transactions import LinkTokenTransactions
         from plaid.model.products import Products
 
         values = dict(request)
@@ -61,6 +62,8 @@ class OfficialPlaidClient:
         values["country_codes"] = [CountryCode(code) for code in values["country_codes"]]
         if "products" in values:
             values["products"] = [Products(product) for product in values["products"]]
+        if "transactions" in values:
+            values["transactions"] = LinkTokenTransactions(**values["transactions"])
         return self._invoke("link_token_create", LinkTokenCreateRequest(**values))
 
     def exchange_public_token(self, public_token: str) -> dict[str, object]:
@@ -161,6 +164,7 @@ class PlaidAdapter:
                     "language": "en",
                     "country_codes": ["US"],
                     "products": ["transactions"],
+                    "transactions": {"days_requested": 730},
                     "user": {"client_user_id": "local-user"},
                 }
             )
