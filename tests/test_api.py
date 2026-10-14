@@ -1185,6 +1185,18 @@ def test_subcategory_api_validates_revisions_security_and_parent_relationships(
         )
         assert assigned.status_code == 200
         assert assigned.json()["transaction"]["subcategory"] == "Tools"
+        assert [
+            row["id"]
+            for row in client.get(
+                "/api/v1/transactions", params={"subcategory_id": tools}
+            ).json()["items"]
+        ] == [transaction_row["id"]]
+        assert [
+            row["id"]
+            for row in client.get(
+                "/api/v1/transactions", params={"search": "Tools"}
+            ).json()["items"]
+        ] == [transaction_row["id"]]
         connection = connect(path)
         rule = dict(connection.execute(
             "SELECT id, updated_at FROM transaction_subcategory_rules WHERE origin = 'user'"

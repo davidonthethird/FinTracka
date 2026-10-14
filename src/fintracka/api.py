@@ -647,6 +647,7 @@ def create_app(
         search: Annotated[str | None, Query(max_length=200)] = None,
         account_id: str | None = None,
         category_id: str | None = None,
+        subcategory_id: str | None = None,
         spending_owner: Literal["David", "Ariela", "Shared"] | None = None,
         include_transfers: bool = False,
     ) -> TransactionPage:
@@ -659,9 +660,9 @@ def create_app(
             clauses.append("(t.local_date < ? OR (t.local_date = ? AND t.id < ?))")
             parameters.extend((cursor_date, cursor_date, cursor_id))
         if search:
-            clauses.append("(t.provider_description LIKE ? ESCAPE '\\' OR COALESCE(t.user_merchant, t.provider_merchant, '') LIKE ? ESCAPE '\\' OR COALESCE(c.name, '') LIKE ? ESCAPE '\\')")
+            clauses.append("(t.provider_description LIKE ? ESCAPE '\\' OR COALESCE(t.user_merchant, t.provider_merchant, '') LIKE ? ESCAPE '\\' OR COALESCE(c.name, '') LIKE ? ESCAPE '\\' OR COALESCE(s.name, '') LIKE ? ESCAPE '\\')")
             escaped = "%" + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-            parameters.extend((escaped, escaped, escaped))
+            parameters.extend((escaped, escaped, escaped, escaped))
         if account_id:
             clauses.append("t.account_id = ?")
             parameters.append(account_id)
@@ -672,6 +673,9 @@ def create_app(
         elif category_id:
             clauses.append("t.category_id = ?")
             parameters.append(category_id)
+        if subcategory_id:
+            clauses.append("t.subcategory_id = ?")
+            parameters.append(subcategory_id)
         if spending_owner:
             clauses.append("c.category_type = 'expense' AND COALESCE(t.spending_owner, a.spending_owner) = ?")
             parameters.append(spending_owner)

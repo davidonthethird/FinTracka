@@ -23,7 +23,10 @@ def seed_database(path: Path) -> None:
         connection,
         connection_ids[0],
         SyncBatch(
-            added=(NormalizedTransaction("transfer-out", "checking-1", "2026-10-08T12:00:00Z", -5_000, "USD", "TRANSFER TO SAVINGS"),),
+            added=(NormalizedTransaction(
+                "transfer-out", "checking-1", "2026-10-08T12:00:00Z", -5_000, "USD",
+                "TRANSFER TO SAVINGS", provider_category_primary="TRANSFER_OUT",
+            ),),
             next_checkpoint="browser-transfer-out",
         ),
     )
@@ -31,7 +34,10 @@ def seed_database(path: Path) -> None:
         connection,
         connection_ids[1],
         SyncBatch(
-            added=(NormalizedTransaction("transfer-in", "checking-2", "2026-10-08T12:00:00Z", 5_000, "USD", "TRANSFER FROM CHECKING"),),
+            added=(NormalizedTransaction(
+                "transfer-in", "checking-2", "2026-10-08T12:00:00Z", 5_000, "USD",
+                "TRANSFER FROM CHECKING", provider_category_primary="TRANSFER_IN",
+            ),),
             next_checkpoint="browser-transfer-in",
         ),
     )
@@ -50,6 +56,29 @@ def seed_database(path: Path) -> None:
         connection,
         connection_ids[0],
         SyncBatch(added=archive_rows, next_checkpoint="browser-archive"),
+    )
+    apply_batch(
+        connection,
+        connection_ids[0],
+        SyncBatch(
+            added=(
+                NormalizedTransaction(
+                    "browser-lowes", "checking-1", "2026-10-12T12:00:00Z", -8_500,
+                    "USD", "LOWE'S", "LOWE'S", provider_category_primary="GENERAL_MERCHANDISE",
+                    provider_category_detailed="GENERAL_MERCHANDISE_HOME_IMPROVEMENT",
+                ),
+                NormalizedTransaction(
+                    "browser-macys", "checking-1", "2026-10-11T12:00:00Z", -12_500,
+                    "USD", "MACY'S", "MACY'S", provider_category_primary="GENERAL_MERCHANDISE",
+                    provider_category_detailed="GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES",
+                ),
+                NormalizedTransaction(
+                    "browser-atm", "checking-1", "2026-10-10T12:00:00Z", -5_100,
+                    "USD", "ATM WITHDRAWAL", is_cash_withdrawal=True,
+                ),
+            ),
+            next_checkpoint="browser-subcategories",
+        ),
     )
     connection.execute(
         "UPDATE provider_connections SET status = 'repair', last_error_code = 'ITEM_LOGIN_REQUIRED' WHERE id = ?",
