@@ -76,7 +76,7 @@ def test_migrations_are_idempotent_and_install_core_constraints(tmp_path: Path) 
         } <= tables
         assert [
             row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ] == [1, 2, 3, 4, 5, 6, 7, 8]
+        ] == list(range(1, 10))
         starter_categories = {
             row[0]
             for row in connection.execute("SELECT name FROM categories WHERE archived = 0")
@@ -201,6 +201,121 @@ def test_planning_migration_preserves_giving_identity_and_legacy_target(tmp_path
         assert tuple(connection.execute(
             "SELECT category_id, month, amount_minor, currency FROM planning_target_overrides"
         ).fetchone()) == (giving_id, "2026-10", 50000, "USD")
+    finally:
+        connection.close()
+
+
+def test_migration_009_adds_coverage_subcategories_and_manual_assets(tmp_path: Path) -> None:
+    connection = connect(tmp_path / "legacy.sqlite3")
+    try:
+        _migrate_through(connection, 8)
+        now = "2026-10-13T12:00:00Z"
+        institution_id, connection_id, checking_id, savings_id, transaction_id = [
+            new_id() for _ in range(5)
+        ]
+        connection.execute(
+            "INSERT INTO institutions VALUES (?, 'plaid', 'ins-history', 'History bank', ?)",
+            (institution_id, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO provider_connections
+            (id, provider, external_connection_id, institution_id, status, created_at, updated_at, environment)
+            VALUES (?, 'plaid', 'item-history', ?, 'active', ?, ?, 'production')
+            """,
+            (connection_id, institution_id, now, now),
+        )
+        for account_id, external_id, name, subtype in (
+            (checking_id, "checking", "Checking", "checking"),
+            (savings_id, "savings", "Savings", "savings"),
+        ):
+            connection.execute(
+                """
+                INSERT INTO accounts
+                (id, connection_id, provider_account_id, name, type, subtype, nature,
+                 currency, spending_owner, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'depository', ?, 'asset', 'USD', 'Shared', ?, ?)
+                """,
+                (account_id, connection_id, external_id, name, subtype, now, now),
+            )
+        shopping_id = connection.execute(
+            "SELECT id FROM categories WHERE name = 'Shopping'"
+        ).fetchone()[0]
+        dining_id = connection.execute(
+            "SELECT id FROM categories WHERE name = 'Dining'"
+        ).fetchone()[0]
+        connection.execute(
+            """
+            INSERT INTO transactions
+            (id, account_id, local_date, amount_minor, currency, provider_description,
+             category_id, category_source, created_at, updated_at)
+            VALUES (?, ?, '2026-07-01', -1000, 'USD', 'OLD PURCHASE', ?, 'provider', ?, ?)
+            """,
+            (transaction_id, checking_id, shopping_id, now, now),
+        )
+        before_transactions = {
+            row[0] for row in connection.execute("SELECT id FROM transactions")
+        }
+        before_categories = {
+            row[0] for row in connection.execute("SELECT id FROM categories")
+        }
+
+        migrate(connection)
+
+        assert [
+            row[0]
+            for row in connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        ] == list(range(1, 10))
+        assert connection.execute(
+            "SELECT history_available_from FROM provider_connections WHERE id = ?",
+            (connection_id,),
+        ).fetchone()[0] == "2026-07-01"
+        assert [
+            row[0]
+            for row in connection.execute(
+                "SELECT include_savings FROM accounts WHERE id IN (?, ?) ORDER BY name",
+                (checking_id, savings_id),
+            )
+        ] == [0, 1]
+        assert {row[0] for row in connection.execute("SELECT id FROM transactions")} == before_transactions
+        assert {row[0] for row in connection.execute("SELECT id FROM categories")} == before_categories
+        assert connection.execute("SELECT COUNT(*) FROM transaction_subcategory_rules").fetchone()[0] >= 40
+        assert connection.execute(
+            """
+            SELECT COUNT(*) FROM subcategories s JOIN categories c ON c.id = s.category_id
+            WHERE c.name = 'Shopping' AND s.name IN ('Clothing', 'Home improvement', 'General')
+            """
+        ).fetchone()[0] == 3
+
+        clothing_id = connection.execute(
+            """
+            SELECT s.id FROM subcategories s JOIN categories c ON c.id = s.category_id
+            WHERE c.name = 'Shopping' AND s.name = 'Clothing'
+            """
+        ).fetchone()[0]
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE transactions SET category_id = ?, subcategory_id = ? WHERE id = ?",
+                (dining_id, clothing_id, transaction_id),
+            )
+
+        for owner, kind, amount in (
+            ("Nobody", "savings", 100),
+            ("Shared", "collectible", 100),
+            ("Shared", "investment", -1),
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    """
+                    INSERT INTO manual_assets
+                    (id, title, kind, owner, current_value_minor, currency, as_of_date,
+                     active, created_at, updated_at)
+                    VALUES (?, 'Asset', ?, ?, ?, 'USD', '2026-10-13', 1, ?, ?)
+                    """,
+                    (new_id(), kind, owner, amount, now, now),
+                )
     finally:
         connection.close()
 
