@@ -83,6 +83,28 @@ export function coverageLabel(snapshot: Pick<PlanningSnapshot, "usable_average_m
   return `${snapshot.usable_average_months} of ${snapshot.average_months} months available`;
 }
 
+export type PaceIndicator = {
+  tone: "good" | "steady" | "warning" | "bad" | "neutral";
+  label: string;
+};
+
+export function planningPace(categories: PlanningCategory[], projectedMinor: number | null): PaceIndicator {
+  const historicalMinor = categories.reduce(
+    (total, category) => total + Math.max(category.historical_average_minor, 0),
+    0,
+  );
+  if (projectedMinor === null || historicalMinor <= 0) {
+    return { tone: "neutral", label: "No historical comparison" };
+  }
+  const percent = Math.round((Math.max(projectedMinor, 0) / historicalMinor) * 100);
+  const tone = percent <= 90 ? "good" : percent <= 100 ? "steady" : percent <= 110 ? "warning" : "bad";
+  return { tone, label: `Projected ${percent}% of usual` };
+}
+
+export function visiblePlanningCategories(categories: PlanningCategory[], showInactive: boolean): PlanningCategory[] {
+  return showInactive ? categories : categories.filter((category) => category.target_minor !== 0 || category.actual_minor !== 0);
+}
+
 export function overallStatusLabel(
   snapshot: Pick<PlanningSnapshot, "status" | "projected_surplus_shortfall_minor">,
 ): string {

@@ -148,6 +148,16 @@ test("synthetic finance workflow", async ({ page }) => {
   await page.unroute("**/api/v1/transactions**");
 
   await page.getByRole("link", { name: "Planning" }).click();
+  const inactiveToggle = page.getByLabel("Show inactive categories");
+  await expect(inactiveToggle).toBeVisible();
+  await expect(page.locator(".planning-summary")).toContainText("Remaining after targets");
+  await expect(page.locator(".planning-summary")).not.toContainText("Planned income");
+  await expect(page.getByTestId("spent-so-far").locator("b")).toHaveCSS("color", "rgb(168, 60, 67)");
+  await expect(page.getByTestId("remaining-budget").locator("b")).toHaveCSS("color", "rgb(20, 125, 112)");
+  const activeCategoryCount = await page.locator(".planning-category").count();
+  await inactiveToggle.check();
+  await expect(page.locator(".planning-category")).toHaveCount(activeCategoryCount + 9);
+  await inactiveToggle.uncheck();
   await page.getByLabel("Title").fill("Paycheck");
   await page.getByLabel("Type").selectOption("Salary");
   await page.getByLabel("Monthly amount").fill("5900.00");

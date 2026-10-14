@@ -1,10 +1,22 @@
 # FinTracka
 
-FinTracka is a single-user, local-first personal finance application. SQLite is the authoritative ledger; the dashboard binds only to `127.0.0.1`. Plaid supplies account and transaction data, while Google Sheets and Excel are one-way exports.
+FinTracka is a single-user, local-first personal finance application for macOS. SQLite is the authoritative ledger and the dashboard listens only on `127.0.0.1`. Plaid supplies account and transaction data; Google Sheets and Excel are one-way exports.
 
-## Local setup
+## What it does
 
-FinTracka requires Python 3.14.x and Node 24 or newer. Secrets must never be placed in this public repository, shell history, `.env` files, logs, screenshots, or issue/PR text.
+- Imports balances and transactions from Plaid without giving FinTracka bank credentials.
+- Keeps provider facts separate from manual categories, merchants, notes, ownership, and splits.
+- Automatically categorizes transactions and learns corrections for one transaction, future matches, or past and future matches.
+- Supports category and subcategory filtering, manual cash spending, transfer review, and David/Ariela/Shared spending ownership.
+- Shows monthly Planning with historical averages, targets, current spending, projected month-end spending, and category detail drawers.
+- Maintains a 10%-of-Salary Tzedaka minimum in Planning.
+- Tracks connected savings accounts and manually valued savings, investments, and other assets separately from spending Planning.
+- Hides confirmed transfers and card payments from ordinary spending views by default.
+- Produces deterministic Google Sheets and Excel snapshots while SQLite remains authoritative.
+
+## Requirements and setup
+
+FinTracka requires macOS, Python 3.14.x, and Node 24 or newer. Secrets must never be placed in this public repository, shell history, `.env` files, logs, screenshots, or issue/PR text.
 
 ```sh
 python3.14 -m venv .venv
@@ -12,7 +24,7 @@ python3.14 -m venv .venv
 cd frontend && npm ci && npm run build && cd ..
 ```
 
-Configure Plaid Production by typing the secret into standard input when prompted. The command stores the client ID and secret in macOS Keychain; SQLite receives only Keychain reference names.
+Configure Plaid by typing its secret into standard input when prompted. The CLI stores credentials in macOS Keychain; SQLite receives only Keychain reference names.
 
 ```sh
 .venv/bin/python -m fintracka.cli configure plaid \
@@ -21,38 +33,78 @@ Configure Plaid Production by typing the secret into standard input when prompte
   --secret-stdin
 ```
 
-Configure a Google Desktop OAuth client from a private file outside this repository:
+Use `--environment sandbox` for Plaid Sandbox. Configure a Google Desktop OAuth client from a private file outside the repository:
 
 ```sh
 .venv/bin/python -m fintracka.cli configure google \
   --client-json-stdin < /private/path/google-desktop-client.json
 ```
 
-Start the application and immediately open the complete URL it prints:
+## Start and stop
+
+On the configured Mac, double-click `FinTracka.command` on the Desktop. The launcher builds the latest interface, starts the local server, and opens Google Chrome. Keep its Terminal window open; press Control-C there to stop FinTracka.
+
+The repository launcher provides the same workflow:
 
 ```sh
-.venv/bin/python -m fintracka.cli serve
+scripts/launch_fintracka.command
 ```
 
-The URL fragment contains a one-use bootstrap token. It is intentionally short-lived and is removed from the address bar after exchange for an HttpOnly, SameSite-Strict local session cookie. Restart the server if the token has expired.
-
-## First live test
-
-Before Plaid Link opens, FinTracka requires Python 3.14, FileVault, macOS Keychain, Plaid Production credentials, and a verified local SQLite backup. The missing off-device backup is displayed as an accepted, non-blocking test risk.
-
-Connect one institution only, compare account names and balances, sync transactions, and reconcile a statement exactly. Observe that connection for seven days before adding another institution. Bank credentials are entered only in Plaid Link and never pass through FinTracka.
-
-The optional daily schedule runs at 06:17 local time and login. Install it explicitly in Settings or with:
+To start manually and open Chrome:
 
 ```sh
+.venv/bin/python -m fintracka.cli serve --open-chrome
+```
+
+The first browser visit exchanges a short-lived, one-use bootstrap token for an HttpOnly, SameSite-Strict local session cookie. If Chrome shows a locked page, close that tab and launch FinTracka again instead of reusing an old bootstrap URL.
+
+## Everyday workflow
+
+1. Use **Connections** to connect, repair, disconnect, or sync a bank.
+2. Use **Accounts** to set nicknames, spending ownership, reporting scope, and Savings inclusion.
+3. Use **Transactions** to search, filter, correct categories/subcategories, add cash spending, and review transfers.
+4. Use **Planning** to enter recurring income, compare usual spending with targets and actuals, and adjust category targets.
+5. Use **Savings** for connected savings balances and manually tracked investments or other assets.
+6. Use **Settings** for readiness checks, Google authorization, exports, backups, scheduling, and theme.
+
+Data and corrections persist in the local SQLite ledger when the browser or application closes. Spreadsheets are exports only; edits made in them are not imported.
+
+## Operations
+
+```sh
+# Sync all enabled Plaid connections
+.venv/bin/python -m fintracka.cli sync
+
+# Export an atomic Excel snapshot
+.venv/bin/python -m fintracka.cli export excel --output /private/path/FinTracka.xlsx
+
+# Export to the authorized Google workbook
+.venv/bin/python -m fintracka.cli export google_sheets
+
+# Create a verified local backup
+.venv/bin/python -m fintracka.cli backup \
+  --output-dir "$HOME/Library/Application Support/FinTracka/backups"
+
+# Verify and restore a backup into the FinTracka data directory
+.venv/bin/python -m fintracka.cli restore /private/path/backup.sqlite3 --verify
+
+# Manage the optional 06:17/login schedule
 .venv/bin/python -m fintracka.cli schedule install
+.venv/bin/python -m fintracka.cli schedule status
+.venv/bin/python -m fintracka.cli schedule remove
 ```
 
-The Mac must be awake for scheduled work.
+Scheduled work runs only while the Mac is awake. Local backups are retained according to FinTracka's backup policy; an encrypted off-device backup remains recommended.
+
+## Live-data safety
+
+Before Plaid Link opens, FinTracka checks Python 3.14, FileVault, macOS Keychain, Plaid credentials, and a verified local SQLite backup. Missing off-device backup coverage is shown as a prominent, non-blocking testing warning.
+
+Start with one institution, compare account names and balances, sync transactions, and reconcile a statement exactly before expanding use. Bank credentials are entered only inside Plaid Link and never pass through FinTracka.
 
 ## Verification
 
-All automated tests use synthetic data. Credentialed smoke tests are local-only and never run in GitHub Actions.
+Automated tests use synthetic data. Credentialed Plaid and Google smoke tests remain local-only and never run in GitHub Actions.
 
 ```sh
 scripts/verify.sh

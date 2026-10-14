@@ -6,9 +6,11 @@ import {
   laneWeight,
   minimumTarget,
   overallStatusLabel,
+  planningPace,
   percentLabel,
   planningPath,
   remainingLabel,
+  visiblePlanningCategories,
   type PlanningCategory,
   type PlanningSnapshot,
 } from "../src/planning/model";
@@ -70,5 +72,23 @@ describe("planning view model", () => {
   it("never displays a target below the Tzedaka minimum", () => {
     expect(minimumTarget({ ...row, tzedaka_minimum_minor: 59_001 }, 50_000)).toBe(59_001);
     expect(minimumTarget({ ...row, tzedaka_minimum_minor: 59_001 }, 70_000)).toBe(70_000);
+  });
+
+  it("hides only categories with no target and no current spending", () => {
+    const inactive = { ...row, category_id: "taxes", target_minor: 0, actual_minor: 0 };
+    const unplanned = { ...inactive, category_id: "travel", actual_minor: 2_500 };
+
+    expect(visiblePlanningCategories([inactive, row, unplanned], false).map((item) => item.category_id)).toEqual(["shopping", "travel"]);
+    expect(visiblePlanningCategories([inactive, row, unplanned], true)).toHaveLength(3);
+  });
+
+  it("colors projected spending against the positive historical average", () => {
+    const categories = [row, { ...row, category_id: "refunds", historical_average_minor: -10_000 }];
+
+    expect(planningPace(categories, 42_500)).toEqual({ tone: "good", label: "Projected 85% of usual" });
+    expect(planningPace(categories, 47_500)).toEqual({ tone: "steady", label: "Projected 95% of usual" });
+    expect(planningPace(categories, 52_500)).toEqual({ tone: "warning", label: "Projected 105% of usual" });
+    expect(planningPace(categories, 57_500)).toEqual({ tone: "bad", label: "Projected 115% of usual" });
+    expect(planningPace([{ ...row, historical_average_minor: 0 }], null)).toEqual({ tone: "neutral", label: "No historical comparison" });
   });
 });
