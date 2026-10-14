@@ -26,6 +26,35 @@ test("synthetic finance workflow", async ({ page }) => {
   await expect(page.getByText("Daily cash", { exact: true })).toBeVisible();
   await expect(page.locator(".owner-badge").filter({ hasText: "Ariela" })).toBeVisible();
 
+  await page.getByRole("link", { name: "Savings" }).click();
+  await expect(page.getByRole("heading", { name: "Savings", exact: true })).toBeVisible();
+  await expect(page.getByTestId("savings-combined")).toContainText("$8,500.00");
+  await expect(page.getByText("Connected accounts", { exact: true })).toBeVisible();
+  await expect(page.getByText("Manually tracked assets", { exact: true })).toBeVisible();
+  await expect(page.getByText("Household brokerage", { exact: true })).toBeVisible();
+  await expect(page.getByText("Contribution", { exact: true })).toBeVisible();
+  await page.getByLabel("Savings owner").selectOption("Ariela");
+  await expect(page.getByText("Household brokerage", { exact: true })).toBeVisible();
+  await expect(page.getByText("Other reserve", { exact: true })).toHaveCount(0);
+  await page.getByLabel("Savings owner").selectOption("");
+  await page.getByRole("button", { name: "Add manual asset" }).click();
+  let assetDialog = page.getByRole("dialog", { name: "Add manual asset" });
+  await assetDialog.getByLabel("Title").fill("Family investment");
+  await assetDialog.getByLabel("Type").selectOption("investment");
+  await assetDialog.getByLabel("Owner").selectOption("Shared");
+  await assetDialog.getByLabel("Current value").fill("123.45");
+  await assetDialog.getByLabel("Valuation date").fill("2026-10-14");
+  await assetDialog.getByRole("button", { name: "Add asset" }).click();
+  await expect(page.getByText("Family investment", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Edit Family investment" }).click();
+  assetDialog = page.getByRole("dialog", { name: "Edit manual asset" });
+  await assetDialog.getByLabel("Current value").fill("150.00");
+  await assetDialog.getByRole("button", { name: "Save asset" }).click();
+  await expect(page.getByText("$150.00", { exact: true })).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Remove Family investment" }).click();
+  await expect(page.getByText("Family investment", { exact: true })).toHaveCount(0);
+
   await page.getByRole("link", { name: "Transactions" }).click();
   await expect(page.locator("tbody tr")).toHaveCount(100);
   await expect(page.getByText("1 possible transfer")).toBeVisible();
@@ -33,7 +62,7 @@ test("synthetic finance workflow", async ({ page }) => {
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.locator("tbody tr")).toHaveCount(0);
   await page.getByLabel("Include transfers and card payments").check();
-  await expect(page.locator("tbody tr")).toHaveCount(2);
+  await expect(page.locator("tbody tr")).toHaveCount(3);
   await page.getByLabel("Include transfers and card payments").uncheck();
   await page.getByLabel("Search transactions").fill("LOWE'S");
   await page.getByRole("button", { name: "Search" }).click();

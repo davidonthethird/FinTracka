@@ -8,12 +8,13 @@ import type { SankeyLinkProps, SankeyNodeProps } from "recharts";
 import { api } from "./api";
 import { currentMonth, currencyStep, formatMoney, majorInputToMinor, minorToMajorInput, movementWidths, totalsByCurrency } from "./format";
 import { PlanningPage } from "./planning/PlanningPage";
+import { SavingsPage } from "./savings/SavingsPage";
 import { ManualCashDialog } from "./transactions/ManualCashDialog";
 import { SubcategoryEditor, type Subcategory } from "./transactions/SubcategoryEditor";
 
 type OverviewData = { cash_minor: number; card_liabilities_minor: number; net_position_minor: number; income_minor: number; spending_minor: number; cash_income_minor: number; cash_spending_minor: number; cash_transfer_minor: number; off_bank_cash_spending_minor: number; opening_cash_minor: number | null };
 type SpendingOwner = "David" | "Ariela" | "Shared";
-type Account = { id: string; name: string; nickname?: string; nature: string; subtype?: string; currency: string; status: string; balance_minor?: number; include_overview: number; include_budget: number; include_net: number; include_export: number; spending_owner: SpendingOwner; updated_at: string };
+type Account = { id: string; name: string; nickname?: string; nature: string; subtype?: string; currency: string; status: string; balance_minor?: number; include_overview: number; include_budget: number; include_net: number; include_export: number; include_savings: number; spending_owner: SpendingOwner; updated_at: string };
 type Transaction = { id: string; account_id: string; local_date: string; amount_minor: number; currency: string; description: string; merchant?: string; category_id?: string; category?: string; category_source?: string; subcategory_id?: string; subcategory?: string; subcategory_source?: string; provider_category_confidence?: string; spending_owner?: SpendingOwner; spending_owner_effective?: SpendingOwner; notes?: string; pending: boolean; manual_cash: boolean; is_cash_withdrawal: boolean; updated_at: string };
 type CategorizationScope = "one_time" | "future" | "past_and_future";
 type CategorizeResult = { transaction: Transaction; affected_count: number; undo_id: string };
@@ -38,7 +39,7 @@ type OwnerSpending = { owner: SpendingOwner; amount_minor: number };
 
 const nav = [
   ["/", "Overview"], ["/accounts", "Accounts"], ["/transactions", "Transactions"],
-  ["/planning", "Planning"], ["/envelope-budget", "Envelope budget"],
+  ["/planning", "Planning"], ["/savings", "Savings"], ["/envelope-budget", "Envelope budget"],
   ["/reports", "Reports"], ["/rules", "Rules"], ["/connections", "Connections"], ["/settings", "Settings"],
 ];
 
@@ -59,6 +60,7 @@ export function App() {
         <Route path="/accounts" element={<AccountsPage />} />
         <Route path="/transactions" element={<TransactionsPage />} />
         <Route path="/planning" element={<PlanningPage />} />
+        <Route path="/savings" element={<SavingsPage />} />
         <Route path="/tracking-budget" element={<PlanningPage />} />
         <Route path="/envelope-budget" element={<EnvelopeBudgetPage />} />
         <Route path="/reports" element={<ReportsPage />} />
@@ -400,11 +402,11 @@ function AccountEditor({ account, onClose, onSaved }: { account: Account; onClos
     event.preventDefault(); setError("");
     const form = new FormData(event.currentTarget);
     try {
-      await api(`/accounts/${account.id}`, { method: "PATCH", body: JSON.stringify({ expected_updated_at: account.updated_at, nickname: form.get("nickname") || null, spending_owner: form.get("spending_owner"), include_overview: form.has("overview"), include_budget: form.has("budget"), include_net: form.has("net"), include_export: form.has("export") }) });
+      await api(`/accounts/${account.id}`, { method: "PATCH", body: JSON.stringify({ expected_updated_at: account.updated_at, nickname: form.get("nickname") || null, spending_owner: form.get("spending_owner"), include_overview: form.has("overview"), include_budget: form.has("budget"), include_net: form.has("net"), include_export: form.has("export"), include_savings: form.has("savings") }) });
       onSaved();
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to save account"); }
   }
-  return <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="account-title"><div className="section-heading"><div><p className="eyebrow">Reporting scope</p><h2 id="account-title">{account.name}</h2></div><button className="quiet-button" onClick={onClose}>Close</button></div><form onSubmit={save}><label>Nickname<input name="nickname" defaultValue={account.nickname || ""} maxLength={120} /></label><label>Spending owner<select name="spending_owner" defaultValue={account.spending_owner}><option value="David">David</option><option value="Ariela">Ariela</option><option value="Shared">Shared</option></select></label><fieldset className="check-grid"><legend>Include this account in</legend><label><input type="checkbox" name="overview" defaultChecked={Boolean(account.include_overview)} /> Overview</label><label><input type="checkbox" name="budget" defaultChecked={Boolean(account.include_budget)} /> Budgets</label><label><input type="checkbox" name="net" defaultChecked={Boolean(account.include_net)} /> Net position</label><label><input type="checkbox" name="export" defaultChecked={Boolean(account.include_export)} /> Exports</label></fieldset>{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="quiet-button" onClick={onClose}>Cancel</button><button>Save account</button></div></form></section></div>;
+  return <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="account-title"><div className="section-heading"><div><p className="eyebrow">Reporting scope</p><h2 id="account-title">{account.name}</h2></div><button className="quiet-button" onClick={onClose}>Close</button></div><form onSubmit={save}><label>Nickname<input name="nickname" defaultValue={account.nickname || ""} maxLength={120} /></label><label>Spending owner<select name="spending_owner" defaultValue={account.spending_owner}><option value="David">David</option><option value="Ariela">Ariela</option><option value="Shared">Shared</option></select></label><fieldset className="check-grid"><legend>Include this account in</legend><label><input type="checkbox" name="overview" defaultChecked={Boolean(account.include_overview)} /> Overview</label><label><input type="checkbox" name="budget" defaultChecked={Boolean(account.include_budget)} /> Budgets</label><label><input type="checkbox" name="net" defaultChecked={Boolean(account.include_net)} /> Net position</label><label><input type="checkbox" name="export" defaultChecked={Boolean(account.include_export)} /> Exports</label><label><input type="checkbox" name="savings" defaultChecked={Boolean(account.include_savings)} /> Savings</label></fieldset>{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="quiet-button" onClick={onClose}>Cancel</button><button>Save account</button></div></form></section></div>;
 }
 
 function SplitEditor({ transaction, categories, onClose, onSaved }: { transaction: Transaction; categories: Category[]; onClose: () => void; onSaved: () => void }) {
