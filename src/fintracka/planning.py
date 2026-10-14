@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
+import calendar
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from fractions import Fraction
+from statistics import median
 
+from fintracka.history import usable_history_months
 from fintracka.ids import new_id
 from fintracka.reports import ledger_entries, month_bounds
 
@@ -38,6 +42,9 @@ class PlanningCategory:
     actual_minor: int
     remaining_minor: int
     status: str
+    percent_used_basis_points: int | None
+    percent_remaining_basis_points: int | None
+    projected_minor: int | None
     trend: tuple[PlanningTrendPoint, ...]
     transaction_ids: tuple[str, ...]
     tzedaka_minimum_minor: int
@@ -55,6 +62,18 @@ class PlanningSnapshot:
     tzedaka_minimum_minor: int
     target_total_minor: int
     surplus_shortfall_minor: int
+    usable_average_months: int
+    earliest_usable_month: str | None
+    historical_months: tuple[str, ...]
+    actual_total_minor: int
+    remaining_total_minor: int
+    percent_used_basis_points: int | None
+    percent_remaining_basis_points: int | None
+    projected_spending_minor: int | None
+    projected_surplus_shortfall_minor: int | None
+    status: str
+    elapsed_days: int | None
+    days_in_month: int | None
     categories: tuple[PlanningCategory, ...]
 
 
@@ -197,6 +216,8 @@ def planning_snapshot(
     month: str,
     average_months: int,
     spending_owner: str | None = None,
+    *,
+    today: date | None = None,
 ) -> PlanningSnapshot:
     _validate_month(month)
     if not 1 <= average_months <= 12:
@@ -207,10 +228,12 @@ def planning_snapshot(
     salary_total = sum(row.amount_minor for row in incomes if row.income_type == "Salary")
     planned_total = sum(row.amount_minor for row in incomes)
     tzedaka_minimum = (salary_total + 9) // 10
-    historical_months = tuple(_shift_month(month, -offset) for offset in range(average_months, 0, -1))
-    first_start, _ = month_bounds(historical_months[0])
+    coverage = usable_history_months(connection, month, average_months, spending_owner)
+    historical_months = coverage.usable_months
+    first_start, _ = month_bounds(historical_months[0] if historical_months else month)
     _, selected_end = month_bounds(month)
     activity: dict[tuple[str, str], int] = {}
+    daily_activity: dict[tuple[str, str], int] = {}
     transaction_ids: dict[str, set[str]] = {}
     for entry in ledger_entries(
         connection, first_start, selected_end, account_flag="include_budget"
@@ -225,6 +248,8 @@ def planning_snapshot(
         entry_month = entry.local_date[:7]
         key = (entry.category_id, entry_month)
         activity[key] = activity.get(key, 0) - entry.amount_minor
+        daily_key = (entry.category_id, entry.local_date)
+        daily_activity[daily_key] = daily_activity.get(daily_key, 0) - entry.amount_minor
         if entry_month == month:
             transaction_ids.setdefault(entry.category_id, set()).add(entry.transaction_id)
     targets = _effective_targets(connection, month)
@@ -244,13 +269,27 @@ def planning_snapshot(
             for item_month in historical_months
         )
         historical_total = sum(point.amount_minor for point in trend)
-        historical_average = _round_average(historical_total, average_months)
+        historical_average = (
+            _round_average(historical_total, len(historical_months))
+            if historical_months else 0
+        )
         target = targets.get(category_id, 0)
         minimum = tzedaka_minimum if row["name"] == "Tzedaka" else 0
         target = max(target, minimum)
         actual = activity.get((category_id, month), 0)
         remaining = target - actual
-        status = "no_target" if target == 0 else ("overspent" if remaining < 0 else "on_track")
+        projection = _category_projection(
+            category_id,
+            month,
+            actual,
+            historical_months,
+            activity,
+            daily_activity,
+            today,
+        )
+        percent_used = _basis_points(actual, target) if target > 0 and actual >= 0 else None
+        percent_remaining = _basis_points(remaining, target) if target > 0 and actual >= 0 else None
+        status = _category_status(target, actual, remaining, projection)
         categories.append(
             PlanningCategory(
                 category_id,
@@ -260,6 +299,9 @@ def planning_snapshot(
                 actual,
                 remaining,
                 status,
+                percent_used,
+                percent_remaining,
+                projection,
                 trend,
                 tuple(sorted(transaction_ids.get(category_id, set()))),
                 minimum,
@@ -267,6 +309,19 @@ def planning_snapshot(
             )
         )
     target_total = sum(row.target_minor for row in categories)
+    actual_total = sum(row.actual_minor for row in categories)
+    remaining_total = target_total - actual_total
+    selected_today = today or date.today()
+    current_month = selected_today.strftime("%Y-%m") == month
+    projected_total = (
+        sum(
+            row.projected_minor if row.projected_minor is not None else min(row.actual_minor, 0)
+            for row in categories
+        )
+        if current_month else None
+    )
+    overall_status = _overall_status(target_total, actual_total, projected_total)
+    days_in_selected = calendar.monthrange(selected_today.year, selected_today.month)[1] if current_month else None
     return PlanningSnapshot(
         month,
         average_months,
@@ -277,8 +332,93 @@ def planning_snapshot(
         tzedaka_minimum,
         target_total,
         planned_total - target_total,
+        len(historical_months),
+        coverage.earliest_usable_month,
+        historical_months,
+        actual_total,
+        remaining_total,
+        _basis_points(actual_total, target_total) if target_total > 0 and actual_total >= 0 else None,
+        _basis_points(remaining_total, target_total) if target_total > 0 and actual_total >= 0 else None,
+        projected_total,
+        target_total - projected_total if projected_total is not None else None,
+        overall_status,
+        selected_today.day if current_month else None,
+        days_in_selected,
         tuple(categories),
     )
+
+
+def _category_projection(
+    category_id: str,
+    month: str,
+    actual: int,
+    historical_months: tuple[str, ...],
+    activity: dict[tuple[str, str], int],
+    daily_activity: dict[tuple[str, str], int],
+    today: date | None,
+) -> int | None:
+    selected_today = today or date.today()
+    if selected_today.strftime("%Y-%m") != month or actual < 0:
+        return None
+    if len(historical_months) >= 6:
+        ratios: list[Fraction] = []
+        for history_month in historical_months:
+            final = activity.get((category_id, history_month), 0)
+            through_day = sum(
+                amount
+                for (item_category, item_date), amount in daily_activity.items()
+                if item_category == category_id
+                and item_date.startswith(history_month + "-")
+                and int(item_date[-2:]) <= selected_today.day
+            )
+            if final > 0 and 0 < through_day <= final:
+                ratios.append(Fraction(through_day, final))
+        if ratios:
+            pacing = median(ratios)
+            return _round_fraction(Fraction(actual, 1) / pacing)
+    days = calendar.monthrange(selected_today.year, selected_today.month)[1]
+    return _round_fraction(Fraction(actual * days, max(1, selected_today.day)))
+
+
+def _category_status(
+    target: int,
+    actual: int,
+    remaining: int,
+    projection: int | None,
+) -> str:
+    if actual < 0:
+        return "refund"
+    if target == 0:
+        return "unplanned" if actual > 0 else "no_target"
+    if remaining < 0:
+        return "overspent"
+    expected = projection if projection is not None else actual
+    if expected > target:
+        return "projected_over"
+    if expected * 10 >= target * 9:
+        return "close"
+    return "on_track"
+
+
+def _overall_status(target: int, actual: int, projection: int | None) -> str:
+    if target == 0:
+        return "unplanned" if actual > 0 else "no_plan"
+    expected = projection if projection is not None else actual
+    if expected > target:
+        return "projected_over"
+    if expected * 10 >= target * 9:
+        return "close"
+    return "on_track"
+
+
+def _basis_points(numerator: int, denominator: int) -> int:
+    return _round_fraction(Fraction(numerator * 10_000, denominator))
+
+
+def _round_fraction(value: Fraction) -> int:
+    if value >= 0:
+        return (value.numerator + value.denominator // 2) // value.denominator
+    return -((-value.numerator + value.denominator // 2) // value.denominator)
 
 
 def _effective_incomes(connection: sqlite3.Connection, month: str) -> tuple[PlanningIncome, ...]:

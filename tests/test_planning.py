@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -124,6 +125,87 @@ def test_averages_include_zero_months_refunds_splits_manual_cash_and_owner_filte
     assert (ariela.historical_average_minor, ariela.actual_minor) == (0, 0)
 
 
+def test_average_excludes_unavailable_leading_months_but_keeps_interior_zero(
+    ledger: sqlite3.Connection,
+) -> None:
+    shopping = _category(ledger, "Shopping")
+    account_id = _plaid_account(ledger, "2026-07-15")
+    _transaction(ledger, "2026-08-10", -1_000, shopping, account_id=account_id)
+
+    snapshot = planning_snapshot(ledger, "2026-10", 12, today=date(2026, 10, 10))
+    row = next(item for item in snapshot.categories if item.category_id == shopping)
+
+    assert snapshot.usable_average_months == 2
+    assert snapshot.historical_months == ("2026-08", "2026-09")
+    assert snapshot.earliest_usable_month == "2026-08"
+    assert row.historical_average_minor == 500
+    assert [point.amount_minor for point in row.trend] == [1_000, 0]
+
+
+def test_no_usable_history_and_zero_target_states_are_explicit(
+    ledger: sqlite3.Connection,
+) -> None:
+    shopping = _category(ledger, "Shopping")
+    healthcare = _category(ledger, "Healthcare")
+    account_id = _plaid_account(ledger, "2026-10-01")
+    _transaction(ledger, "2026-10-02", -300, shopping, account_id=account_id)
+    _transaction(ledger, "2026-10-03", 100, healthcare, account_id=account_id)
+
+    snapshot = planning_snapshot(ledger, "2026-10", 12, today=date(2026, 10, 10))
+    shopping_row = next(item for item in snapshot.categories if item.category_id == shopping)
+    healthcare_row = next(item for item in snapshot.categories if item.category_id == healthcare)
+
+    assert snapshot.usable_average_months == 0
+    assert snapshot.historical_months == ()
+    assert shopping_row.status == "unplanned"
+    assert shopping_row.percent_used_basis_points is None
+    assert shopping_row.percent_remaining_basis_points is None
+    assert healthcare_row.status == "refund"
+    assert healthcare_row.projected_minor is None
+
+
+def test_current_month_calendar_projection_and_status_boundaries(
+    ledger: sqlite3.Connection,
+) -> None:
+    shopping = _category(ledger, "Shopping")
+    set_recurring_target(ledger, shopping, 3_100, "2026-10")
+    _transaction(ledger, "2026-10-01", -100, shopping)
+
+    first_day = planning_snapshot(ledger, "2026-10", 1, today=date(2026, 10, 1))
+    first_row = next(item for item in first_day.categories if item.category_id == shopping)
+    assert first_row.projected_minor == 3_100
+    assert first_row.status == "close"
+
+    _transaction(ledger, "2026-10-10", -900, shopping)
+    tenth_day = planning_snapshot(ledger, "2026-10", 1, today=date(2026, 10, 10))
+    tenth_row = next(item for item in tenth_day.categories if item.category_id == shopping)
+    assert tenth_row.projected_minor == 3_100
+    assert tenth_row.percent_used_basis_points == 3_226
+    assert tenth_row.percent_remaining_basis_points == 6_774
+    assert tenth_day.projected_spending_minor >= 3_100
+
+
+def test_six_month_history_uses_median_timing_and_past_month_has_no_forecast(
+    ledger: sqlite3.Connection,
+) -> None:
+    shopping = _category(ledger, "Shopping")
+    account_id = _plaid_account(ledger, "2026-03-01")
+    for month in range(4, 10):
+        _transaction(ledger, f"2026-{month:02d}-05", -500, shopping, account_id=account_id)
+        _transaction(ledger, f"2026-{month:02d}-20", -500, shopping, account_id=account_id)
+    _transaction(ledger, "2026-10-05", -400, shopping, account_id=account_id)
+    set_recurring_target(ledger, shopping, 1_000, "2026-10")
+
+    current = planning_snapshot(ledger, "2026-10", 6, today=date(2026, 10, 10))
+    row = next(item for item in current.categories if item.category_id == shopping)
+    assert current.usable_average_months == 6
+    assert row.projected_minor == 800
+    assert row.status == "on_track"
+
+    past = planning_snapshot(ledger, "2026-09", 6, today=date(2026, 10, 10))
+    assert next(item for item in past.categories if item.category_id == shopping).projected_minor is None
+
+
 def _planned_category(
     connection: sqlite3.Connection,
     month: str,
@@ -141,6 +223,34 @@ def _planned_category(
 
 def _category(connection: sqlite3.Connection, name: str) -> str:
     return connection.execute("SELECT id FROM categories WHERE name = ?", (name,)).fetchone()[0]
+
+
+def _plaid_account(connection: sqlite3.Connection, coverage_start: str) -> str:
+    institution_id, provider_connection_id, account_id = [new_id() for _ in range(3)]
+    now = "2026-10-13T00:00:00Z"
+    connection.execute(
+        "INSERT INTO institutions VALUES (?, 'plaid', ?, 'Test bank', ?)",
+        (institution_id, institution_id, now),
+    )
+    connection.execute(
+        """
+        INSERT INTO provider_connections
+        (id, provider, external_connection_id, institution_id, status, created_at, updated_at,
+         environment, history_available_from)
+        VALUES (?, 'plaid', ?, ?, 'active', ?, ?, 'production', ?)
+        """,
+        (provider_connection_id, provider_connection_id, institution_id, now, now, coverage_start),
+    )
+    connection.execute(
+        """
+        INSERT INTO accounts
+        (id, connection_id, provider_account_id, name, type, subtype, nature, currency,
+         include_budget, spending_owner, created_at, updated_at)
+        VALUES (?, ?, ?, 'Test checking', 'depository', 'checking', 'asset', 'USD', 1, 'Shared', ?, ?)
+        """,
+        (account_id, provider_connection_id, account_id, now, now),
+    )
+    return account_id
 
 
 def _transaction(
