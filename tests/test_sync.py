@@ -7,6 +7,7 @@ import pytest
 
 from fintracka.db import connect, migrate
 from fintracka.ids import new_id
+from fintracka.ledger import update_transaction
 from fintracka.providers import NormalizedTransaction, SyncBatch
 from fintracka.reports import spending_by_category
 from fintracka.sync import apply_batch
@@ -116,10 +117,7 @@ def test_provider_category_is_mapped_without_overwriting_manual_choice(
     assert tuple(row)[1:] == ("Groceries", "provider", "VERY_HIGH")
 
     fun_id = ledger.execute("SELECT id FROM categories WHERE name = 'Fun'").fetchone()[0]
-    ledger.execute(
-        "UPDATE transactions SET category_id = ?, category_source = 'manual' WHERE id = ?",
-        (fun_id, row["id"]),
-    )
+    update_transaction(ledger, row["id"], category_id=fun_id)
     changed = NormalizedTransaction(**{**transaction.__dict__, "provider_category_detailed": "FOOD_AND_DRINK_RESTAURANT"})
     apply_batch(ledger, connection_id, SyncBatch(modified=(changed,), next_checkpoint="p2"))
     preserved = ledger.execute(

@@ -64,6 +64,11 @@ def update_transaction(
     if category_id is not _UNSET:
         changes["category_id"] = category_id
         changes["category_source"] = "manual" if category_id else None
+        if row["subcategory_id"] is not None and not _subcategory_belongs_to_category(
+            connection, row["subcategory_id"], category_id
+        ):
+            changes["subcategory_id"] = None
+            changes["subcategory_source"] = None
     if notes is not _UNSET:
         changes["notes"] = notes
     if user_merchant is not _UNSET:
@@ -206,9 +211,18 @@ def categorize_transaction(
     )
     for row in matching:
         source = "manual" if row["id"] == transaction_id else "rule"
+        subcategory_id = (
+            row["subcategory_id"]
+            if _subcategory_belongs_to_category(connection, row["subcategory_id"], category_id)
+            else None
+        )
         connection.execute(
-            "UPDATE transactions SET category_id = ?, category_source = ?, updated_at = ? WHERE id = ?",
-            (category_id, source, now, row["id"]),
+            """
+            UPDATE transactions SET category_id = ?, category_source = ?, subcategory_id = ?,
+                subcategory_source = CASE WHEN ? IS NULL THEN NULL ELSE subcategory_source END,
+                updated_at = ? WHERE id = ?
+            """,
+            (category_id, source, subcategory_id, subcategory_id, now, row["id"]),
         )
         if source == "rule" and rule_id:
             connection.execute(
@@ -296,9 +310,21 @@ def apply_rules(connection: sqlite3.Connection, *, reprocess: bool = False) -> i
             if not _matches(transaction, json.loads(rule["conditions_json"])):
                 continue
             if transaction["category_id"] != rule["category_id"] or transaction["category_source"] != "rule" or reprocess:
+                subcategory_id = (
+                    transaction["subcategory_id"]
+                    if _subcategory_belongs_to_category(
+                        connection, transaction["subcategory_id"], rule["category_id"]
+                    )
+                    else None
+                )
                 connection.execute(
-                    "UPDATE transactions SET category_id = ?, category_source = 'rule', updated_at = ? WHERE id = ?",
-                    (rule["category_id"], now, transaction["id"]),
+                    """
+                    UPDATE transactions SET category_id = ?, category_source = 'rule',
+                        subcategory_id = ?,
+                        subcategory_source = CASE WHEN ? IS NULL THEN NULL ELSE subcategory_source END,
+                        updated_at = ? WHERE id = ?
+                    """,
+                    (rule["category_id"], subcategory_id, subcategory_id, now, transaction["id"]),
                 )
                 connection.execute(
                     "INSERT INTO rule_applications (id, rule_id, transaction_id, result, applied_at) VALUES (?, ?, ?, 'applied', ?)",
@@ -460,6 +486,17 @@ def _matches(transaction: sqlite3.Row, conditions: dict[str, Any]) -> bool:
         "pending": lambda value: bool(transaction["pending"]) is bool(value),
     }
     return all(checks[key](value) for key, value in conditions.items())
+
+
+def _subcategory_belongs_to_category(
+    connection: sqlite3.Connection, subcategory_id: str | None, category_id: object
+) -> bool:
+    if subcategory_id is None or category_id is None or category_id is _UNSET:
+        return False
+    return connection.execute(
+        "SELECT 1 FROM subcategories WHERE id = ? AND category_id = ? AND archived = 0",
+        (subcategory_id, category_id),
+    ).fetchone() is not None
 
 
 def _audit(

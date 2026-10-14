@@ -206,6 +206,24 @@ FROM numbered
 JOIN categories c ON c.name = numbered.parent_name
 JOIN subcategories s ON s.category_id = c.id AND s.name = numbered.child_name;
 
+CREATE TABLE subcategory_undo_batches (
+    id TEXT PRIMARY KEY CHECK(length(id) = 36 AND substr(id, 15, 1) = '7'),
+    rule_id TEXT REFERENCES transaction_subcategory_rules(id),
+    prior_rule_subcategory_id TEXT REFERENCES subcategories(id),
+    rule_created INTEGER NOT NULL DEFAULT 0 CHECK(rule_created IN (0, 1)),
+    used INTEGER NOT NULL DEFAULT 0 CHECK(used IN (0, 1)),
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE subcategory_undo_items (
+    batch_id TEXT NOT NULL REFERENCES subcategory_undo_batches(id) ON DELETE CASCADE,
+    transaction_id TEXT NOT NULL REFERENCES transactions(id),
+    subcategory_id TEXT REFERENCES subcategories(id),
+    subcategory_source TEXT
+        CHECK(subcategory_source IN ('manual', 'rule', 'provider') OR subcategory_source IS NULL),
+    PRIMARY KEY(batch_id, transaction_id)
+);
+
 CREATE TABLE manual_assets (
     id TEXT PRIMARY KEY CHECK(length(id) = 36 AND substr(id, 15, 1) = '7'),
     title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 120),

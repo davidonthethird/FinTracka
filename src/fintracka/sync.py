@@ -10,6 +10,7 @@ from fintracka.dates import local_date, utc_instant
 from fintracka.ids import new_id
 from fintracka.ledger import apply_rules
 from fintracka.providers import NormalizedAccount, NormalizedBalance, NormalizedTransaction, SyncBatch
+from fintracka.subcategories import automatic_subcategory_id, automatic_subcategory_source
 
 
 def apply_batch(
@@ -162,7 +163,7 @@ def _upsert_transaction(
     instant = utc_instant(transaction.occurred_at).isoformat().replace("+00:00", "Z")
     transaction_id = existing[0] if existing else new_id()
     before = connection.execute(
-        "SELECT account_id, local_date, posted_at, amount_minor, currency, provider_description, provider_merchant, pending, tombstoned, provider_category_primary, provider_category_detailed, provider_category_confidence, is_cash_withdrawal FROM transactions WHERE id = ?",
+        "SELECT account_id, local_date, posted_at, amount_minor, currency, provider_description, provider_merchant, pending, tombstoned, provider_category_primary, provider_category_detailed, provider_category_confidence, is_cash_withdrawal, category_id, category_source, subcategory_id, subcategory_source, provider_subcategory_id FROM transactions WHERE id = ?",
         (transaction_id,),
     ).fetchone()
     withdrawal = int(transaction.is_cash_withdrawal or (before is not None and before["is_cash_withdrawal"]))
@@ -186,6 +187,29 @@ def _upsert_transaction(
         transaction,
         is_cash_withdrawal=bool(withdrawal),
     )
+    effective_category_id = (
+        before["category_id"]
+        if before is not None and before["category_source"] in ("manual", "rule")
+        else provider_category_id
+    )
+    provider_subcategory_id = automatic_subcategory_id(
+        connection,
+        provider_category_id,
+        transaction.merchant,
+        transaction.provider_category_detailed,
+    )
+    automatic_effective_subcategory_id = automatic_subcategory_id(
+        connection,
+        effective_category_id,
+        transaction.merchant,
+        transaction.provider_category_detailed,
+    )
+    automatic_effective_subcategory_source = automatic_subcategory_source(
+        connection,
+        effective_category_id,
+        transaction.merchant,
+        transaction.provider_category_detailed,
+    )
     if before is None:
         connection.execute(
             """
@@ -194,8 +218,9 @@ def _upsert_transaction(
                 provider_description, provider_merchant, pending, tombstoned,
                 provider_category_primary, provider_category_detailed,
                 provider_category_confidence, is_cash_withdrawal, category_id, category_source,
+                provider_subcategory_id, subcategory_id, subcategory_source,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 transaction_id,
@@ -203,37 +228,71 @@ def _upsert_transaction(
                 *provider_values[9:],
                 provider_category_id,
                 "provider" if provider_category_id else None,
+                provider_subcategory_id,
+                automatic_effective_subcategory_id,
+                automatic_effective_subcategory_source,
                 now,
                 now,
             ),
         )
         action = "provider_create"
-    elif tuple(before) != provider_values:
-        connection.execute(
-            """
-            UPDATE transactions SET
-                account_id = ?, local_date = ?, posted_at = ?, amount_minor = ?,
-                currency = ?, provider_description = ?, provider_merchant = ?,
-                pending = ?, tombstoned = 0, provider_category_primary = ?,
-                provider_category_detailed = ?, provider_category_confidence = ?,
-                is_cash_withdrawal = ?,
-                category_id = CASE WHEN category_source IN ('manual', 'rule') THEN category_id ELSE ? END,
-                category_source = CASE WHEN category_source IN ('manual', 'rule') THEN category_source ELSE ? END,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                *provider_values[:8],
-                *provider_values[9:],
-                provider_category_id,
-                "provider" if provider_category_id else None,
-                now,
-                transaction_id,
-            ),
-        )
-        action = "provider_update"
     else:
-        action = None
+        preserve_subcategory = (
+            before["subcategory_source"] in ("manual", "rule")
+            and _subcategory_belongs_to_category(
+                connection, before["subcategory_id"], effective_category_id
+            )
+        )
+        effective_subcategory_id = (
+            before["subcategory_id"]
+            if preserve_subcategory
+            else automatic_effective_subcategory_id
+        )
+        effective_subcategory_source = (
+            before["subcategory_source"]
+            if preserve_subcategory
+            else automatic_effective_subcategory_source
+        )
+        provider_changed = tuple(before)[:13] != provider_values
+        category_changed = (
+            before["category_id"] != effective_category_id
+            or before["provider_subcategory_id"] != provider_subcategory_id
+            or before["subcategory_id"] != effective_subcategory_id
+            or before["subcategory_source"] != effective_subcategory_source
+        )
+        if not provider_changed and not category_changed:
+            action = None
+        else:
+            effective_category_source = (
+                before["category_source"]
+                if before["category_source"] in ("manual", "rule")
+                else ("provider" if effective_category_id else None)
+            )
+            connection.execute(
+                """
+                UPDATE transactions SET
+                    account_id = ?, local_date = ?, posted_at = ?, amount_minor = ?,
+                    currency = ?, provider_description = ?, provider_merchant = ?,
+                    pending = ?, tombstoned = 0, provider_category_primary = ?,
+                    provider_category_detailed = ?, provider_category_confidence = ?,
+                    is_cash_withdrawal = ?, category_id = ?, category_source = ?,
+                    provider_subcategory_id = ?, subcategory_id = ?, subcategory_source = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    *provider_values[:8],
+                    *provider_values[9:],
+                    effective_category_id,
+                    effective_category_source,
+                    provider_subcategory_id,
+                    effective_subcategory_id,
+                    effective_subcategory_source,
+                    now,
+                    transaction_id,
+                ),
+            )
+            action = "provider_update"
     state = "pending" if transaction.pending else "posted"
     connection.execute(
         """
@@ -305,6 +364,19 @@ def _provider_category_id(
         return None
     row = connection.execute("SELECT id FROM categories WHERE name = ? AND archived = 0", (category_name,)).fetchone()
     return row[0] if row else None
+
+
+def _subcategory_belongs_to_category(
+    connection: sqlite3.Connection,
+    subcategory_id: str | None,
+    category_id: str | None,
+) -> bool:
+    if subcategory_id is None or category_id is None:
+        return False
+    return connection.execute(
+        "SELECT 1 FROM subcategories WHERE id = ? AND category_id = ? AND archived = 0",
+        (subcategory_id, category_id),
+    ).fetchone() is not None
 
 
 def _remove_transaction(
