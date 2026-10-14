@@ -57,6 +57,26 @@ test("synthetic finance workflow", async ({ page }) => {
 
   await page.getByRole("link", { name: "Transactions" }).click();
   await expect(page.locator("tbody tr")).toHaveCount(100);
+  await page.getByLabel("Correction scope").selectOption("one_time");
+  const deepCategory = page.locator(".category-cell select").nth(70);
+  await deepCategory.scrollIntoViewIfNeeded();
+  const scrollBeforeCategoryChange = await page.evaluate(() => window.scrollY);
+  expect(scrollBeforeCategoryChange).toBeGreaterThan(500);
+  const replacementCategory = await deepCategory.evaluate((select: HTMLSelectElement) =>
+    Array.from(select.options).find((option) => option.value && option.value !== select.value)?.value,
+  );
+  await page.route("**/api/v1/transactions?**", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await route.continue();
+  });
+  const categoryRefresh = page.waitForResponse((response) =>
+    response.request().method() === "GET" && new URL(response.url()).pathname === "/api/v1/transactions",
+  );
+  await deepCategory.selectOption(replacementCategory!);
+  await categoryRefresh;
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(scrollBeforeCategoryChange - 200);
+  await page.unroute("**/api/v1/transactions?**");
+  await page.getByLabel("Correction scope").selectOption("past_and_future");
   await expect(page.getByText("1 possible transfer")).toBeVisible();
   await page.getByLabel("Search transactions").fill("TRANSFER");
   await page.getByRole("button", { name: "Search" }).click();

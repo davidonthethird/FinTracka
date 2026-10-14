@@ -499,13 +499,18 @@ function useTransactionPages(query: string, category: string, subcategory: strin
   const [loadingMore, setLoadingMore] = useState(false);
   const basePath = `/transactions?limit=100${query ? `&search=${encodeURIComponent(query)}` : ""}${category ? `&category_id=${encodeURIComponent(category)}` : ""}${subcategory ? `&subcategory_id=${encodeURIComponent(subcategory)}` : ""}${owner ? `&spending_owner=${encodeURIComponent(owner)}` : ""}${includeTransfers ? "&include_transfers=true" : ""}`;
   const generation = useRef(0);
+  const loadedPath = useRef<string | undefined>(undefined);
   const loadMoreController = useRef<AbortController | undefined>(undefined);
   useEffect(() => {
     let current = true;
     const effectGeneration = ++generation.current;
+    const pathChanged = loadedPath.current !== basePath;
+    loadedPath.current = basePath;
     loadMoreController.current?.abort();
     setLoadingMore(false);
-    setResult({ loading: true, generation: effectGeneration });
+    setResult((previous) => !pathChanged && previous.data
+      ? { ...previous, error: undefined, generation: effectGeneration }
+      : { loading: true, generation: effectGeneration });
     api<{ items: Transaction[]; next_cursor?: string }>(basePath)
       .then((data) => current && setResult((previous) => previous.generation === effectGeneration ? { data, loading: false, generation: effectGeneration } : previous))
       .catch((error: Error) => current && setResult((previous) => previous.generation === effectGeneration ? { loading: false, error: error.message, generation: effectGeneration } : previous));
