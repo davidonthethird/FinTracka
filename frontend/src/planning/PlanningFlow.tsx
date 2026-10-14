@@ -1,5 +1,7 @@
+import type { CSSProperties } from "react";
+
 import { formatMoney } from "../format";
-import { flowScale, remainingLabel, type PlanningCategory, type PlanningIncome } from "./model";
+import { flowScale, laneWeight, percentLabel, remainingLabel, type PlanningCategory, type PlanningIncome } from "./model";
 
 export function PlanningFlow({
   incomes,
@@ -23,7 +25,12 @@ export function PlanningFlow({
     <section className="planning-categories" aria-label="Category plans">
       {categories.map((category) => {
         const scale = flowScale(category);
-        return <button className={`planning-category ${category.status}`} key={category.category_id} onClick={(event) => onCategory(category, event.currentTarget)}>
+        const weight = laneWeight(category, categories);
+        const style = {
+          "--lane-weight": weight,
+          minHeight: `${52 + Math.round(weight * 160)}px`,
+        } as CSSProperties;
+        return <button className={`planning-category ${category.status}`} style={style} data-status={category.status} key={category.category_id} onClick={(event) => onCategory(category, event.currentTarget)}>
           <span className="planning-category-name"><strong>{category.category}</strong>{category.tzedaka_minimum_minor > 0 && <small>10% Salary minimum</small>}</span>
           <span className="planning-bars" aria-hidden="true">
             <i className="average" style={{ width: `${scale.average * 100}%` }} />
@@ -35,7 +42,7 @@ export function PlanningFlow({
             <small>Target {formatMoney(category.target_minor)}</small>
             <small>Spent {formatMoney(category.actual_minor)}</small>
           </span>
-          <b>{formatMoney(Math.abs(category.remaining_minor))} {category.remaining_minor < 0 ? "over" : "left"}</b>
+          <b>{category.target_minor ? `${formatMoney(Math.abs(category.remaining_minor))} ${category.remaining_minor < 0 ? "over" : "left"}` : category.actual_minor > 0 ? `${formatMoney(category.actual_minor)} unplanned` : "No target"}<small>{percentLabel(category)}</small></b>
           <span className="sr-only">{remainingLabel(category)}</span>
         </button>;
       })}

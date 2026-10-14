@@ -103,6 +103,11 @@ test("synthetic finance workflow", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Edit Rental" })).toBeVisible();
   await page.getByLabel("Average window").fill("6");
   await expect(page.getByText("Average window:").locator(".." )).toContainText("6 months");
+  await expect(page.getByTestId("planning-status")).toContainText(/plan|projected/i);
+  await expect(page.getByText(/\d+ of 6 months available/)).toBeVisible();
+  const housingHeight = await page.getByRole("button", { name: /Housing/ }).evaluate((element) => element.getBoundingClientRect().height);
+  const funHeight = await page.getByRole("button", { name: /Fun/ }).evaluate((element) => element.getBoundingClientRect().height);
+  expect(housingHeight).toBeGreaterThan(funHeight);
   await page.route("**/api/v1/planning/2026-10?**", async (route) => {
     try {
       const owner = new URL(route.request().url()).searchParams.get("spending_owner");
@@ -121,6 +126,14 @@ test("synthetic finance workflow", async ({ page }) => {
   await page.unroute("**/api/v1/planning/2026-10?**");
   await page.getByLabel("Spending owner").selectOption("David");
   await expect(page.getByText("Showing David actuals and averages")).toBeVisible();
+  await page.setViewportSize({ width: 900, height: 900 });
+  const funLane = page.getByRole("button", { name: /Fun/ });
+  await funLane.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Fun planning details" })).toContainText("Subcategory breakdown");
+  await page.keyboard.press("Escape");
+  await expect(funLane).toBeFocused();
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.getByRole("button", { name: /Housing/ }).click();
   await expect(page.getByRole("dialog", { name: "Housing planning details" })).toBeVisible();
   await page.getByLabel("Monthly target").fill("123.45");
