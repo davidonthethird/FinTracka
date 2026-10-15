@@ -170,6 +170,7 @@ def test_repair_and_revoke_use_stored_secret() -> None:
     adapter.repair_connection("connection:test")
     adapter.revoke("connection:test")
     assert client.link_requests[-1]["access_token"] == "access-secret-token"
+    assert client.link_requests[-1]["update"] == {"account_selection_enabled": True}
     assert client.removed == ["access-secret-token"]
     assert secrets.get("connection:test") is None
 

@@ -85,7 +85,7 @@ def savings_summary(
                    ORDER BY b.observed_at DESC, b.id DESC LIMIT 1
                ), 0) balance_minor
         FROM accounts a
-        WHERE a.include_savings = 1 AND a.status = 'active' AND a.currency = 'USD'
+        WHERE a.include_savings = 1 AND a.status = 'active' AND a.hidden = 0 AND a.currency = 'USD'
               {owner_clause}
         ORDER BY name, a.id
         """,
@@ -143,7 +143,7 @@ def savings_summary(
                        JOIN accounts other_account ON other_account.id = other.account_id
                        WHERE l.status = 'confirmed'
                          AND (l.transaction_a_id = t.id OR l.transaction_b_id = t.id)
-                         AND other_account.include_savings = 1
+                         AND other_account.include_savings = 1 AND other_account.hidden = 0
                    ) internal_savings_transfer
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id

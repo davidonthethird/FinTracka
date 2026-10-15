@@ -120,7 +120,7 @@ def build_snapshot(connection: sqlite3.Connection) -> dict[str, list[list[object
             JOIN provider_connections pc ON pc.id = a.connection_id
             LEFT JOIN categories c ON c.id = t.category_id
             LEFT JOIN subcategories s ON s.id = t.subcategory_id
-            WHERE t.tombstoned = 0 AND a.include_export = 1
+            WHERE t.tombstoned = 0 AND a.include_export = 1 AND a.hidden = 0
             ORDER BY t.local_date, t.id
             """
         ),
@@ -128,7 +128,7 @@ def build_snapshot(connection: sqlite3.Connection) -> dict[str, list[list[object
     sheets["Accounts"] = _rows(
         ["FinTracka ID", "Name", "Nickname", "Type", "Subtype", "Nature", "Currency", "Status", "Spending owner", "Last updated"],
         connection.execute(
-            "SELECT id, name, nickname, type, subtype, nature, currency, status, spending_owner, updated_at FROM accounts WHERE include_export = 1 ORDER BY nature, name, id"
+            "SELECT id, name, nickname, type, subtype, nature, currency, status, spending_owner, updated_at FROM accounts WHERE include_export = 1 AND hidden = 0 ORDER BY nature, name, id"
         ),
     )
     sheets["Balances"] = _rows(
@@ -137,7 +137,7 @@ def build_snapshot(connection: sqlite3.Connection) -> dict[str, list[list[object
             """
             SELECT b.id, a.name, b.observed_at, b.current_minor, b.available_minor, b.currency, b.source
             FROM account_balance_snapshots b JOIN accounts a ON a.id = b.account_id
-            WHERE a.include_export = 1 AND b.observed_at = (
+            WHERE a.include_export = 1 AND a.hidden = 0 AND b.observed_at = (
                 SELECT MAX(latest.observed_at) FROM account_balance_snapshots latest WHERE latest.account_id = a.id
             ) ORDER BY a.name, b.id
             """
@@ -146,7 +146,7 @@ def build_snapshot(connection: sqlite3.Connection) -> dict[str, list[list[object
     sheets["Balance History"] = _rows(
         ["FinTracka ID", "Account", "Observed at", "Current (minor units)", "Available (minor units)", "Currency", "Source"],
         connection.execute(
-            "SELECT b.id, a.name, b.observed_at, b.current_minor, b.available_minor, b.currency, b.source FROM account_balance_snapshots b JOIN accounts a ON a.id = b.account_id WHERE a.include_export = 1 ORDER BY b.observed_at, a.name, b.id"
+            "SELECT b.id, a.name, b.observed_at, b.current_minor, b.available_minor, b.currency, b.source FROM account_balance_snapshots b JOIN accounts a ON a.id = b.account_id WHERE a.include_export = 1 AND a.hidden = 0 ORDER BY b.observed_at, a.name, b.id"
         ),
     )
     sheets["Categories"] = _rows(

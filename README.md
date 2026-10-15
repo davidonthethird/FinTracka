@@ -11,6 +11,8 @@ FinTracka is a single-user, local-first personal finance application for macOS. 
 - Imports older CSV history into an existing account without creating another Plaid Item.
 - Supports category and subcategory filtering, manual cash spending, transfer review, and David/Ariela/Shared spending ownership.
 - Shows monthly Planning with historical averages, targets, current spending, projected month-end spending, and category detail drawers.
+- Splits Planning and Reports spending into clickable David, Ariela, and Shared views.
+- Lets you reversibly remove an individual duplicate account without disconnecting its bank or deleting history.
 - Maintains a 10%-of-Salary Tzedaka minimum in Planning.
 - Tracks connected savings accounts and manually valued savings, investments, and other assets separately from spending Planning.
 - Hides confirmed transfers and card payments from ordinary spending views by default.
@@ -67,6 +69,9 @@ The first browser visit exchanges a short-lived, one-use bootstrap token for an 
 3. Use **Transactions** to search, filter, correct categories/subcategories, add cash spending, and review transfers.
 4. Use **History import** to preview and import older bank CSV files into the matching account. Supported files can use Date, Transaction Date, or Posted Date; Description or Payee; and either Amount or separate Debit/Credit columns. Currency defaults to USD.
 5. Use **Planning** to enter recurring income, compare usual spending with targets and actuals, and adjust category targets.
+6. Use **Connections → Details → Manage bank accounts** to add another account from an existing Plaid bank connection. This uses the existing Plaid Item rather than a new Trial Item.
+
+If the same joint account appears through two bank logins, open **Accounts → Edit → Remove from FinTracka** on the duplicate. Removed accounts and their transactions are hidden from normal views, calculations, savings, and exports but remain locally stored and can be restored with **Show removed accounts**.
 6. Use **Savings** for connected savings balances and manually tracked investments or other assets.
 7. Use **Settings** for readiness checks, Google authorization, exports, backups, scheduling, and theme.
 

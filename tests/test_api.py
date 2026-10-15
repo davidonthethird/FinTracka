@@ -452,6 +452,9 @@ def test_spending_owner_account_default_override_and_filter(tmp_path: Path) -> N
     paycheck_id = connection.execute(
         "SELECT transaction_id FROM transaction_external_ids WHERE external_id = 'paycheck-1'"
     ).fetchone()[0]
+    grocery_amount = -connection.execute(
+        "SELECT amount_minor FROM transactions WHERE id = ?", (grocery_id,)
+    ).fetchone()[0]
     connection.execute("UPDATE transactions SET category_id = ? WHERE id = ?", (groceries, grocery_id))
     connection.execute("UPDATE transactions SET category_id = ? WHERE id = ?", (salary, paycheck_id))
     connection.close()
@@ -481,9 +484,62 @@ def test_spending_owner_account_default_override_and_filter(tmp_path: Path) -> N
         )
         assert override.status_code == 200
         shared = client.get(
-            "/api/v1/transactions", params={"spending_owner": "Shared"}
+            "/api/v1/transactions", params={"spending_owner": "Shared", "month": "2026-10"}
         ).json()["items"]
         assert [row["id"] for row in shared] == [grocery_id]
+
+        ariela_spending = client.get(
+            "/api/v1/reports/spending",
+            params={"month": "2026-10", "spending_owner": "Ariela"},
+        ).json()
+        shared_spending = client.get(
+            "/api/v1/reports/spending",
+            params={"month": "2026-10", "spending_owner": "Shared"},
+        ).json()
+        assert all(row["category"] != "Groceries" for row in ariela_spending)
+        assert next(row for row in shared_spending if row["category"] == "Groceries")[
+            "amount_minor"
+        ] == grocery_amount
+
+
+def test_account_removal_is_reversible_and_excludes_ledger_rows(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    apply_batch(connection, connection_id, synthetic_batches([connection_id])[connection_id])
+    account = dict(connection.execute(
+        "SELECT id FROM accounts WHERE provider_account_id = 'checking-1'"
+    ).fetchone())
+    transaction_count = connection.execute(
+        "SELECT COUNT(*) FROM transactions WHERE account_id = ?", (account["id"],)
+    ).fetchone()[0]
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+
+        assert client.delete(f"/api/v1/accounts/{account['id']}", headers=headers).status_code == 204
+        assert all(row["id"] != account["id"] for row in client.get("/api/v1/accounts").json())
+        removed = client.get("/api/v1/accounts", params={"include_hidden": True}).json()
+        assert next(row for row in removed if row["id"] == account["id"])["hidden"] == 1
+        assert all(
+            row["account_id"] != account["id"]
+            for row in client.get("/api/v1/transactions", params={"limit": 200}).json()["items"]
+        )
+
+        assert client.post(
+            f"/api/v1/accounts/{account['id']}/restore", json={}, headers=headers
+        ).status_code == 200
+        assert any(row["id"] == account["id"] for row in client.get("/api/v1/accounts").json())
+        restored_count = sum(
+            row["account_id"] == account["id"]
+            for row in client.get("/api/v1/transactions", params={"limit": 200}).json()["items"]
+        )
+        assert restored_count == transaction_count
 
 
 def test_inline_categorization_learns_past_and_future_merchant_matches(tmp_path: Path) -> None:

@@ -30,7 +30,7 @@ def usable_history_months(
         JOIN accounts a ON a.connection_id = pc.id
         WHERE pc.provider = 'plaid' AND pc.status IN ('active', 'repair')
           AND pc.history_available_from IS NOT NULL
-          AND a.status = 'active' AND a.include_budget = 1
+          AND a.status = 'active' AND a.include_budget = 1 AND a.hidden = 0
         """
     ).fetchone()
     if row is None or row[0] is None:

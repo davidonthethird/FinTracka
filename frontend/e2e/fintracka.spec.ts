@@ -208,6 +208,11 @@ test("synthetic finance workflow", async ({ page }) => {
   await expect(page.getByText("Average window:").locator(".." )).toContainText("6 months");
   await expect(page.getByTestId("planning-status")).toContainText(/plan|projected/i);
   await expect(page.getByText(/\d+ of 6 months available/)).toBeVisible();
+  await page.getByLabel("Split spending by person").check();
+  await expect(page.locator(".owner-lane.owner-david").first()).toBeVisible();
+  await page.locator(".owner-lane.owner-david").first().click();
+  await expect(page.getByRole("dialog")).toContainText("Category plan · David");
+  await page.getByRole("button", { name: "Close" }).click();
   const housingHeight = await page.getByRole("button", { name: /Housing/ }).evaluate((element) => element.getBoundingClientRect().height);
   const funHeight = await page.getByRole("button", { name: /Fun/ }).evaluate((element) => element.getBoundingClientRect().height);
   expect(housingHeight).toBeGreaterThan(funHeight);
@@ -283,6 +288,10 @@ test("synthetic finance workflow", async ({ page }) => {
   await expect(page.getByRole("dialog", { name: "Lifestyle to Fun transactions" })).toBeVisible();
   await page.getByRole("button", { name: "Close flow details" }).click();
   await expect(page.getByRole("heading", { name: "Spending by category" })).toBeVisible();
+  await page.getByLabel("Split spending by person").check();
+  await page.locator(".owner-spending .owner-ariela").click();
+  await expect(page.getByRole("heading", { name: "Spending by category · Ariela" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Ariela transactions" })).toBeVisible();
 
   await page.getByRole("link", { name: "Rules" }).click();
   await page.getByRole("button", { name: "Preview", exact: true }).click();
@@ -368,7 +377,7 @@ test("synthetic finance workflow", async ({ page }) => {
   await page.getByRole("link", { name: "Connections" }).click();
   await expect(page.getByText("Mock Bank", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Details" }).click();
-  await page.getByRole("button", { name: "Repair connection" }).click();
+  await page.getByRole("button", { name: "Manage bank accounts" }).click();
   await expect(page.getByRole("status")).toContainText("Sync completed");
   await page.getByRole("button", { name: "Details" }).click();
   page.once("dialog", (dialog) => dialog.accept());

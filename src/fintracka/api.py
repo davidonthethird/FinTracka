@@ -584,19 +584,57 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(error)) from error
 
     @app.get("/api/v1/accounts")
-    def accounts(database: Database) -> list[dict[str, object]]:
+    def accounts(database: Database, include_hidden: bool = False) -> list[dict[str, object]]:
+        hidden_clause = "" if include_hidden else "WHERE a.hidden = 0"
         return [
             dict(row)
             for row in database.execute(
-                """
+                f"""
                 SELECT a.id, a.name, a.nickname, a.type, a.subtype, a.nature, a.currency,
                        a.status, a.include_overview, a.include_budget, a.include_net,
-                       a.include_export, a.include_savings, a.spending_owner, a.updated_at,
+                       a.include_export, a.include_savings, a.spending_owner, a.hidden, a.updated_at,
                        (SELECT b.current_minor FROM account_balance_snapshots b WHERE b.account_id = a.id ORDER BY b.observed_at DESC, b.id DESC LIMIT 1) balance_minor
-                FROM accounts a ORDER BY a.nature, a.name, a.id
+                FROM accounts a {hidden_clause} ORDER BY a.nature, a.name, a.id
                 """
             )
         ]
+
+    @app.delete("/api/v1/accounts/{account_id}", status_code=204)
+    def hide_account(account_id: str, database: Database) -> None:
+        now = _now()
+        with _write_transaction(database):
+            current = database.execute("SELECT hidden FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            if current is None:
+                raise HTTPException(status_code=404, detail="account not found")
+            if current["hidden"]:
+                return
+            database.execute(
+                "UPDATE accounts SET hidden = 1, updated_at = ? WHERE id = ?", (now, account_id)
+            )
+            database.execute(
+                "INSERT INTO audit_events (id, actor, action, entity_type, entity_id, occurred_at) VALUES (?, 'user', 'account_hide', 'account', ?, ?)",
+                (new_id(), account_id, now),
+            )
+
+    @app.post("/api/v1/accounts/{account_id}/restore")
+    def restore_account(
+        account_id: str, payload: EmptyRequest, database: Database
+    ) -> dict[str, object]:
+        del payload
+        now = _now()
+        with _write_transaction(database):
+            current = database.execute("SELECT hidden FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            if current is None:
+                raise HTTPException(status_code=404, detail="account not found")
+            if current["hidden"]:
+                database.execute(
+                    "UPDATE accounts SET hidden = 0, updated_at = ? WHERE id = ?", (now, account_id)
+                )
+                database.execute(
+                    "INSERT INTO audit_events (id, actor, action, entity_type, entity_id, occurred_at) VALUES (?, 'user', 'account_restore', 'account', ?, ?)",
+                    (new_id(), account_id, now),
+                )
+        return dict(database.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone())
 
     @app.patch("/api/v1/accounts/{account_id}")
     def patch_account(account_id: str, payload: AccountPatch, database: Database) -> dict[str, object]:
@@ -649,9 +687,10 @@ def create_app(
         category_id: str | None = None,
         subcategory_id: str | None = None,
         spending_owner: Literal["David", "Ariela", "Shared"] | None = None,
+        month: str | None = None,
         include_transfers: bool = False,
     ) -> TransactionPage:
-        clauses = ["t.tombstoned = 0"]
+        clauses = ["t.tombstoned = 0", "a.hidden = 0"]
         parameters: list[object] = []
         if not include_transfers:
             clauses.append("COALESCE(c.category_type, '') != 'transfer'")
@@ -679,6 +718,13 @@ def create_app(
         if spending_owner:
             clauses.append("c.category_type = 'expense' AND COALESCE(t.spending_owner, a.spending_owner) = ?")
             parameters.append(spending_owner)
+        if month:
+            try:
+                start, end = month_bounds(month)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+            clauses.append("t.local_date BETWEEN ? AND ?")
+            parameters.extend((start, end))
         parameters.append(limit + 1)
         rows = database.execute(
             f"""
@@ -1045,8 +1091,12 @@ def create_app(
         return asdict(cash_flow(database, month))
 
     @app.get("/api/v1/reports/spending")
-    def spending_route(database: Database, month: str) -> list[dict[str, str | int]]:
-        return spending_by_category(database, month)
+    def spending_route(
+        database: Database,
+        month: str,
+        spending_owner: Literal["David", "Ariela", "Shared"] | None = None,
+    ) -> list[dict[str, str | int]]:
+        return spending_by_category(database, month, spending_owner)
 
     @app.get("/api/v1/reports/spending-owners")
     def spending_owners_route(database: Database, month: str) -> list[dict[str, str | int]]:
@@ -1073,7 +1123,7 @@ def create_app(
                 SELECT b.id, b.account_id, a.name account, a.nature, b.observed_at,
                        b.current_minor, b.available_minor, b.currency, b.source
                 FROM account_balance_snapshots b JOIN accounts a ON a.id = b.account_id
-                WHERE a.include_net = 1
+                WHERE a.hidden = 0 AND a.include_net = 1
                 ORDER BY b.observed_at, a.name, b.id
                 """
             )

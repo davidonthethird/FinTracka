@@ -76,7 +76,7 @@ def test_migrations_are_idempotent_and_install_core_constraints(tmp_path: Path) 
         } <= tables
         assert [
             row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ] == list(range(1, 11))
+        ] == list(range(1, 12))
         starter_categories = {
             row[0]
             for row in connection.execute("SELECT name FROM categories WHERE archived = 0")
@@ -285,7 +285,7 @@ def test_migrations_009_and_010_add_and_backfill_subcategories(tmp_path: Path) -
             for row in connection.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
-        ] == list(range(1, 11))
+        ] == list(range(1, 12))
         assert connection.execute(
             "SELECT history_available_from FROM provider_connections WHERE id = ?",
             (connection_id,),

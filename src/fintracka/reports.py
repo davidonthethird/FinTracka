@@ -67,11 +67,17 @@ def cash_flow(
     return CashFlow(income, spending, income - spending)
 
 
-def spending_by_category(connection: sqlite3.Connection, month: str) -> list[dict[str, str | int]]:
+def spending_by_category(
+    connection: sqlite3.Connection, month: str, spending_owner: str | None = None
+) -> list[dict[str, str | int]]:
+    if spending_owner not in {None, "David", "Ariela", "Shared"}:
+        raise ValueError("invalid spending owner")
     start, end = month_bounds(month)
     totals: dict[tuple[str | None, str], int] = {}
     for entry in ledger_entries(connection, start, end, account_flag="include_overview"):
         if entry.category_type != "expense" or entry.reporting_behavior == "excluded":
+            continue
+        if spending_owner and entry.spending_owner != spending_owner:
             continue
         key = (entry.category_id, entry.category or "Uncategorized")
         totals[key] = totals.get(key, 0) - entry.amount_minor
@@ -232,7 +238,7 @@ def overview(connection: sqlite3.Connection, month: str) -> Overview:
         FROM accounts a
         JOIN account_balance_snapshots b ON b.account_id = a.id
         WHERE (a.include_overview = 1 OR a.include_net = 1)
-          AND a.status = 'active' AND a.currency = 'USD'
+          AND a.status = 'active' AND a.hidden = 0 AND a.currency = 'USD'
           AND b.currency = 'USD'
           AND b.observed_at = (
               SELECT MAX(latest.observed_at)
@@ -309,6 +315,7 @@ def ledger_entries(
             JOIN accounts a ON a.id = t.account_id
             WHERE t.has_splits = 0 AND t.tombstoned = 0 AND t.pending = 0
               AND t.currency = 'USD' AND a.currency = 'USD' AND a.{account_flag} = 1
+              AND a.hidden = 0
               AND t.local_date BETWEEN ? AND ?
               {nature_clause}
               AND NOT EXISTS (
@@ -324,6 +331,7 @@ def ledger_entries(
             JOIN transaction_splits s ON s.parent_transaction_id = t.id
             WHERE t.has_splits = 1 AND t.tombstoned = 0 AND t.pending = 0
               AND t.currency = 'USD' AND a.currency = 'USD' AND a.{account_flag} = 1
+              AND a.hidden = 0
               AND t.local_date BETWEEN ? AND ?
               {nature_clause}
               AND NOT EXISTS (
@@ -353,7 +361,7 @@ def _cash_transfer_activity(connection: sqlite3.Connection, start: str, end: str
               ON t.id = l.transaction_a_id OR t.id = l.transaction_b_id
             JOIN accounts a ON a.id = t.account_id
             WHERE l.status = 'confirmed' AND a.nature = 'asset'
-              AND a.include_overview = 1 AND a.status = 'active'
+              AND a.include_overview = 1 AND a.status = 'active' AND a.hidden = 0
               AND a.currency = 'USD' AND t.currency = 'USD'
               AND t.tombstoned = 0 AND t.pending = 0
               AND t.local_date BETWEEN ? AND ?
@@ -369,7 +377,7 @@ def _opening_cash_balance(connection: sqlite3.Connection, start: str) -> int | N
         for row in connection.execute(
             """
             SELECT id FROM accounts
-            WHERE nature = 'asset' AND include_overview = 1
+            WHERE nature = 'asset' AND include_overview = 1 AND hidden = 0
               AND status = 'active' AND currency = 'USD'
               AND EXISTS (
                   SELECT 1 FROM account_balance_snapshots snapshots
@@ -413,7 +421,7 @@ def _off_bank_cash_spending(connection: sqlite3.Connection, start: str, end: str
             SELECT t.id FROM transactions t
             JOIN accounts a ON a.id = t.account_id
             JOIN provider_connections pc ON pc.id = a.connection_id
-            WHERE pc.provider = 'manual'
+            WHERE pc.provider = 'manual' AND a.hidden = 0
             """
         )
     }
