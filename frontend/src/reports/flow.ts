@@ -1,4 +1,9 @@
 export type FlowOwner = "David" | "Ariela" | "Shared";
+export const FLOW_NODE_PADDING = 30;
+
+export function flowChartHeight(nodeCount: number): number {
+  return Math.max(560, nodeCount * 48);
+}
 
 type FlowReportLike = {
   nodes: { kind: string }[];

@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { splitLinksByOwner } from "../src/reports/flow";
+import { FLOW_NODE_PADDING, flowChartHeight, splitLinksByOwner } from "../src/reports/flow";
 
 describe("person-colored report flow", () => {
+  it("reserves enough vertical space to keep category blocks readable", () => {
+    expect(FLOW_NODE_PADDING).toBeGreaterThanOrEqual(28);
+    expect(flowChartHeight(18)).toBeGreaterThanOrEqual(850);
+  });
+
   it("splits expense ribbons by owner while retaining exact totals", () => {
     const report = {
       nodes: [

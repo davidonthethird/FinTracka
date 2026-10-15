@@ -9,7 +9,7 @@ import { api } from "./api";
 import { currentMonth, currencyStep, formatMoney, majorInputToMinor, minorToMajorInput, movementWidths, totalsByCurrency } from "./format";
 import { HistoryImportPage } from "./imports/HistoryImportPage";
 import { PlanningPage } from "./planning/PlanningPage";
-import { splitLinksByOwner } from "./reports/flow";
+import { FLOW_NODE_PADDING, flowChartHeight, splitLinksByOwner } from "./reports/flow";
 import { SavingsPage } from "./savings/SavingsPage";
 import { ManualCashDialog } from "./transactions/ManualCashDialog";
 import { SubcategoryEditor, type Subcategory } from "./transactions/SubcategoryEditor";
@@ -455,7 +455,7 @@ function CashFlowDiagram({ report, onSelect, splitByOwner = false }: { report: F
     nodes: report.nodes.map((node) => ({ ...node, name: node.label })),
     links: links.map((link) => ({ ...link, value: link.amount_minor })),
   };
-  return <div className="flow-chart" style={{ height: Math.max(390, report.nodes.length * 34) }}><ResponsiveContainer width="100%" height="100%"><Sankey data={data} nodePadding={18} nodeWidth={9} margin={{ top: 24, right: 185, bottom: 24, left: 155 }} node={(props) => <FlowNodeShape {...props} selectFlow={onSelect} />} link={(props) => <FlowLinkShape {...props} selectFlow={onSelect} />} /></ResponsiveContainer></div>;
+  return <div className="flow-chart" style={{ height: flowChartHeight(report.nodes.length) }}><ResponsiveContainer width="100%" height="100%"><Sankey data={data} iterations={0} sort={false} verticalAlign="top" nodePadding={FLOW_NODE_PADDING} nodeWidth={9} linkCurvature={0.42} margin={{ top: 24, right: 185, bottom: 24, left: 155 }} node={(props) => <FlowNodeShape {...props} selectFlow={onSelect} />} link={(props) => <FlowLinkShape {...props} selectFlow={onSelect} />} /></ResponsiveContainer></div>;
 }
 
 function FlowNodeShape({ payload, x, y, width, height, selectFlow }: SankeyNodeProps & { selectFlow: (selection: FlowSelection) => void }) {
@@ -473,7 +473,8 @@ function FlowLinkShape({ sourceX, targetX, sourceY, targetY, sourceControlX, tar
   const pathLabel = `${link.source.label} to ${link.target.label}`;
   const label = link.owner ? `${link.owner} · ${pathLabel}` : pathLabel;
   const activate = () => selectFlow({ label, entry_ids: link.entry_ids });
-  return <path d={`M${sourceX},${sourceY} C${sourceControlX},${sourceY} ${targetControlX},${targetY} ${targetX},${targetY}`} fill="none" stroke={link.owner ? ownerColor(link.owner) : flowColor(link.target.kind)} strokeOpacity={link.owner ? 0.58 : 0.28} strokeWidth={Math.max(linkWidth, 2)} role="button" tabIndex={0} aria-label={`Show ${label} transactions`} onClick={activate} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activate(); } }} className="flow-link" />;
+  const visibleWidth = link.owner ? Math.max(linkWidth - 0.8, 0.8) : Math.max(linkWidth, 2);
+  return <path d={`M${sourceX},${sourceY} C${sourceControlX},${sourceY} ${targetControlX},${targetY} ${targetX},${targetY}`} fill="none" stroke={link.owner ? ownerColor(link.owner) : flowColor(link.target.kind)} strokeOpacity={link.owner ? 0.62 : 0.28} strokeWidth={visibleWidth} role="button" tabIndex={0} aria-label={`Show ${label} transactions`} onClick={activate} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activate(); } }} className="flow-link" />;
 }
 
 function FlowDrawer({ selection, entries, onClose }: { selection: FlowSelection; entries: FlowEntry[]; onClose: () => void }) {
