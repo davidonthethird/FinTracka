@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { FLOW_NODE_PADDING, flowChartHeight, splitLinksByOwner } from "../src/reports/flow";
+import { expenseNodeShares, FLOW_NODE_PADDING, flowChartHeight, splitLinksByOwner } from "../src/reports/flow";
 
 describe("person-colored report flow", () => {
   it("reserves enough vertical space to keep category blocks readable", () => {
@@ -43,5 +43,27 @@ describe("person-colored report flow", () => {
     };
 
     expect(splitLinksByOwner(report)).toEqual(report.links);
+  });
+
+  it("calculates endpoint shares of total and of each category", () => {
+    const report = {
+      nodes: [
+        { kind: "expense_group", amount_minor: 1_000, entry_ids: ["d", "a", "s", "other"] },
+        { kind: "expense", amount_minor: 600, entry_ids: ["d", "a", "s"] },
+        { kind: "expense", amount_minor: 400, entry_ids: ["other"] },
+      ],
+      links: [],
+      entries: [
+        { id: "d", amount_minor: -300, spending_owner: "David" },
+        { id: "a", amount_minor: -200, spending_owner: "Ariela" },
+        { id: "s", amount_minor: -100, spending_owner: "Shared" },
+        { id: "other", amount_minor: -400, spending_owner: "Shared" },
+      ],
+    };
+
+    expect(expenseNodeShares(report)).toEqual({
+      1: { totalBasisPoints: 6_000, ownerBasisPoints: { David: 5_000, Ariela: 3_333, Shared: 1_667 } },
+      2: { totalBasisPoints: 4_000, ownerBasisPoints: { Shared: 10_000 } },
+    });
   });
 });

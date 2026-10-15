@@ -9,7 +9,7 @@ import { api } from "./api";
 import { currentMonth, currencyStep, formatMoney, majorInputToMinor, minorToMajorInput, movementWidths, totalsByCurrency } from "./format";
 import { HistoryImportPage } from "./imports/HistoryImportPage";
 import { PlanningPage } from "./planning/PlanningPage";
-import { FLOW_NODE_PADDING, flowChartHeight, splitLinksByOwner } from "./reports/flow";
+import { expenseNodeShares, FLOW_NODE_PADDING, flowChartHeight, splitLinksByOwner } from "./reports/flow";
 import { SavingsPage } from "./savings/SavingsPage";
 import { ManualCashDialog } from "./transactions/ManualCashDialog";
 import { SubcategoryEditor, type Subcategory } from "./transactions/SubcategoryEditor";
@@ -32,7 +32,7 @@ type Provider = { id: string; name: string; enabled: boolean; environment?: stri
 type LinkSession = { link_token: string; expires_at: string; environment: string };
 type ReadinessCheck = { id: string; label: string; status: "pass" | "fail" | "warning"; blocking: boolean; detail: string };
 type ReadinessData = { ready: boolean; checks: ReadinessCheck[] };
-type FlowNode = { id: string; label: string; kind: string; amount_minor: number; entry_ids: string[] };
+type FlowNode = { id: string; label: string; kind: string; amount_minor: number; entry_ids: string[]; totalBasisPoints?: number; ownerBasisPoints?: Partial<Record<SpendingOwner, number>> };
 type FlowLink = { source: number; target: number; amount_minor: number; entry_ids: string[]; owner?: SpendingOwner };
 type FlowEntry = { id: string; transaction_id: string; local_date: string; merchant: string; description: string; category: string; amount_minor: number; currency: string; spending_owner?: SpendingOwner | null; notes?: string };
 type FlowReport = { month: string; nodes: FlowNode[]; links: FlowLink[]; entries: FlowEntry[] };
@@ -451,20 +451,30 @@ function SplitEditor({ transaction, categories, onClose, onSaved }: { transactio
 
 function CashFlowDiagram({ report, onSelect, splitByOwner = false }: { report: FlowReport; onSelect: (selection: FlowSelection) => void; splitByOwner?: boolean }) {
   const links = splitByOwner ? splitLinksByOwner(report) : report.links;
+  const shares = expenseNodeShares(report);
   const data = {
-    nodes: report.nodes.map((node) => ({ ...node, name: node.label })),
+    nodes: report.nodes.map((node, index) => ({
+      ...node,
+      name: node.label,
+      totalBasisPoints: shares[index]?.totalBasisPoints,
+      ownerBasisPoints: splitByOwner ? shares[index]?.ownerBasisPoints : undefined,
+    })),
     links: links.map((link) => ({ ...link, value: link.amount_minor })),
   };
-  return <div className="flow-chart" style={{ height: flowChartHeight(report.nodes.length) }}><ResponsiveContainer width="100%" height="100%"><Sankey data={data} iterations={0} sort={false} verticalAlign="top" nodePadding={FLOW_NODE_PADDING} nodeWidth={9} linkCurvature={0.42} margin={{ top: 24, right: 185, bottom: 24, left: 155 }} node={(props) => <FlowNodeShape {...props} selectFlow={onSelect} />} link={(props) => <FlowLinkShape {...props} selectFlow={onSelect} />} /></ResponsiveContainer></div>;
+  return <div className="flow-chart" style={{ height: flowChartHeight(report.nodes.length) }}><ResponsiveContainer width="100%" height="100%"><Sankey data={data} iterations={0} sort={false} verticalAlign="top" nodePadding={FLOW_NODE_PADDING} nodeWidth={9} linkCurvature={0.42} margin={{ top: 24, right: 265, bottom: 24, left: 155 }} node={(props) => <FlowNodeShape {...props} selectFlow={onSelect} />} link={(props) => <FlowLinkShape {...props} selectFlow={onSelect} />} /></ResponsiveContainer></div>;
 }
 
 function FlowNodeShape({ payload, x, y, width, height, selectFlow }: SankeyNodeProps & { selectFlow: (selection: FlowSelection) => void }) {
   const node = payload as typeof payload & FlowNode;
-  const labelOnLeft = payload.depth >= 2;
+  const labelOnLeft = node.kind !== "expense" && payload.depth >= 2;
+  const labelX = labelOnLeft ? x - 7 : x + width + 7;
+  const ownerText = node.ownerBasisPoints
+    ? (["David", "Ariela", "Shared"] as SpendingOwner[]).filter((owner) => node.ownerBasisPoints?.[owner] !== undefined).map((owner) => `${owner} ${formatBasisPoints(node.ownerBasisPoints?.[owner] || 0)}`).join(" · ")
+    : "";
   const activate = () => selectFlow({ label: node.label, entry_ids: node.entry_ids });
   return <g className="flow-node">
     <rect x={x} y={y} width={Math.max(width, 12)} height={Math.max(height, 8)} fill={flowColor(node.kind)} rx={2} role="button" tabIndex={0} aria-label={`Show ${node.label} transactions`} onClick={activate} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activate(); } }} />
-    <text x={labelOnLeft ? x - 7 : x + width + 7} y={y + Math.max(height, 12) / 2 - 2} textAnchor={labelOnLeft ? "end" : "start"}><tspan>{node.label}</tspan><tspan x={labelOnLeft ? x - 7 : x + width + 7} dy="1.2em" className="flow-value">{formatMoney(node.amount_minor)}</tspan></text>
+    <text x={labelX} y={y + Math.max(height, 12) / 2 - (ownerText ? 9 : 2)} textAnchor={labelOnLeft ? "end" : "start"}><tspan>{node.label}</tspan><tspan x={labelX} dy="1.2em" className="flow-value">{formatMoney(node.amount_minor)}{node.totalBasisPoints !== undefined ? ` · ${formatBasisPoints(node.totalBasisPoints)} of spending` : ""}</tspan>{ownerText && <tspan x={labelX} dy="1.2em" className="flow-owner-value">{ownerText}</tspan>}</text>
   </g>;
 }
 
@@ -498,6 +508,10 @@ function flowColor(kind: string): string {
 
 function ownerColor(owner: SpendingOwner): string {
   return `var(--${owner.toLowerCase()})`;
+}
+
+function formatBasisPoints(points: number): string {
+  return `${(points / 100).toLocaleString("en-US", { maximumFractionDigits: 1 })}%`;
 }
 
 function describeRule(source: string): string {
