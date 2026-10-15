@@ -66,6 +66,7 @@ def test_reports_exclude_transfers_and_non_usd_and_net_refunds(
     assert grocery_node["amount_minor"] == 7_742
     grocery_entries = [entry for entry in paths["entries"] if entry["id"] in grocery_node["entry_ids"]]
     assert sorted(entry["amount_minor"] for entry in grocery_entries) == [-8_742, 1_000]
+    assert {entry["spending_owner"] for entry in grocery_entries} == {"Shared"}
     assert next(node for node in paths["nodes"] if node["label"] == "Money retained")["amount_minor"] == 317_258
     assert all(entry["description"] != "Transfer" and entry["currency"] == "USD" for entry in paths["entries"])
 

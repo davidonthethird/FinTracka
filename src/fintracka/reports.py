@@ -154,6 +154,7 @@ def cash_flow_paths(connection: sqlite3.Connection, month: str) -> dict[str, obj
                 "category": entry.category or "Uncategorized",
                 "amount_minor": entry.amount_minor,
                 "currency": "USD",
+                "spending_owner": entry.spending_owner if is_expense else None,
                 "notes": detail["notes"],
             }
         )
