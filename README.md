@@ -46,7 +46,7 @@ Use `--environment sandbox` for Plaid Sandbox. Configure a Google Desktop OAuth 
 
 ## Start and stop
 
-On the configured Mac, double-click `FinTracka.command` on the Desktop. The launcher builds the latest interface, starts the local server, and opens Google Chrome. Keep its Terminal window open; press Control-C there to stop FinTracka.
+On the configured Mac, double-click `FinTracka.command` on the Desktop. The launcher builds the latest interface, starts the local server, syncs connected Plaid accounts, and opens Google Chrome. If FinTracka is already running, double-clicking the launcher syncs again before opening it. Keep its Terminal window open; press Control-C there to stop FinTracka.
 
 The repository launcher provides the same workflow:
 

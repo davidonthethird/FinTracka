@@ -351,7 +351,7 @@ def test_schedule_is_changed_only_by_explicit_csrf_protected_actions(tmp_path: P
         assert state == {"installed": False, "loaded": False}
 
 
-def test_startup_queues_only_one_catch_up_sync_for_stale_live_connection(tmp_path: Path) -> None:
+def test_each_startup_queues_sync_for_live_connection(tmp_path: Path) -> None:
     path = tmp_path / "ledger.sqlite3"
     connection = connect(path)
     migrate(connection)
@@ -378,11 +378,19 @@ def test_startup_queues_only_one_catch_up_sync_for_stale_live_connection(tmp_pat
 
     second = create_app(path, bootstrap_token="second", plaid_adapter_factory=lambda _: adapter)
     with TestClient(second):
-        pass
+        for _ in range(200):
+            check = connect(path)
+            job_count = check.execute(
+                "SELECT COUNT(*) FROM jobs WHERE kind = 'plaid_sync' AND status = 'succeeded'"
+            ).fetchone()[0]
+            check.close()
+            if job_count == 2:
+                break
+            time.sleep(0.01)
     connection = connect(path)
     assert connection.execute(
         "SELECT COUNT(*) FROM jobs WHERE kind = 'plaid_sync'"
-    ).fetchone()[0] == 1
+    ).fetchone()[0] == 2
     assert connection.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
     connection.close()
 

@@ -17,6 +17,8 @@ test("synthetic finance workflow", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
   await expect(page.getByText("$12,500.00", { exact: true }).first()).toBeVisible();
   expect(page.url()).not.toContain("bootstrap=");
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute("href", "/favicon.svg");
+  expect((await page.request.get("/favicon.svg")).ok()).toBeTruthy();
 
   await page.getByRole("link", { name: "Accounts" }).click();
   await page.getByRole("button", { name: "Edit" }).first().click();
@@ -57,6 +59,14 @@ test("synthetic finance workflow", async ({ page }) => {
 
   await page.getByRole("link", { name: "Transactions" }).click();
   await expect(page.locator("tbody tr")).toHaveCount(100);
+  const accountFilterResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/v1/transactions"
+      && Boolean(new URL(response.url()).searchParams.get("account_id")),
+  );
+  await page.getByLabel("Filter by account").selectOption({ label: "Daily cash" });
+  await accountFilterResponse;
+  await expect(page.locator("tbody tr")).toHaveCount(100);
+  await page.getByLabel("Filter by account").selectOption("");
   await page.getByLabel("Correction scope").selectOption("one_time");
   const deepCategory = page.locator(".category-cell select").nth(70);
   await deepCategory.scrollIntoViewIfNeeded();

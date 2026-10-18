@@ -47,6 +47,7 @@ def apply_batch(
             _upsert_transaction(connection, provider, connection_id, transaction, now)
         for external_id in batch.removed:
             _remove_transaction(connection, provider, connection_id, external_id, now)
+        _restore_posted_aliases(connection, provider, connection_id, now)
         apply_rules(connection)
         connection.execute(
             """
@@ -394,16 +395,53 @@ def _remove_transaction(
     if row is None:
         return
     transaction_id = row[0]
-    changed = connection.execute(
-        "UPDATE transactions SET tombstoned = 1, updated_at = ? WHERE id = ? AND tombstoned = 0",
-        (now, transaction_id),
-    ).rowcount
     connection.execute(
         "UPDATE transaction_external_ids SET state = 'removed' WHERE provider = ? AND connection_id = ? AND external_id = ?",
         (provider, connection_id, external_id),
     )
+    active_alias = connection.execute(
+        """
+        SELECT 1 FROM transaction_external_ids
+        WHERE transaction_id = ? AND state != 'removed'
+        LIMIT 1
+        """,
+        (transaction_id,),
+    ).fetchone()
+    if active_alias is not None:
+        return
+    changed = connection.execute(
+        "UPDATE transactions SET tombstoned = 1, updated_at = ? WHERE id = ? AND tombstoned = 0",
+        (now, transaction_id),
+    ).rowcount
     if changed:
         _audit(connection, "provider_remove", "transaction", transaction_id, now)
+
+
+def _restore_posted_aliases(
+    connection: sqlite3.Connection,
+    provider: str,
+    connection_id: str,
+    now: str,
+) -> None:
+    rows = connection.execute(
+        """
+        SELECT DISTINCT t.id
+        FROM transactions t
+        JOIN transaction_external_ids x ON x.transaction_id = t.id
+        WHERE t.tombstoned = 1
+          AND x.provider = ?
+          AND x.connection_id = ?
+          AND x.state = 'posted'
+        """,
+        (provider, connection_id),
+    ).fetchall()
+    for row in rows:
+        transaction_id = row[0]
+        connection.execute(
+            "UPDATE transactions SET tombstoned = 0, updated_at = ? WHERE id = ?",
+            (now, transaction_id),
+        )
+        _audit(connection, "provider_alias_restore", "transaction", transaction_id, now)
 
 
 def _account_id(connection: sqlite3.Connection, connection_id: str, external_id: str) -> str:

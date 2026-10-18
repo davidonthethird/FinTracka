@@ -6,7 +6,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
@@ -381,7 +381,7 @@ def create_app(
     async def lifespan(_: FastAPI):  # type: ignore[no-untyped-def]
         startup = connect(path)
         try:
-            if _catch_up_due(startup):
+            if _startup_sync_due(startup):
                 try:
                     plaid_adapter(startup)
                 except (PlaidNotConfigured, SecretStoreUnavailable):
@@ -1697,16 +1697,7 @@ def _plaid_environment(connection: sqlite3.Connection) -> str:
     return row[0] if row is not None and row[0] in {"sandbox", "production"} else "sandbox"
 
 
-def _catch_up_due(
-    connection: sqlite3.Connection,
-    *,
-    now: datetime | None = None,
-) -> bool:
-    active = connection.execute(
-        "SELECT MAX(last_success_at) FROM provider_connections WHERE provider = 'plaid' AND status = 'active'"
-    ).fetchone()
-    if active is None:
-        return False
+def _startup_sync_due(connection: sqlite3.Connection) -> bool:
     has_connection = connection.execute(
         "SELECT 1 FROM provider_connections WHERE provider = 'plaid' AND status = 'active' LIMIT 1"
     ).fetchone()
@@ -1717,15 +1708,7 @@ def _catch_up_due(
     ).fetchone()
     if running is not None:
         return False
-    latest = active[0]
-    if latest is None:
-        return True
-    try:
-        observed = datetime.fromisoformat(str(latest).replace("Z", "+00:00"))
-    except ValueError:
-        return True
-    current = now or datetime.now(timezone.utc)
-    return current - observed > timedelta(hours=24)
+    return True
 
 
 def _encode_cursor(local_date: str, transaction_id: str) -> str:

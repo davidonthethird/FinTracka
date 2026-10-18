@@ -205,17 +205,75 @@ def test_pending_to_posted_keeps_one_canonical_row_and_user_fields(
         merchant="Coffee Shop",
         pending=False,
     )
-    apply_batch(ledger, connection_id, SyncBatch(added=(posted,), next_checkpoint="p2"))
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(
+            added=(posted,),
+            removed=("pending-coffee",),
+            next_checkpoint="p2",
+        ),
+    )
 
     assert ledger.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
     assert ledger.execute(
         "SELECT COUNT(DISTINCT transaction_id) FROM transaction_external_ids"
     ).fetchone()[0] == 1
     row = ledger.execute(
-        "SELECT category_id, category_source, notes, user_merchant, pending FROM transactions WHERE id = ?",
+        "SELECT category_id, category_source, notes, user_merchant, pending, tombstoned FROM transactions WHERE id = ?",
         (canonical_id,),
     ).fetchone()
-    assert tuple(row) == (category_id, "manual", "Keep me", "My Cafe", 0)
+    assert tuple(row) == (category_id, "manual", "Keep me", "My Cafe", 0, 0)
+    aliases = ledger.execute(
+        "SELECT external_id, state FROM transaction_external_ids ORDER BY external_id"
+    ).fetchall()
+    assert [tuple(alias) for alias in aliases] == [
+        ("pending-coffee", "removed"),
+        ("posted-coffee", "posted"),
+    ]
+
+
+def test_sync_restores_posted_transaction_hidden_by_old_pending_alias_removal(
+    ledger: sqlite3.Connection,
+) -> None:
+    connection_id = create_synthetic_ledger(ledger)[0]
+    pending = NormalizedTransaction(
+        external_id="pending-repair",
+        account_external_id="checking-1",
+        occurred_at="2026-10-10T14:00:00Z",
+        amount_minor=-525,
+        currency="USD",
+        description="PENDING REPAIR",
+        pending=True,
+    )
+    posted = NormalizedTransaction(
+        external_id="posted-repair",
+        pending_external_id="pending-repair",
+        account_external_id="checking-1",
+        occurred_at="2026-10-11T14:00:00Z",
+        amount_minor=-525,
+        currency="USD",
+        description="POSTED REPAIR",
+    )
+    apply_batch(ledger, connection_id, SyncBatch(added=(pending,), next_checkpoint="r1"))
+    apply_batch(ledger, connection_id, SyncBatch(added=(posted,), next_checkpoint="r2"))
+    transaction_id = ledger.execute(
+        "SELECT transaction_id FROM transaction_external_ids WHERE external_id = 'posted-repair'"
+    ).fetchone()[0]
+    ledger.execute("UPDATE transactions SET tombstoned = 1 WHERE id = ?", (transaction_id,))
+    ledger.execute(
+        "UPDATE transaction_external_ids SET state = 'removed' WHERE external_id = 'pending-repair'"
+    )
+
+    apply_batch(ledger, connection_id, SyncBatch(next_checkpoint="r3"))
+
+    assert ledger.execute(
+        "SELECT tombstoned FROM transactions WHERE id = ?", (transaction_id,)
+    ).fetchone()[0] == 0
+    assert ledger.execute(
+        "SELECT COUNT(*) FROM audit_events WHERE action = 'provider_alias_restore' AND entity_id = ?",
+        (transaction_id,),
+    ).fetchone()[0] == 1
 
 
 def test_failure_before_commit_rolls_back_ledger_and_checkpoint(
