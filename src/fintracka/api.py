@@ -141,6 +141,13 @@ class TransactionPatch(StrictModel):
     notes: str | None = Field(default=None, max_length=2_000)
     user_merchant: str | None = Field(default=None, max_length=300)
     spending_owner: Literal["David", "Ariela", "Shared"] | None = None
+    archived: StrictBool | None = None
+
+    @model_validator(mode="after")
+    def validate_archive(self) -> "TransactionPatch":
+        if "archived" in self.model_fields_set and self.archived is None:
+            raise ValueError("archived must be true or false")
+        return self
 
 
 class BulkTransactionPatch(TransactionPatch):
@@ -172,6 +179,7 @@ class TransactionResponse(StrictModel):
     pending: bool
     manual_cash: bool
     is_cash_withdrawal: bool
+    archived: bool
     updated_at: str
 
 
@@ -689,8 +697,11 @@ def create_app(
         spending_owner: Literal["David", "Ariela", "Shared"] | None = None,
         month: str | None = None,
         include_transfers: bool = False,
+        include_archived: bool = False,
     ) -> TransactionPage:
         clauses = ["t.tombstoned = 0", "a.hidden = 0"]
+        if not include_archived:
+            clauses.append("t.user_archived = 0")
         parameters: list[object] = []
         if not include_transfers:
             clauses.append("COALESCE(c.category_type, '') != 'transfer'")
@@ -736,7 +747,7 @@ def create_app(
                    t.provider_category_confidence, t.spending_owner,
                    CASE WHEN c.category_type = 'expense' THEN COALESCE(t.spending_owner, a.spending_owner) END spending_owner_effective,
                    t.notes, t.pending, pc.provider = 'manual' manual_cash,
-                   t.is_cash_withdrawal, t.updated_at
+                   t.is_cash_withdrawal, t.user_archived archived, t.updated_at
             FROM transactions t JOIN accounts a ON a.id = t.account_id
             JOIN provider_connections pc ON pc.id = a.connection_id
             LEFT JOIN categories c ON c.id = t.category_id
@@ -748,7 +759,7 @@ def create_app(
         ).fetchall()
         has_more = len(rows) > limit
         visible = rows[:limit]
-        items = [TransactionResponse(**{**dict(row), "pending": bool(row["pending"])}) for row in visible]
+        items = [TransactionResponse(**{**dict(row), "pending": bool(row["pending"]), "archived": bool(row["archived"])}) for row in visible]
         next_cursor = _encode_cursor(visible[-1]["local_date"], visible[-1]["id"]) if has_more else None
         return TransactionPage(items=items, next_cursor=next_cursor)
 
@@ -1559,7 +1570,7 @@ def _transaction(connection: sqlite3.Connection, transaction_id: str) -> sqlite3
                t.provider_category_confidence, t.spending_owner,
                CASE WHEN c.category_type = 'expense' THEN COALESCE(t.spending_owner, a.spending_owner) END spending_owner_effective,
                t.notes, t.pending, pc.provider = 'manual' manual_cash,
-               t.is_cash_withdrawal, t.updated_at
+               t.is_cash_withdrawal, t.user_archived archived, t.updated_at
         FROM transactions t JOIN accounts a ON a.id = t.account_id
         JOIN provider_connections pc ON pc.id = a.connection_id
         LEFT JOIN categories c ON c.id = t.category_id
@@ -1575,7 +1586,7 @@ def _transaction(connection: sqlite3.Connection, transaction_id: str) -> sqlite3
 
 def _transaction_response(connection: sqlite3.Connection, transaction_id: str) -> TransactionResponse:
     row = _transaction(connection, transaction_id)
-    return TransactionResponse(**{**dict(row), "pending": bool(row["pending"])})
+    return TransactionResponse(**{**dict(row), "pending": bool(row["pending"]), "archived": bool(row["archived"])})
 
 
 def _manual_cash_status(error: ManualCashError) -> int:

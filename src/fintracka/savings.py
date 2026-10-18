@@ -149,7 +149,7 @@ def savings_summary(
             JOIN accounts a ON a.id = t.account_id
             LEFT JOIN categories c ON c.id = t.category_id
             WHERE t.account_id IN ({','.join('?' for _ in account_ids)})
-              AND t.local_date BETWEEN ? AND ? AND t.tombstoned = 0 AND t.pending = 0
+              AND t.local_date BETWEEN ? AND ? AND t.tombstoned = 0 AND t.user_archived = 0 AND t.pending = 0
               AND t.currency = 'USD'
             ORDER BY t.local_date DESC, t.id DESC
             """,

@@ -120,7 +120,7 @@ def build_snapshot(connection: sqlite3.Connection) -> dict[str, list[list[object
             JOIN provider_connections pc ON pc.id = a.connection_id
             LEFT JOIN categories c ON c.id = t.category_id
             LEFT JOIN subcategories s ON s.id = t.subcategory_id
-            WHERE t.tombstoned = 0 AND a.include_export = 1 AND a.hidden = 0
+            WHERE t.tombstoned = 0 AND t.user_archived = 0 AND a.include_export = 1 AND a.hidden = 0
             ORDER BY t.local_date, t.id
             """
         ),
@@ -187,7 +187,7 @@ def build_snapshot(connection: sqlite3.Connection) -> dict[str, list[list[object
     sheets["Monthly Budget"] = monthly_budget
     sheets["Yearly Budget"] = yearly_budget
     trends: list[list[object]] = [["FinTracka ID", "Month", "Category", "Spending (minor units)", "Last updated"]]
-    months = [row[0] for row in connection.execute("SELECT DISTINCT substr(local_date, 1, 7) FROM transactions WHERE tombstoned = 0 ORDER BY 1")]
+    months = [row[0] for row in connection.execute("SELECT DISTINCT substr(local_date, 1, 7) FROM transactions WHERE tombstoned = 0 AND user_archived = 0 ORDER BY 1")]
     exported_at = _now()
     for month in months:
         for row in spending_by_category(connection, month):

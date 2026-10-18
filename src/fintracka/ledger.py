@@ -56,6 +56,7 @@ def update_transaction(
     notes: str | None | object = _UNSET,
     user_merchant: str | None | object = _UNSET,
     spending_owner: str | None | object = _UNSET,
+    archived: bool | object = _UNSET,
 ) -> None:
     row = connection.execute("SELECT * FROM transactions WHERE id = ?", (transaction_id,)).fetchone()
     if row is None:
@@ -77,6 +78,11 @@ def update_transaction(
         if spending_owner not in {None, "David", "Ariela", "Shared"}:
             raise IntegrityError("invalid spending owner")
         changes["spending_owner"] = spending_owner
+    if archived is not _UNSET:
+        if not isinstance(archived, bool):
+            raise IntegrityError("archived must be a boolean")
+        if bool(row["user_archived"]) != archived:
+            changes["user_archived"] = int(archived)
     if not changes:
         return
     now = _now()
@@ -85,7 +91,8 @@ def update_transaction(
         f"UPDATE transactions SET {assignments}, updated_at = ? WHERE id = ?",
         (*changes.values(), now, transaction_id),
     )
-    _audit(connection, "user", "transaction_update", "transaction", transaction_id, now)
+    action = "transaction_restore" if archived is False else "transaction_archive" if archived is True else "transaction_update"
+    _audit(connection, "user", action, "transaction", transaction_id, now)
 
 
 def set_splits(
@@ -165,7 +172,7 @@ def categorize_transaction(
     if scope == "past_and_future":
         matching = [
             row
-            for row in connection.execute("SELECT * FROM transactions WHERE tombstoned = 0")
+            for row in connection.execute("SELECT * FROM transactions WHERE tombstoned = 0 AND user_archived = 0")
             if row["id"] == transaction_id
             or (
                 row["category_source"] != "manual"
@@ -297,7 +304,7 @@ def apply_rules(connection: sqlite3.Connection, *, reprocess: bool = False) -> i
         "SELECT id, conditions_json, category_id FROM categorization_rules WHERE enabled = 1 ORDER BY priority, id"
     ).fetchall()
     transactions = connection.execute(
-        "SELECT * FROM transactions WHERE tombstoned = 0 ORDER BY local_date, id"
+        "SELECT * FROM transactions WHERE tombstoned = 0 AND user_archived = 0 ORDER BY local_date, id"
     ).fetchall()
     applied = 0
     now = _now()
@@ -341,7 +348,7 @@ def preview_rules(connection: sqlite3.Connection) -> list[dict[str, str | int]]:
         "SELECT id, name, priority, conditions_json FROM categorization_rules WHERE enabled = 1 ORDER BY priority, id"
     ).fetchall()
     transactions = connection.execute(
-        "SELECT * FROM transactions WHERE tombstoned = 0 AND category_source IS NOT 'manual' ORDER BY local_date, id"
+        "SELECT * FROM transactions WHERE tombstoned = 0 AND user_archived = 0 AND category_source IS NOT 'manual' ORDER BY local_date, id"
     ).fetchall()
     claimed: set[str] = set()
     preview: list[dict[str, str | int]] = []
@@ -372,7 +379,7 @@ def transfer_candidates(connection: sqlite3.Connection) -> list[TransferCandidat
                COALESCE(NULLIF(t.user_merchant, ''), NULLIF(t.provider_merchant, ''), t.provider_description) label,
                (SELECT external_id FROM transaction_external_ids e WHERE e.transaction_id = t.id ORDER BY CASE e.state WHEN 'posted' THEN 0 ELSE 1 END, e.external_id LIMIT 1) external_id
         FROM transactions t
-        WHERE t.tombstoned = 0 AND t.pending = 0
+        WHERE t.tombstoned = 0 AND t.user_archived = 0 AND t.pending = 0
           AND NOT EXISTS (
               SELECT 1 FROM transfer_links l
               WHERE l.status = 'confirmed' AND (l.transaction_a_id = t.id OR l.transaction_b_id = t.id)
@@ -417,7 +424,7 @@ def confirm_transfer(connection: sqlite3.Connection, transaction_a: str, transac
     if existing:
         raise IntegrityError("transaction is already in a confirmed transfer")
     rows = connection.execute(
-        "SELECT id, account_id, amount_minor, currency FROM transactions WHERE id IN (?, ?)",
+        "SELECT id, account_id, amount_minor, currency FROM transactions WHERE user_archived = 0 AND id IN (?, ?)",
         (transaction_a, transaction_b),
     ).fetchall()
     if len(rows) != 2 or rows[0]["account_id"] == rows[1]["account_id"]:
@@ -449,7 +456,7 @@ def reconcile(
         SELECT COALESCE(SUM(amount_minor), 0)
         FROM transactions
         WHERE account_id = ? AND local_date BETWEEN ? AND ? AND local_date <= ?
-          AND tombstoned = 0 AND pending = 0
+          AND tombstoned = 0 AND user_archived = 0 AND pending = 0
         """,
         (account_id, period_start, period_end, cleared_cutoff),
     ).fetchone()[0]

@@ -435,6 +435,85 @@ def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
         )
         assert stale.status_code == 409
 
+
+def test_transaction_archive_is_reversible_and_excluded_from_finances(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    apply_batch(connection, connection_id, synthetic_batches([connection_id])[connection_id])
+    groceries = connection.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()[0]
+    transaction_id = connection.execute(
+        "SELECT transaction_id FROM transaction_external_ids WHERE external_id = 'groceries-1'"
+    ).fetchone()[0]
+    connection.execute(
+        "UPDATE transactions SET category_id = ?, category_source = 'manual' WHERE id = ?",
+        (groceries, transaction_id),
+    )
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+        row = next(
+            item for item in client.get("/api/v1/transactions").json()["items"]
+            if item["id"] == transaction_id
+        )
+        assert next(
+            item for item in client.get("/api/v1/reports/spending", params={"month": "2026-10"}).json()
+            if item["category"] == "Groceries"
+        )["amount_minor"] == 8_742
+        assert client.patch(
+            f"/api/v1/transactions/{transaction_id}",
+            json={"expected_updated_at": row["updated_at"], "archived": None},
+            headers=headers,
+        ).status_code == 422
+
+        archived = client.patch(
+            f"/api/v1/transactions/{transaction_id}",
+            json={"expected_updated_at": row["updated_at"], "archived": True},
+            headers=headers,
+        )
+        assert archived.status_code == 200
+        assert archived.json()["archived"] is True
+        assert all(
+            item["id"] != transaction_id
+            for item in client.get("/api/v1/transactions").json()["items"]
+        )
+        archived_rows = client.get(
+            "/api/v1/transactions", params={"include_archived": True}
+        ).json()["items"]
+        archived_row = next(item for item in archived_rows if item["id"] == transaction_id)
+        assert archived_row["archived"] is True
+        assert all(
+            item["category"] != "Groceries"
+            for item in client.get("/api/v1/reports/spending", params={"month": "2026-10"}).json()
+        )
+        planning = client.get("/api/v1/planning/2026-10", params={"average_months": 1}).json()
+        assert next(item for item in planning["categories"] if item["category_id"] == groceries)[
+            "actual_minor"
+        ] == 0
+
+        restored = client.patch(
+            f"/api/v1/transactions/{transaction_id}",
+            json={"expected_updated_at": archived_row["updated_at"], "archived": False},
+            headers=headers,
+        )
+        assert restored.status_code == 200 and restored.json()["archived"] is False
+
+    connection = connect(path)
+    assert [
+        row["action"]
+        for row in connection.execute(
+            "SELECT action FROM audit_events WHERE entity_id = ? AND action LIKE 'transaction_%' ORDER BY occurred_at",
+            (transaction_id,),
+        )
+    ] == ["transaction_archive", "transaction_restore"]
+    connection.close()
+
+
 def test_spending_owner_account_default_override_and_filter(tmp_path: Path) -> None:
     path = tmp_path / "ledger.sqlite3"
     connection = connect(path)

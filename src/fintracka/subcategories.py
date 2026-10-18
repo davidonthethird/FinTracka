@@ -169,9 +169,9 @@ def assign_subcategory(
             connection.execute(
                 """
                 SELECT * FROM transactions
-                WHERE (tombstoned = 0 AND category_id = ? AND is_cash_withdrawal = 0
+                WHERE (tombstoned = 0 AND user_archived = 0 AND category_id = ? AND is_cash_withdrawal = 0
                   AND id = ?) OR (
-                    tombstoned = 0 AND category_id = ? AND is_cash_withdrawal = 0
+                    tombstoned = 0 AND user_archived = 0 AND category_id = ? AND is_cash_withdrawal = 0
                     AND subcategory_source IS NOT 'manual'
                     AND upper(trim(COALESCE(NULLIF(user_merchant, ''), provider_merchant, ''))) = ?
                   )
@@ -272,7 +272,7 @@ def reprocess_subcategory_rule(connection: sqlite3.Connection, rule_id: str) -> 
     rows = connection.execute(
         """
         SELECT * FROM transactions
-        WHERE tombstoned = 0 AND category_id = ? AND is_cash_withdrawal = 0
+        WHERE tombstoned = 0 AND user_archived = 0 AND category_id = ? AND is_cash_withdrawal = 0
           AND subcategory_source IS NOT 'manual'
           AND upper(trim(COALESCE(NULLIF(user_merchant, ''), provider_merchant, ''))) = ?
         """,

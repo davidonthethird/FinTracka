@@ -314,7 +314,7 @@ def ledger_entries(
                    COALESCE(t.spending_owner, a.spending_owner) spending_owner
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
-            WHERE t.has_splits = 0 AND t.tombstoned = 0 AND t.pending = 0
+            WHERE t.has_splits = 0 AND t.tombstoned = 0 AND t.user_archived = 0 AND t.pending = 0
               AND t.currency = 'USD' AND a.currency = 'USD' AND a.{account_flag} = 1
               AND a.hidden = 0
               AND t.local_date BETWEEN ? AND ?
@@ -330,7 +330,7 @@ def ledger_entries(
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
             JOIN transaction_splits s ON s.parent_transaction_id = t.id
-            WHERE t.has_splits = 1 AND t.tombstoned = 0 AND t.pending = 0
+            WHERE t.has_splits = 1 AND t.tombstoned = 0 AND t.user_archived = 0 AND t.pending = 0
               AND t.currency = 'USD' AND a.currency = 'USD' AND a.{account_flag} = 1
               AND a.hidden = 0
               AND t.local_date BETWEEN ? AND ?
@@ -364,7 +364,7 @@ def _cash_transfer_activity(connection: sqlite3.Connection, start: str, end: str
             WHERE l.status = 'confirmed' AND a.nature = 'asset'
               AND a.include_overview = 1 AND a.status = 'active' AND a.hidden = 0
               AND a.currency = 'USD' AND t.currency = 'USD'
-              AND t.tombstoned = 0 AND t.pending = 0
+              AND t.tombstoned = 0 AND t.user_archived = 0 AND t.pending = 0
               AND t.local_date BETWEEN ? AND ?
             """,
             (start, end),
