@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("synthetic finance workflow edits categories from planning drawer", async ({ page }) => {
+test("synthetic finance workflow edits categories from planning drawer; edits categories from reports drawer", async ({ page }) => {
   const responseErrors: string[] = [];
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
@@ -342,9 +342,32 @@ test("synthetic finance workflow edits categories from planning drawer", async (
   await expect(page.getByRole("status")).toContainText("Envelope allocation saved");
   await page.getByRole("link", { name: "Reports" }).click();
   await expect(page.getByRole("heading", { name: "Income and spending flow" })).toBeVisible();
+  const funFlowButton = page.getByRole("button", { name: /Show Fun transactions/ });
+  const funFlowNode = funFlowButton.locator("..");
+  const funFlowBefore = await funFlowNode.textContent();
+  await funFlowButton.click();
+  let reportDrawer = page.getByRole("dialog", { name: "Fun transactions" });
+  await reportDrawer.getByRole("button", { name: "This transaction and future matches" }).click();
+  const reportRowsBefore = await reportDrawer.getByRole("button", { name: /Edit category for/ }).count();
+  await reportDrawer.getByRole("button", { name: /Edit category for/ }).first().click();
+  const reportCategoryEditor = reportDrawer.getByLabel(/Category for/).first();
+  const reportCategorizeResponse = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith("/categorize") && response.status() === 200);
+  await reportCategoryEditor.selectOption({ label: "Dining" });
+  const reportCategorized = await reportCategorizeResponse;
+  expect(reportCategorized.request().postDataJSON().scope).toBe("future");
+  await expect(reportDrawer).toBeVisible();
+  await expect(reportDrawer.getByRole("button", { name: /Edit category for/ })).toHaveCount(reportRowsBefore - 1);
+  await expect(funFlowNode).not.toHaveText(funFlowBefore || "");
+  await reportDrawer.getByRole("button", { name: "Undo" }).click();
+  await expect(reportDrawer.getByRole("button", { name: /Edit category for/ })).toHaveCount(reportRowsBefore);
+  await expect(funFlowNode).toHaveText(funFlowBefore || "");
+  await reportDrawer.getByRole("button", { name: "Close flow details" }).click();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Income and spending flow" })).toBeVisible();
   await page.getByRole("button", { name: /Show Fun transactions/ }).click();
-  await expect(page.getByRole("dialog", { name: "Fun transactions" })).toBeVisible();
-  await page.getByRole("button", { name: "Close flow details" }).click();
+  reportDrawer = page.getByRole("dialog", { name: "Fun transactions" });
+  await expect(reportDrawer.getByRole("button", { name: "This transaction and future matches" })).toHaveAttribute("aria-pressed", "true");
+  await reportDrawer.getByRole("button", { name: "Close flow details" }).click();
   await page.getByRole("button", { name: "Show Lifestyle to Fun transactions" }).focus();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("dialog", { name: "Lifestyle to Fun transactions" })).toBeVisible();

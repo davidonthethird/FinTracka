@@ -35,9 +35,9 @@ type ReadinessCheck = { id: string; label: string; status: "pass" | "fail" | "wa
 type ReadinessData = { ready: boolean; checks: ReadinessCheck[] };
 type FlowNode = { id: string; label: string; kind: string; amount_minor: number; entry_ids: string[]; totalBasisPoints?: number; ownerBasisPoints?: Partial<Record<SpendingOwner, number>> };
 type FlowLink = { source: number; target: number; amount_minor: number; entry_ids: string[]; owner?: SpendingOwner };
-type FlowEntry = { id: string; transaction_id: string; local_date: string; merchant: string; description: string; category: string; amount_minor: number; currency: string; spending_owner?: SpendingOwner | null; notes?: string };
+type FlowEntry = { id: string; transaction_id: string; local_date: string; merchant: string; description: string; category: string; category_id?: string; amount_minor: number; currency: string; spending_owner?: SpendingOwner | null; notes?: string; updated_at: string; is_cash_withdrawal: boolean };
 type FlowReport = { month: string; nodes: FlowNode[]; links: FlowLink[]; entries: FlowEntry[] };
-type FlowSelection = { label: string; entry_ids: string[] };
+type FlowSelection = { label: string; entry_ids: string[]; node_id?: string; source_id?: string; target_id?: string; owner?: SpendingOwner };
 type OwnerSpending = { owner: SpendingOwner; amount_minor: number };
 
 const nav = [
@@ -265,13 +265,57 @@ function ReportsPage() {
   const [selection, setSelection] = useState<FlowSelection>();
   const [splitPeople, setSplitPeople] = useState(false);
   const [selectedOwner, setSelectedOwner] = useState<SpendingOwner>();
-  const flow = useData<{ income_minor: number; spending_minor: number; net_minor: number }>(`/reports/cash-flow?month=${month}`);
-  const paths = useData<FlowReport>(`/reports/flow?month=${month}`);
-  const spending = useData<{ category: string; amount_minor: number }[]>(`/reports/spending?month=${month}${selectedOwner ? `&spending_owner=${selectedOwner}` : ""}`);
-  const owners = useData<OwnerSpending[]>(`/reports/spending-owners?month=${month}`);
-  useEffect(() => { setSelection(undefined); setSelectedOwner(undefined); }, [month]);
+  const [revision, setRevision] = useState(0);
+  const [categorizationScope, setCategorizationScope] = useState<CategorizationScope>(() => readCategorizationScope());
+  const [categorizationFeedback, setCategorizationFeedback] = useState<{ tone: "status" | "error"; text: string }>();
+  const [undoId, setUndoId] = useState("");
+  const flow = useData<{ income_minor: number; spending_minor: number; net_minor: number }>(`/reports/cash-flow?month=${month}`, revision);
+  const paths = useData<FlowReport>(`/reports/flow?month=${month}`, revision);
+  const spending = useData<{ category: string; amount_minor: number }[]>(`/reports/spending?month=${month}${selectedOwner ? `&spending_owner=${selectedOwner}` : ""}`, revision);
+  const owners = useData<OwnerSpending[]>(`/reports/spending-owners?month=${month}`, revision);
+  const categories = useData<Category[]>("/categories");
+  useEffect(() => { setSelection(undefined); setSelectedOwner(undefined); setCategorizationFeedback(undefined); setUndoId(""); }, [month]);
+  useEffect(() => {
+    if (!selection || !paths.data) return;
+    let entryIds: string[] = [];
+    if (selection.node_id) {
+      entryIds = paths.data.nodes.find((node) => node.id === selection.node_id)?.entry_ids || [];
+    } else if (selection.source_id && selection.target_id) {
+      const links = splitPeople ? splitLinksByOwner(paths.data) : paths.data.links;
+      const link = links.find((item) => paths.data!.nodes[Number(item.source)]?.id === selection.source_id
+        && paths.data!.nodes[Number(item.target)]?.id === selection.target_id
+        && item.owner === selection.owner);
+      entryIds = link?.entry_ids || [];
+    }
+    if (entryIds.length !== selection.entry_ids.length || entryIds.some((id, index) => id !== selection.entry_ids[index])) {
+      setSelection({ ...selection, entry_ids: entryIds });
+    }
+  }, [paths.data, selection, splitPeople]);
   function toggleSplit(value: boolean) { setSplitPeople(value); if (!value) setSelectedOwner(undefined); }
-  return <Page title="Reports" note="Ledger-backed, USD combined totals"><div className="reports-controls"><MonthControl value={month} setValue={setMonth} /><label><input type="checkbox" checked={splitPeople} onChange={(event) => toggleSplit(event.target.checked)} /> Split spending by person</label></div><DataBoundary result={flow}>{(data) => <section className="metric-line compact"><Metric label="Income" value={formatMoney(data.income_minor)} tone="teal"/><Metric label="Spending" value={formatMoney(data.spending_minor)} tone="red"/><Metric label="Net" value={formatMoney(data.net_minor)} /></section>}</DataBoundary>{splitPeople && <section className="instrument-panel"><div className="section-heading"><h2>Spending by person</h2><button className="quiet-button" aria-pressed={!selectedOwner} onClick={() => setSelectedOwner(undefined)}>Everyone</button></div><DataBoundary result={owners}>{(rows) => { const total = rows.reduce((sum, row) => sum + row.amount_minor, 0); return <div className="owner-spending">{(["David", "Ariela", "Shared"] as SpendingOwner[]).map((owner) => { const amount = rows.find((row) => row.owner === owner)?.amount_minor || 0; return <button className={`owner-${owner.toLowerCase()} ${selectedOwner === owner ? "selected" : ""}`} aria-pressed={selectedOwner === owner} key={owner} onClick={() => setSelectedOwner(selectedOwner === owner ? undefined : owner)}><span>{owner}<small>{total ? `${((amount / total) * 100).toFixed(0)}% of spending` : "No spending"}</small></span><strong>{formatMoney(amount)}</strong></button>; })}</div>; }}</DataBoundary></section>}{selectedOwner && <OwnerTransactions owner={selectedOwner} month={month} />}<section className="instrument-panel flow-panel"><div className="section-heading"><div><h2>Income and spending flow</h2><small>{splitPeople ? "Blue: David · Pink: Ariela · Purple: Shared" : "Select a stream to inspect its transactions"}</small></div><span>{month}</span></div><DataBoundary result={paths}>{(report) => report.links.length ? <CashFlowDiagram report={report} onSelect={setSelection} splitByOwner={splitPeople} /> : <Empty title="No monthly flow yet" text="Income and spending paths will appear when this month has posted transactions." />}</DataBoundary></section><section className={`instrument-panel ${selectedOwner ? `owner-${selectedOwner.toLowerCase()}` : ""}`}><div className="section-heading"><h2>Spending by category{selectedOwner ? ` · ${selectedOwner}` : ""}</h2><span>{month}</span></div><DataBoundary result={spending}>{(rows) => rows.length ? <div className="bar-list">{rows.map((row) => <div key={row.category}><span>{row.category}</span><i><b style={{ width: `${Math.max(3, (row.amount_minor / Math.max(...rows.map((item) => item.amount_minor))) * 100)}%` }} /></i><strong>{formatMoney(row.amount_minor)}</strong></div>)}</div> : <Empty title="No categorized spending" text="Categorized expenses for this month will appear here." />}</DataBoundary></section>{selection && paths.data && <FlowDrawer selection={selection} entries={paths.data.entries} onClose={() => setSelection(undefined)} />}</Page>;
+  function changeCategorizationScope(scope: CategorizationScope) { setCategorizationScope(scope); writeCategorizationScope(scope); }
+  async function categorizeEntry(entry: FlowEntry, categoryId: string): Promise<boolean> {
+    try {
+      const appliedScope = effectiveCategorizationScope(categorizationScope, entry.is_cash_withdrawal);
+      const result = await api<CategorizeResult>(`/transactions/${entry.transaction_id}/categorize`, { method: "POST", body: JSON.stringify({ expected_updated_at: entry.updated_at, category_id: categoryId, scope: appliedScope }) });
+      setUndoId(result.undo_id);
+      setCategorizationFeedback({ tone: "status", text: `${result.affected_count} transaction${result.affected_count === 1 ? " was" : "s were"} categorized. ${scopeMessage(appliedScope)}` });
+      setRevision((value) => value + 1);
+      return true;
+    } catch (caught) {
+      setCategorizationFeedback({ tone: "error", text: caught instanceof Error ? caught.message : "Unable to categorize transaction" });
+      return false;
+    }
+  }
+  async function undoCategorization() {
+    if (!undoId) return;
+    try {
+      const result = await api<{ restored_count: number }>(`/categorizations/${undoId}/undo`, { method: "POST", body: "{}" });
+      setUndoId("");
+      setCategorizationFeedback({ tone: "status", text: `${result.restored_count} transaction${result.restored_count === 1 ? " was" : "s were"} restored.` });
+      setRevision((value) => value + 1);
+    } catch (caught) { setCategorizationFeedback({ tone: "error", text: caught instanceof Error ? caught.message : "Unable to undo categorization" }); }
+  }
+  return <Page title="Reports" note="Ledger-backed, USD combined totals"><div className="reports-controls"><MonthControl value={month} setValue={setMonth} /><label><input type="checkbox" checked={splitPeople} onChange={(event) => toggleSplit(event.target.checked)} /> Split spending by person</label></div><DataBoundary result={flow}>{(data) => <section className="metric-line compact"><Metric label="Income" value={formatMoney(data.income_minor)} tone="teal"/><Metric label="Spending" value={formatMoney(data.spending_minor)} tone="red"/><Metric label="Net" value={formatMoney(data.net_minor)} /></section>}</DataBoundary>{splitPeople && <section className="instrument-panel"><div className="section-heading"><h2>Spending by person</h2><button className="quiet-button" aria-pressed={!selectedOwner} onClick={() => setSelectedOwner(undefined)}>Everyone</button></div><DataBoundary result={owners}>{(rows) => { const total = rows.reduce((sum, row) => sum + row.amount_minor, 0); return <div className="owner-spending">{(["David", "Ariela", "Shared"] as SpendingOwner[]).map((owner) => { const amount = rows.find((row) => row.owner === owner)?.amount_minor || 0; return <button className={`owner-${owner.toLowerCase()} ${selectedOwner === owner ? "selected" : ""}`} aria-pressed={selectedOwner === owner} key={owner} onClick={() => setSelectedOwner(selectedOwner === owner ? undefined : owner)}><span>{owner}<small>{total ? `${((amount / total) * 100).toFixed(0)}% of spending` : "No spending"}</small></span><strong>{formatMoney(amount)}</strong></button>; })}</div>; }}</DataBoundary></section>}{selectedOwner && <OwnerTransactions owner={selectedOwner} month={month} />}<section className="instrument-panel flow-panel"><div className="section-heading"><div><h2>Income and spending flow</h2><small>{splitPeople ? "Blue: David · Pink: Ariela · Purple: Shared" : "Select a stream to inspect its transactions"}</small></div><span>{month}</span></div><DataBoundary result={paths}>{(report) => report.links.length ? <CashFlowDiagram report={report} onSelect={(next) => { setSelection(next); setCategorizationFeedback(undefined); setUndoId(""); }} splitByOwner={splitPeople} /> : <Empty title="No monthly flow yet" text="Income and spending paths will appear when this month has posted transactions." />}</DataBoundary></section><section className={`instrument-panel ${selectedOwner ? `owner-${selectedOwner.toLowerCase()}` : ""}`}><div className="section-heading"><h2>Spending by category{selectedOwner ? ` · ${selectedOwner}` : ""}</h2><span>{month}</span></div><DataBoundary result={spending}>{(rows) => rows.length ? <div className="bar-list">{rows.map((row) => <div key={row.category}><span>{row.category}</span><i><b style={{ width: `${Math.max(3, (row.amount_minor / Math.max(...rows.map((item) => item.amount_minor))) * 100)}%` }} /></i><strong>{formatMoney(row.amount_minor)}</strong></div>)}</div> : <Empty title="No categorized spending" text="Categorized expenses for this month will appear here." />}</DataBoundary></section>{selection && paths.data && <FlowDrawer selection={selection} entries={paths.data.entries} categories={(categories.data || []).filter((category) => category.category_type !== "transfer")} scope={categorizationScope} feedback={categorizationFeedback} undoAvailable={Boolean(undoId)} onScopeChange={changeCategorizationScope} onCategorize={categorizeEntry} onUndo={undoCategorization} onClose={() => setSelection(undefined)} />}</Page>;
 }
 
 function OwnerTransactions({ owner, month }: { owner: SpendingOwner; month: string }) {
@@ -488,7 +532,7 @@ function FlowNodeShape({ payload, x, y, width, height, selectFlow }: SankeyNodeP
   const ownerText = node.ownerBasisPoints
     ? (["David", "Ariela", "Shared"] as SpendingOwner[]).filter((owner) => node.ownerBasisPoints?.[owner] !== undefined).map((owner) => `${owner} ${formatBasisPoints(node.ownerBasisPoints?.[owner] || 0)}`).join(" · ")
     : "";
-  const activate = () => selectFlow({ label: node.label, entry_ids: node.entry_ids });
+  const activate = () => selectFlow({ label: node.label, entry_ids: node.entry_ids, node_id: node.id });
   return <g className="flow-node">
     <rect x={x} y={y} width={Math.max(width, 12)} height={Math.max(height, 8)} fill={flowColor(node.kind)} rx={2} role="button" tabIndex={0} aria-label={`Show ${node.label} transactions`} onClick={activate} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activate(); } }} />
     <text x={labelX} y={y + Math.max(height, 12) / 2 - (ownerText ? 9 : 2)} textAnchor={labelOnLeft ? "end" : "start"}><tspan>{node.label}</tspan><tspan x={labelX} dy="1.2em" className="flow-value">{formatMoney(node.amount_minor)}{node.totalBasisPoints !== undefined ? ` · ${formatBasisPoints(node.totalBasisPoints)} of spending` : ""}</tspan>{ownerText && <tspan x={labelX} dy="1.2em" className="flow-owner-value">{ownerText}</tspan>}</text>
@@ -499,13 +543,15 @@ function FlowLinkShape({ sourceX, targetX, sourceY, targetY, sourceControlX, tar
   const link = payload as typeof payload & FlowLink & { source: typeof payload.source & FlowNode; target: typeof payload.target & FlowNode };
   const pathLabel = `${link.source.label} to ${link.target.label}`;
   const label = link.owner ? `${link.owner} · ${pathLabel}` : pathLabel;
-  const activate = () => selectFlow({ label, entry_ids: link.entry_ids });
+  const activate = () => selectFlow({ label, entry_ids: link.entry_ids, source_id: link.source.id, target_id: link.target.id, owner: link.owner });
   const visibleWidth = link.owner ? Math.max(linkWidth - 0.8, 0.8) : Math.max(linkWidth, 2);
   return <path d={`M${sourceX},${sourceY} C${sourceControlX},${sourceY} ${targetControlX},${targetY} ${targetX},${targetY}`} fill="none" stroke={link.owner ? ownerColor(link.owner) : flowColor(link.target.kind)} strokeOpacity={link.owner ? 0.62 : 0.28} strokeWidth={visibleWidth} role="button" tabIndex={0} aria-label={`Show ${label} transactions`} onClick={activate} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activate(); } }} className="flow-link" />;
 }
 
-function FlowDrawer({ selection, entries, onClose }: { selection: FlowSelection; entries: FlowEntry[]; onClose: () => void }) {
+function FlowDrawer({ selection, entries, categories, scope, feedback, undoAvailable, onScopeChange, onCategorize, onUndo, onClose }: { selection: FlowSelection; entries: FlowEntry[]; categories: Category[]; scope: CategorizationScope; feedback?: { tone: "status" | "error"; text: string }; undoAvailable: boolean; onScopeChange: (scope: CategorizationScope) => void; onCategorize: (entry: FlowEntry, categoryId: string) => Promise<boolean>; onUndo: () => Promise<void>; onClose: () => void }) {
   const closeButton = useRef<HTMLButtonElement>(null);
+  const [editingTransactionId, setEditingTransactionId] = useState<string>();
+  const [pendingTransactionId, setPendingTransactionId] = useState<string>();
   const selectedIds = new Set(selection.entry_ids);
   const selected = entries.filter((entry) => selectedIds.has(entry.id)).sort((left, right) => right.local_date.localeCompare(left.local_date));
   useEffect(() => {
@@ -514,7 +560,18 @@ function FlowDrawer({ selection, entries, onClose }: { selection: FlowSelection;
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [onClose]);
-  return <div className="flow-drawer-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="flow-drawer" role="dialog" aria-modal="true" aria-label={`${selection.label} transactions`}><div className="section-heading"><div><h2>{selection.label}</h2><small>{selected.length} contributing transaction{selected.length === 1 ? "" : "s"}</small></div><button ref={closeButton} className="quiet-button" aria-label="Close flow details" onClick={onClose}>Close</button></div>{selected.length ? <div className="flow-entries">{selected.map((entry) => <div key={entry.id}><span><strong>{entry.merchant}</strong><small>{entry.local_date} · {entry.category}{entry.notes ? ` · ${entry.notes}` : ""}</small></span><b className={entry.amount_minor < 0 ? "negative" : "positive"}>{formatMoney(entry.amount_minor, entry.currency)}</b></div>)}</div> : <Empty title="No direct transactions" text="This balancing path represents cash carried into the month rather than a transaction." />}</aside></div>;
+  async function categorize(entry: FlowEntry, categoryId: string) {
+    if (!categoryId || categoryId === entry.category_id) return;
+    setPendingTransactionId(entry.transaction_id);
+    const saved = await onCategorize(entry, categoryId);
+    setPendingTransactionId(undefined);
+    if (saved) setEditingTransactionId(undefined);
+  }
+  return <div className="flow-drawer-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="flow-drawer" role="dialog" aria-modal="true" aria-label={`${selection.label} transactions`}><div className="section-heading"><div><h2>{selection.label}</h2><small>{selected.length} contributing transaction{selected.length === 1 ? "" : "s"}</small></div><button ref={closeButton} className="quiet-button" aria-label="Close flow details" onClick={onClose}>Close</button></div>{selected.length ? <div className="flow-entries editable-drawer-entries"><div className="drawer-category-tools"><span>Apply category changes</span><CategorizationScopeControl value={scope} onChange={onScopeChange} disabled={Boolean(pendingTransactionId)} /></div>{feedback && <p className={`drawer-feedback ${feedback.tone}`} role={feedback.tone === "error" ? "alert" : "status"}>{feedback.text}{undoAvailable && feedback.tone === "status" && <button type="button" className="text-button" onClick={onUndo}>Undo</button>}</p>}{selected.map((entry) => {
+    const editing = editingTransactionId === entry.transaction_id;
+    const pending = pendingTransactionId === entry.transaction_id;
+    return <div className="drawer-transaction" key={entry.id}><span><strong>{entry.merchant}</strong><small>{entry.local_date} · {entry.category}{entry.notes ? ` · ${entry.notes}` : ""}{entry.is_cash_withdrawal ? " · withdrawal changes apply once" : ""}</small>{editing ? <span className="drawer-category-editor"><select aria-label={`Category for ${entry.merchant}`} value={entry.category_id || ""} disabled={pending} onChange={(event) => categorize(entry, event.target.value)}><option value="" disabled>Uncategorized</option>{categories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select><button type="button" className="text-button" disabled={pending} onClick={() => setEditingTransactionId(undefined)}>Cancel</button></span> : <button type="button" className="text-button" aria-label={`Edit category for ${entry.merchant}`} disabled={Boolean(pendingTransactionId && pendingTransactionId === entry.transaction_id)} onClick={() => setEditingTransactionId(entry.transaction_id)}>Edit</button>}</span><b className={entry.amount_minor < 0 ? "negative" : "positive"}>{formatMoney(entry.amount_minor, entry.currency)}</b></div>;
+  })}</div> : <Empty title="No direct transactions" text="This balancing path represents cash carried into the month rather than a transaction." />}</aside></div>;
 }
 
 function flowColor(kind: string): string {
