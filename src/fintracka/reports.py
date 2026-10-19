@@ -118,7 +118,7 @@ def cash_flow_paths(connection: sqlite3.Connection, month: str) -> dict[str, obj
                 f"""
                 SELECT id, provider_description description,
                        COALESCE(NULLIF(user_merchant, ''), NULLIF(provider_merchant, ''), provider_description) merchant,
-                       notes
+                       notes, updated_at, is_cash_withdrawal
                 FROM transactions
                 WHERE id IN ({','.join('?' for _ in transaction_ids)})
                 """,
@@ -156,10 +156,13 @@ def cash_flow_paths(connection: sqlite3.Connection, month: str) -> dict[str, obj
                 "merchant": detail["merchant"],
                 "description": detail["description"],
                 "category": entry.category or "Uncategorized",
+                "category_id": entry.category_id,
                 "amount_minor": entry.amount_minor,
                 "currency": "USD",
                 "spending_owner": entry.spending_owner if is_expense else None,
                 "notes": detail["notes"],
+                "updated_at": detail["updated_at"],
+                "is_cash_withdrawal": bool(detail["is_cash_withdrawal"]),
             }
         )
         category_key = entry.category_id or ("uncategorized-income" if is_income else "uncategorized-expense")
