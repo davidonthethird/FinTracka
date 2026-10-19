@@ -351,12 +351,18 @@ test("synthetic finance workflow edits categories from planning drawer; edits ca
   const reportRowsBefore = await reportDrawer.getByRole("button", { name: /Edit category for/ }).count();
   await reportDrawer.getByRole("button", { name: /Edit category for/ }).first().click();
   const reportCategoryEditor = reportDrawer.getByLabel(/Category for/).first();
+  await page.route("**/api/v1/reports/flow?**", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await route.continue();
+  });
   const reportCategorizeResponse = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith("/categorize") && response.status() === 200);
   await reportCategoryEditor.selectOption({ label: "Dining" });
   const reportCategorized = await reportCategorizeResponse;
   expect(reportCategorized.request().postDataJSON().scope).toBe("future");
-  await expect(reportDrawer).toBeVisible();
+  await page.waitForTimeout(100);
+  expect(await reportDrawer.isVisible()).toBe(true);
   await expect(reportDrawer.getByRole("button", { name: /Edit category for/ })).toHaveCount(reportRowsBefore - 1);
+  await page.unroute("**/api/v1/reports/flow?**");
   await expect(funFlowNode).not.toHaveText(funFlowBefore || "");
   await reportDrawer.getByRole("button", { name: "Undo" }).click();
   await expect(reportDrawer.getByRole("button", { name: /Edit category for/ })).toHaveCount(reportRowsBefore);
@@ -368,6 +374,26 @@ test("synthetic finance workflow edits categories from planning drawer; edits ca
   reportDrawer = page.getByRole("dialog", { name: "Fun transactions" });
   await expect(reportDrawer.getByRole("button", { name: "This transaction and future matches" })).toHaveAttribute("aria-pressed", "true");
   await reportDrawer.getByRole("button", { name: "Close flow details" }).click();
+  const singletonCategory = await page.evaluate(async () => {
+    const response = await fetch("/api/v1/reports/flow?month=2026-10");
+    const report = await response.json();
+    return report.nodes.find((node: { kind: string; label: string; entry_ids: string[] }) => node.kind === "expense" && node.label !== "Fun" && node.entry_ids.length === 1)?.label as string;
+  });
+  expect(singletonCategory).toBeTruthy();
+  await page.getByRole("button", { name: `Show ${singletonCategory} transactions`, exact: true }).click();
+  const singletonDrawer = page.getByRole("dialog", { name: `${singletonCategory} transactions` });
+  await singletonDrawer.getByRole("button", { name: /Edit category for/ }).click();
+  const singletonEditor = singletonDrawer.getByLabel(/Category for/);
+  const singletonReplacement = await singletonEditor.evaluate((select: HTMLSelectElement) =>
+    Array.from(select.options).find((option) => option.value && option.value !== select.value)?.value,
+  );
+  const singletonSave = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith("/categorize") && response.status() === 200);
+  await singletonEditor.selectOption(singletonReplacement!);
+  await singletonSave;
+  await expect(singletonDrawer.getByRole("button", { name: "Undo" })).toBeVisible();
+  await singletonDrawer.getByRole("button", { name: "Undo" }).click();
+  await expect(singletonDrawer.getByRole("button", { name: /Edit category for/ })).toHaveCount(1);
+  await singletonDrawer.getByRole("button", { name: "Close flow details" }).click();
   await page.getByRole("button", { name: "Show Lifestyle to Fun transactions" }).focus();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("dialog", { name: "Lifestyle to Fun transactions" })).toBeVisible();
