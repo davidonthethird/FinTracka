@@ -3,11 +3,13 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { formatMoney } from "../format";
 import { ManualCashDialog } from "../transactions/ManualCashDialog";
+import { effectiveCategorizationScope, readCategorizationScope, scopeMessage, writeCategorizationScope, type CategorizationScope } from "../transactions/categorization";
 import { CategoryDrawer } from "./CategoryDrawer";
 import { PlanningFlow } from "./PlanningFlow";
 import { coverageLabel, overallStatusLabel, planningPace, type PlanningCategory, type PlanningIncome, type PlanningSnapshot, type SpendingOwner, planningPath, visiblePlanningCategories } from "./model";
 
-type Transaction = { id: string; local_date: string; description: string; merchant?: string; amount_minor: number; currency: string; subcategory?: string };
+type Transaction = { id: string; transaction_id: string; local_date: string; description: string; merchant?: string; amount_minor: number; currency: string; category_id?: string; subcategory?: string; updated_at: string; is_cash_withdrawal: boolean };
+type CategorizeResult = { affected_count: number; undo_id: string };
 
 export function PlanningPage() {
   const [month, setMonth] = useState(() => new Date().toLocaleDateString("en-CA").slice(0, 7));
@@ -25,6 +27,9 @@ export function PlanningPage() {
   const [returnFocus, setReturnFocus] = useState<HTMLElement | null>(null);
   const [editingIncome, setEditingIncome] = useState<PlanningIncome>();
   const [cashCategoryId, setCashCategoryId] = useState<string>();
+  const [categorizationScope, setCategorizationScope] = useState<CategorizationScope>(() => readCategorizationScope());
+  const [categorizationFeedback, setCategorizationFeedback] = useState<{ tone: "status" | "error"; text: string }>();
+  const [undoId, setUndoId] = useState("");
   const incomeTitle = useRef<HTMLInputElement>(null);
   const categoryRequest = useRef(0);
   useEffect(() => {
@@ -50,15 +55,55 @@ export function PlanningPage() {
     return () => controller.abort();
   }, [month, averageMonths, splitPeople, revision]);
 
-  async function openCategory(category: PlanningCategory, trigger: HTMLElement, person?: SpendingOwner) {
-    const request = ++categoryRequest.current;
+  function openCategory(category: PlanningCategory, trigger: HTMLElement, person?: SpendingOwner) {
     setReturnFocus(trigger); setSelected(category); setDetailOwner(person);
+    setCategorizationFeedback(undefined); setUndoId("");
+  }
+  useEffect(() => {
+    if (!selected) { setTransactions([]); return; }
+    const request = ++categoryRequest.current;
+    const controller = new AbortController();
+    const selectedPerson = detailOwner || owner;
+    const ownerQuery = selectedPerson ? `?spending_owner=${encodeURIComponent(selectedPerson)}` : "";
+    api<Transaction[]>(`/planning/${month}/categories/${encodeURIComponent(selected.category_id)}/transactions${ownerQuery}`, { signal: controller.signal })
+      .then((result) => { if (request === categoryRequest.current) setTransactions(result); })
+      .catch(() => { if (!controller.signal.aborted && request === categoryRequest.current) setTransactions([]); });
+    return () => controller.abort();
+  }, [selected?.category_id, detailOwner, owner, month, revision]);
+  useEffect(() => {
+    if (!selected || !data) return;
+    const refreshed = data.categories.find((category) => category.category_id === selected.category_id);
+    if (refreshed && refreshed !== selected) setSelected(refreshed);
+  }, [data, selected]);
+  function changeCategorizationScope(scope: CategorizationScope) {
+    setCategorizationScope(scope); writeCategorizationScope(scope);
+  }
+  async function categorizeTransaction(transaction: Transaction, categoryId: string): Promise<boolean> {
     try {
-      const selectedPerson = person || owner;
-      const ownerQuery = selectedPerson ? `?spending_owner=${encodeURIComponent(selectedPerson)}` : "";
-      const result = await api<Transaction[]>(`/planning/${month}/categories/${encodeURIComponent(category.category_id)}/transactions${ownerQuery}`);
-      if (request === categoryRequest.current) setTransactions(result);
-    } catch { if (request === categoryRequest.current) setTransactions([]); }
+      const appliedScope = effectiveCategorizationScope(categorizationScope, transaction.is_cash_withdrawal);
+      const result = await api<CategorizeResult>(`/transactions/${transaction.transaction_id}/categorize`, {
+        method: "POST",
+        body: JSON.stringify({ expected_updated_at: transaction.updated_at, category_id: categoryId, scope: appliedScope }),
+      });
+      setUndoId(result.undo_id);
+      setCategorizationFeedback({ tone: "status", text: `${result.affected_count} transaction${result.affected_count === 1 ? " was" : "s were"} categorized. ${scopeMessage(appliedScope)}` });
+      setRevision((value) => value + 1);
+      return true;
+    } catch (caught) {
+      setCategorizationFeedback({ tone: "error", text: caught instanceof Error ? caught.message : "Unable to categorize transaction" });
+      return false;
+    }
+  }
+  async function undoCategorization() {
+    if (!undoId) return;
+    try {
+      const result = await api<{ restored_count: number }>(`/categorizations/${undoId}/undo`, { method: "POST", body: "{}" });
+      setUndoId("");
+      setCategorizationFeedback({ tone: "status", text: `${result.restored_count} transaction${result.restored_count === 1 ? " was" : "s were"} restored.` });
+      setRevision((value) => value + 1);
+    } catch (caught) {
+      setCategorizationFeedback({ tone: "error", text: caught instanceof Error ? caught.message : "Unable to undo categorization" });
+    }
   }
   async function saveTarget(amountMinor: number, oneMonth: boolean) {
     if (!selected) return;
@@ -122,7 +167,7 @@ export function PlanningPage() {
       {owner && <p className="owner-plan-note">Showing {owner} actuals and averages. Targets remain household targets.</p>}
       <section className="instrument-panel planning-canvas"><div className="planning-legend"><span className="average">Historical average</span><span className="target">Your target</span><span className="actual">Spent this month</span>{splitPeople && <><span className="owner-key owner-david">David</span><span className="owner-key owner-ariela">Ariela</span><span className="owner-key owner-shared">Shared</span></>}</div><PlanningFlow incomes={data.incomes} categories={visibleCategories} total={data.planned_income_total_minor} onCategory={openCategory} ownerSnapshots={splitPeople ? ownerSnapshots : undefined} /></section>
     </>}
-    {selected && data && <CategoryDrawer category={selected} context={detailOwner} coverage={coverageLabel(data)} transactions={transactions} onClose={() => { setSelected(undefined); setDetailOwner(undefined); }} returnFocus={returnFocus} onSaveTarget={saveTarget} onAddCash={() => { setCashCategoryId(selected.category_id); setSelected(undefined); }} />}
+    {selected && data && <CategoryDrawer category={selected} categories={data.categories} context={detailOwner} coverage={coverageLabel(data)} transactions={transactions} scope={categorizationScope} feedback={categorizationFeedback} undoAvailable={Boolean(undoId)} onScopeChange={changeCategorizationScope} onCategorize={categorizeTransaction} onUndo={undoCategorization} onClose={() => { setSelected(undefined); setDetailOwner(undefined); }} returnFocus={returnFocus} onSaveTarget={saveTarget} onAddCash={() => { setCashCategoryId(selected.category_id); setSelected(undefined); }} />}
     {cashCategoryId && data && <ManualCashDialog defaultCategoryId={cashCategoryId} categories={data.categories.map((category) => ({ id: category.category_id, name: category.category, category_type: "expense" }))} onClose={() => setCashCategoryId(undefined)} onSaved={() => { setCashCategoryId(undefined); setRevision((value) => value + 1); }} />}
   </div>;
 }

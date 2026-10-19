@@ -10,7 +10,7 @@ FinTracka is a single-user, local-first personal finance application for macOS. 
 - Requests up to 730 days of history whenever a new Plaid connection is created.
 - Imports older CSV history into an existing account without creating another Plaid Item.
 - Supports category and subcategory filtering, manual cash spending, transfer review, and David/Ariela/Shared spending ownership.
-- Shows monthly Planning with historical averages, targets, current spending, projected month-end spending, and category detail drawers.
+- Shows monthly Planning with historical averages, targets, current spending, projected month-end spending, and category detail drawers where transactions can be recategorized.
 - Splits Planning and Reports spending into clickable David, Ariela, and Shared views.
 - Lets you reversibly remove an individual duplicate account without disconnecting its bank or deleting history.
 - Maintains a 10%-of-Salary Tzedaka minimum in Planning.
@@ -68,12 +68,12 @@ The first browser visit exchanges a short-lived, one-use bootstrap token for an 
 2. Use **Accounts** to set nicknames, spending ownership, reporting scope, and Savings inclusion.
 3. Use **Transactions** to search, filter, correct categories/subcategories, add cash spending, and review transfers.
 4. Use **History import** to preview and import older bank CSV files into the matching account. Supported files can use Date, Transaction Date, or Posted Date; Description or Payee; and either Amount or separate Debit/Credit columns. Currency defaults to USD.
-5. Use **Planning** to enter recurring income, compare usual spending with targets and actuals, and adjust category targets.
+5. Use **Planning** to enter recurring income, compare usual spending with targets and actuals, adjust category targets, and correct transaction categories from the detail drawer. Reports flow drawers support the same `1×` (once), `→` (future), and `↔` (past and future) correction modes; FinTracka remembers the last mode selected.
 6. Use **Connections → Details → Manage bank accounts** to add another account from an existing Plaid bank connection. This uses the existing Plaid Item rather than a new Trial Item.
 
 If the same joint account appears through two bank logins, open **Accounts → Edit → Remove from FinTracka** on the duplicate. Removed accounts and their transactions are hidden from normal views, calculations, savings, and exports but remain locally stored and can be restored with **Show removed accounts**.
-6. Use **Savings** for connected savings balances and manually tracked investments or other assets.
-7. Use **Settings** for readiness checks, Google authorization, exports, backups, scheduling, and theme.
+7. Use **Savings** for connected savings balances and manually tracked investments or other assets.
+8. Use **Settings** for readiness checks, Google authorization, exports, backups, scheduling, and theme.
 
 Data and corrections persist in the local SQLite ledger when the browser or application closes. Spreadsheets are exports only; edits made in them are not imported.
 

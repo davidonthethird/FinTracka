@@ -1257,7 +1257,8 @@ def create_app(
                 f"""
                 SELECT t.id, t.provider_description,
                        COALESCE(t.user_merchant, t.provider_merchant) merchant,
-                       t.notes, t.currency, t.subcategory_id, s.name subcategory
+                       t.notes, t.currency, t.subcategory_id, s.name subcategory,
+                       t.updated_at, t.is_cash_withdrawal
                 FROM transactions t LEFT JOIN subcategories s ON s.id = t.subcategory_id
                 WHERE t.id IN ({','.join('?' for _ in identifiers)})
                 """,
@@ -1274,8 +1275,11 @@ def create_app(
                 "notes": details[entry.transaction_id]["notes"],
                 "amount_minor": entry.amount_minor,
                 "currency": details[entry.transaction_id]["currency"],
+                "category_id": entry.category_id,
                 "subcategory_id": details[entry.transaction_id]["subcategory_id"],
                 "subcategory": details[entry.transaction_id]["subcategory"],
+                "updated_at": details[entry.transaction_id]["updated_at"],
+                "is_cash_withdrawal": bool(details[entry.transaction_id]["is_cash_withdrawal"]),
             }
             for index, entry in enumerate(entries)
         ]

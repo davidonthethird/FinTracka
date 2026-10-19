@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("synthetic finance workflow", async ({ page }) => {
+test("synthetic finance workflow edits categories from planning drawer; edits categories from reports drawer", async ({ page }) => {
   const responseErrors: string[] = [];
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
@@ -74,7 +74,7 @@ test("synthetic finance workflow", async ({ page }) => {
   await accountFilterResponse;
   await expect(page.locator("tbody tr")).toHaveCount(100);
   await page.getByLabel("Filter by account").selectOption("");
-  await page.getByLabel("Correction scope").selectOption("one_time");
+  await page.getByRole("button", { name: "This transaction only" }).click();
   const deepCategory = page.locator(".category-cell select").nth(70);
   await deepCategory.scrollIntoViewIfNeeded();
   const scrollBeforeCategoryChange = await page.evaluate(() => window.scrollY);
@@ -93,7 +93,7 @@ test("synthetic finance workflow", async ({ page }) => {
   await categoryRefresh;
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(scrollBeforeCategoryChange - 200);
   await page.unroute("**/api/v1/transactions?**");
-  await page.getByLabel("Correction scope").selectOption("past_and_future");
+  await page.getByRole("button", { name: "Matching past and future transactions" }).click();
   await expect(page.getByText("1 possible transfer")).toBeVisible();
   await page.getByLabel("Search transactions").fill("TRANSFER");
   await page.getByRole("button", { name: "Search" }).click();
@@ -105,7 +105,7 @@ test("synthetic finance workflow", async ({ page }) => {
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.getByLabel("Subcategory for LOWE'S")).toHaveValue(/.+/);
   await expect(page.getByLabel("Subcategory for LOWE'S").locator("option:checked")).toHaveText("Home improvement");
-  await page.getByLabel("Correction scope").selectOption("future");
+  await page.getByRole("button", { name: "This transaction and future matches" }).click();
   await page.getByRole("button", { name: "Add custom subcategory" }).click();
   await page.getByLabel("New subcategory name").fill("Tools");
   await page.getByRole("button", { name: "Create and choose" }).click();
@@ -118,7 +118,7 @@ test("synthetic finance workflow", async ({ page }) => {
   await expect(page.getByLabel("Subcategory for MACY'S").locator("option:checked")).toHaveText("Clothing");
   await page.getByLabel("Search transactions").fill("ATM WITHDRAWAL");
   await page.getByRole("button", { name: "Search" }).click();
-  await page.getByLabel("Correction scope").selectOption("past_and_future");
+  await page.getByRole("button", { name: "Matching past and future transactions" }).click();
   await page.getByLabel("Subcategory for ATM WITHDRAWAL").selectOption({ label: "Cash withdrawal" });
   await expect(page.getByRole("status")).toContainText("This choice applies once");
   await page.getByLabel("Search transactions").fill("");
@@ -148,7 +148,7 @@ test("synthetic finance workflow", async ({ page }) => {
   await page.getByLabel("Filter spending owner").selectOption("David");
   await expect(page.locator("tbody tr")).toHaveCount(1);
   await page.getByLabel("Filter spending owner").selectOption("");
-  await page.getByLabel("Correction scope").selectOption("one_time");
+  await page.getByRole("button", { name: "This transaction only" }).click();
   await page.locator(".category-cell select").first().selectOption({ label: "Dining" });
   await expect(page.getByRole("status")).toContainText("This choice applies once");
   await page.getByRole("button", { name: "Undo" }).click();
@@ -272,13 +272,48 @@ test("synthetic finance workflow", async ({ page }) => {
   await page.getByRole("button", { name: /Housing/ }).click();
   await expect(page.getByRole("dialog", { name: "Housing planning details" })).toBeVisible();
   await page.getByLabel("Monthly target").fill("123.45");
-  await page.getByLabel("Apply").selectOption("month");
+  await page.getByRole("dialog", { name: "Housing planning details" }).locator('select[name="scope"]').selectOption("month");
   await page.getByRole("button", { name: "Save target" }).click();
   await page.getByRole("button", { name: /Tzedaka/ }).click();
   await expect(page.getByLabel("Monthly target")).toHaveAttribute("min", "590.00");
   await page.getByRole("button", { name: "Add Tzedaka cash spending" }).click();
   await expect(page.getByRole("dialog", { name: "Add cash spending" }).locator('select[name="category"]')).toHaveValue(/.+/);
   await page.keyboard.press("Escape");
+
+  await page.getByLabel("Spending owner").selectOption("");
+  const shoppingLane = page.getByRole("button", { name: /Shopping/ });
+  await shoppingLane.click();
+  const planningDrawer = page.getByRole("dialog", { name: "Shopping planning details" });
+  await planningDrawer.getByRole("button", { name: "Matching past and future transactions" }).click();
+  const drawerRowsBefore = await planningDrawer.getByRole("button", { name: /Edit category for/ }).count();
+  const firstEdit = planningDrawer.getByRole("button", { name: /Edit category for/ }).first();
+  await firstEdit.click();
+  const categoryEditor = planningDrawer.getByLabel(/Category for/).first();
+  let rejectOnce = true;
+  await page.route("**/api/v1/transactions/*/categorize", async (route) => {
+    if (rejectOnce) {
+      rejectOnce = false;
+      return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ detail: "transaction changed; refresh and retry" }) });
+    }
+    return route.continue();
+  });
+  await categoryEditor.selectOption({ label: "Dining" });
+  await expect(planningDrawer.getByRole("alert")).toContainText("transaction changed");
+  expect(responseErrors.pop()).toMatch(/^409 .*\/categorize$/);
+  expect(consoleErrors.pop()).toContain("409 (Conflict)");
+  await expect(categoryEditor).toBeVisible();
+  const scrollBeforeDrawerSave = await page.evaluate(() => window.scrollY);
+  const categorizeResponse = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith("/categorize") && response.status() === 200);
+  await categoryEditor.selectOption({ label: "Fun" });
+  const categorized = await categorizeResponse;
+  expect(categorized.request().postDataJSON().scope).toBe("past_and_future");
+  await expect(planningDrawer.getByRole("status")).toContainText(/transaction.*categorized/i);
+  await expect(planningDrawer).toBeVisible();
+  await expect(planningDrawer.getByRole("button", { name: /Edit category for/ })).toHaveCount(drawerRowsBefore - 1);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(scrollBeforeDrawerSave);
+  await expect(page.getByRole("button", { name: /Shopping/ })).toHaveCount(0);
+  await page.unroute("**/api/v1/transactions/*/categorize");
+  await planningDrawer.getByRole("button", { name: "Close" }).click();
 
   await page.getByRole("link", { name: "Transactions" }).click();
   await page.getByRole("button", { name: "Add cash spending" }).click();
@@ -307,9 +342,58 @@ test("synthetic finance workflow", async ({ page }) => {
   await expect(page.getByRole("status")).toContainText("Envelope allocation saved");
   await page.getByRole("link", { name: "Reports" }).click();
   await expect(page.getByRole("heading", { name: "Income and spending flow" })).toBeVisible();
+  const funFlowButton = page.getByRole("button", { name: /Show Fun transactions/ });
+  const funFlowNode = funFlowButton.locator("..");
+  const funFlowBefore = await funFlowNode.textContent();
+  await funFlowButton.click();
+  let reportDrawer = page.getByRole("dialog", { name: "Fun transactions" });
+  await reportDrawer.getByRole("button", { name: "This transaction and future matches" }).click();
+  const reportRowsBefore = await reportDrawer.getByRole("button", { name: /Edit category for/ }).count();
+  await reportDrawer.getByRole("button", { name: /Edit category for/ }).first().click();
+  const reportCategoryEditor = reportDrawer.getByLabel(/Category for/).first();
+  await page.route("**/api/v1/reports/flow?**", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await route.continue();
+  });
+  const reportCategorizeResponse = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith("/categorize") && response.status() === 200);
+  await reportCategoryEditor.selectOption({ label: "Dining" });
+  const reportCategorized = await reportCategorizeResponse;
+  expect(reportCategorized.request().postDataJSON().scope).toBe("future");
+  await page.waitForTimeout(100);
+  expect(await reportDrawer.isVisible()).toBe(true);
+  await expect(reportDrawer.getByRole("button", { name: /Edit category for/ })).toHaveCount(reportRowsBefore - 1);
+  await page.unroute("**/api/v1/reports/flow?**");
+  await expect(funFlowNode).not.toHaveText(funFlowBefore || "");
+  await reportDrawer.getByRole("button", { name: "Undo" }).click();
+  await expect(reportDrawer.getByRole("button", { name: /Edit category for/ })).toHaveCount(reportRowsBefore);
+  await expect(funFlowNode).toHaveText(funFlowBefore || "");
+  await reportDrawer.getByRole("button", { name: "Close flow details" }).click();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Income and spending flow" })).toBeVisible();
   await page.getByRole("button", { name: /Show Fun transactions/ }).click();
-  await expect(page.getByRole("dialog", { name: "Fun transactions" })).toBeVisible();
-  await page.getByRole("button", { name: "Close flow details" }).click();
+  reportDrawer = page.getByRole("dialog", { name: "Fun transactions" });
+  await expect(reportDrawer.getByRole("button", { name: "This transaction and future matches" })).toHaveAttribute("aria-pressed", "true");
+  await reportDrawer.getByRole("button", { name: "Close flow details" }).click();
+  const singletonCategory = await page.evaluate(async () => {
+    const response = await fetch("/api/v1/reports/flow?month=2026-10");
+    const report = await response.json();
+    return report.nodes.find((node: { kind: string; label: string; entry_ids: string[] }) => node.kind === "expense" && node.label !== "Fun" && node.entry_ids.length === 1)?.label as string;
+  });
+  expect(singletonCategory).toBeTruthy();
+  await page.getByRole("button", { name: `Show ${singletonCategory} transactions`, exact: true }).click();
+  const singletonDrawer = page.getByRole("dialog", { name: `${singletonCategory} transactions` });
+  await singletonDrawer.getByRole("button", { name: /Edit category for/ }).click();
+  const singletonEditor = singletonDrawer.getByLabel(/Category for/);
+  const singletonReplacement = await singletonEditor.evaluate((select: HTMLSelectElement) =>
+    Array.from(select.options).find((option) => option.value && option.value !== select.value)?.value,
+  );
+  const singletonSave = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith("/categorize") && response.status() === 200);
+  await singletonEditor.selectOption(singletonReplacement!);
+  await singletonSave;
+  await expect(singletonDrawer.getByRole("button", { name: "Undo" })).toBeVisible();
+  await singletonDrawer.getByRole("button", { name: "Undo" }).click();
+  await expect(singletonDrawer.getByRole("button", { name: /Edit category for/ })).toHaveCount(1);
+  await singletonDrawer.getByRole("button", { name: "Close flow details" }).click();
   await page.getByRole("button", { name: "Show Lifestyle to Fun transactions" }).focus();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("dialog", { name: "Lifestyle to Fun transactions" })).toBeVisible();
@@ -345,7 +429,7 @@ test("synthetic finance workflow", async ({ page }) => {
   await expect(page.getByRole("status")).toContainText("Backup succeeded", { timeout: 15_000 });
   await expect(page.getByRole("heading", { name: "Live-data readiness" })).toBeVisible();
   await expect(page.getByText("Off-device backup", { exact: true })).toBeVisible();
-  expect(await page.evaluate(() => Object.keys(localStorage).sort())).toEqual(["fintracka-theme"]);
+  expect(await page.evaluate(() => Object.keys(localStorage).sort())).toEqual(["fintracka-categorization-scope", "fintracka-theme"]);
 
   let googleAuthorized = false;
   let scheduleInstalled = false;

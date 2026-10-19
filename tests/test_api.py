@@ -726,6 +726,19 @@ def test_cash_flow_report_includes_clickable_transaction_drilldowns(tmp_path: Pa
     assert groceries["entry_ids"]
     assert {entry["id"] for entry in report["entries"]} >= set(groceries["entry_ids"])
     assert all(entry["currency"] == "USD" for entry in report["entries"])
+    assert all(
+        {"category_id", "updated_at", "is_cash_withdrawal"} <= set(entry)
+        for entry in report["entries"]
+    )
+    connection = connect(path)
+    first = report["entries"][0]
+    stored = connection.execute(
+        "SELECT updated_at, is_cash_withdrawal FROM transactions WHERE id = ?",
+        (first["transaction_id"],),
+    ).fetchone()
+    assert first["updated_at"] == stored["updated_at"]
+    assert first["is_cash_withdrawal"] is bool(stored["is_cash_withdrawal"])
+    connection.close()
 
 
 def test_concurrent_account_edits_allow_only_one_expected_version(
@@ -1453,6 +1466,9 @@ def test_planning_api_includes_forecast_coverage_and_subcategory_totals(tmp_path
             f"/api/v1/planning/2026-10/categories/{shopping}/transactions"
         ).json()
         assert details[0]["subcategory"] == "Clothing"
+        assert details[0]["category_id"] == shopping
+        assert details[0]["updated_at"]
+        assert details[0]["is_cash_withdrawal"] is False
 
 
 def test_savings_api_manages_assets_and_account_scope(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { api } from "../api";
+import { effectiveCategorizationScope, type CategorizationScope } from "./categorization";
 
 export type Subcategory = {
   id: string;
@@ -10,7 +11,6 @@ export type Subcategory = {
   category_name: string;
 };
 
-type Scope = "one_time" | "future" | "past_and_future";
 type EditableTransaction = {
   id: string;
   merchant?: string;
@@ -32,8 +32,8 @@ export function SubcategoryEditor({
 }: {
   transaction: EditableTransaction;
   category?: Category;
-  scope: Scope;
-  onSaved: (result: AssignmentResult, appliedScope: Scope) => void;
+  scope: CategorizationScope;
+  onSaved: (result: AssignmentResult, appliedScope: CategorizationScope) => void;
 }) {
   const [items, setItems] = useState<Subcategory[]>([]);
   const [creating, setCreating] = useState(false);
@@ -53,7 +53,7 @@ export function SubcategoryEditor({
 
   async function assign(subcategoryId: string) {
     if (!subcategoryId) return;
-    const appliedScope: Scope = transaction.is_cash_withdrawal ? "one_time" : scope;
+    const appliedScope = effectiveCategorizationScope(scope, transaction.is_cash_withdrawal);
     try {
       setError("");
       const result = await api<AssignmentResult>(`/transactions/${transaction.id}/subcategory`, {
