@@ -100,3 +100,40 @@ a { color: inherit; }
   outline: 3px solid var(--teal-soft);
   outline-offset: 2px;
 }
+.drawer-category-tools,
+.drawer-category-editor,
+.drawer-feedback {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+.drawer-category-tools {
+  justify-content: space-between;
+  padding: 0.85rem 0;
+}
+.drawer-category-tools > span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.drawer-feedback {
+  justify-content: space-between;
+  margin: 0;
+  padding: 0.7rem 0.85rem;
+  border-left: 3px solid var(--teal);
+  background: var(--teal-soft);
+}
+.drawer-feedback.error {
+  border-left-color: var(--red);
+  background: var(--red-soft);
+}
+.drawer-transaction > span {
+  min-width: 0;
+}
+.drawer-category-editor {
+  margin-top: 0.45rem;
+}
+.drawer-category-editor select {
+  min-width: 11rem;
+  max-width: 100%;
+}
