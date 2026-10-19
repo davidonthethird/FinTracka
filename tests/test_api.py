@@ -17,6 +17,7 @@ from fintracka.api import create_app
 from fintracka.db import connect, migrate
 from fintracka.ids import new_id
 from fintracka.jobs import recover_interrupted_jobs
+from fintracka.ledger import confirm_transfer
 from fintracka.google_sheets import configure_google
 from fintracka.keychain import KeychainSecrets
 from fintracka.plaid_adapter import ConnectedItem, InstitutionInfo, LinkSession
@@ -1199,13 +1200,17 @@ def test_withdrawal_api_exposes_marker_and_forces_single_categorization(tmp_path
         assert result.status_code == 200 and result.json()["affected_count"] == 1
 
 
-def test_transaction_api_hides_transfers_by_default_and_filter_survives_search_and_cursor(
+def test_transaction_api_hides_only_confirmed_transfers_by_default(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "ledger.sqlite3"
     connection = connect(path)
     migrate(connection)
-    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    connection_id = create_synthetic_ledger(connection, count=1, demo=True)[0]
+    connection.execute(
+        "INSERT INTO accounts (id, connection_id, provider_account_id, name, type, subtype, nature, currency, created_at, updated_at) VALUES (?, ?, 'savings-api', 'Savings API', 'depository', 'savings', 'asset', 'USD', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')",
+        (new_id(), connection_id),
+    )
     rows = (
         NormalizedTransaction(
             "ordinary", "checking-1", "2026-10-13T12:00:00Z", -1_000, "USD", "BOOK STORE"
@@ -1219,18 +1224,31 @@ def test_transaction_api_hides_transfers_by_default_and_filter_survives_search_a
             provider_category_primary="TRANSFER_OUT",
             provider_category_detailed="TRANSFER_OUT_CREDIT_CARD_PAYMENT",
         ),
+        NormalizedTransaction(
+            "paired-out", "checking-1", "2026-10-10T12:00:00Z", -4_000, "USD", "OWN TRANSFER OUT",
+            provider_category_primary="TRANSFER_OUT",
+        ),
+        NormalizedTransaction(
+            "paired-in", "savings-api", "2026-10-10T13:00:00Z", 4_000, "USD", "OWN TRANSFER IN",
+            provider_category_primary="TRANSFER_IN",
+        ),
     )
     apply_batch(connection, connection_id, SyncBatch(added=rows, next_checkpoint="filters"))
+    ids = {
+        row["provider_description"]: row["id"]
+        for row in connection.execute("SELECT id, provider_description FROM transactions")
+    }
+    confirm_transfer(connection, ids["OWN TRANSFER OUT"], ids["OWN TRANSFER IN"])
     connection.close()
     app = create_app(path, bootstrap_token="bootstrap")
 
     with TestClient(app) as client:
         client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
         ordinary = client.get("/api/v1/transactions").json()["items"]
-        assert [row["description"] for row in ordinary] == ["BOOK STORE"]
+        assert [row["description"] for row in ordinary] == ["BOOK STORE", "SAVINGS TRANSFER", "CARD PAYMENT"]
         assert client.get(
             "/api/v1/transactions", params={"search": "PAYMENT"}
-        ).json()["items"] == []
+        ).json()["items"][0]["description"] == "CARD PAYMENT"
         included = client.get(
             "/api/v1/transactions", params={"include_transfers": True, "limit": 1}
         ).json()
@@ -1249,6 +1267,44 @@ def test_transaction_api_hides_transfers_by_default_and_filter_survives_search_a
             params={"include_transfers": True, "search": "PAYMENT"},
         ).json()["items"]
         assert [row["description"] for row in searched] == ["CARD PAYMENT"]
+
+
+def test_rejecting_transfer_candidate_keeps_transactions_visible(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1, demo=True)[0]
+    connection.execute(
+        "INSERT INTO accounts (id, connection_id, provider_account_id, name, type, subtype, nature, currency, created_at, updated_at) VALUES (?, ?, 'savings-reject', 'Savings', 'depository', 'savings', 'asset', 'USD', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')",
+        (new_id(), connection_id),
+    )
+    apply_batch(
+        connection,
+        connection_id,
+        SyncBatch(
+            added=(
+                NormalizedTransaction("reject-out", "checking-1", "2026-10-05T12:00:00Z", -50_000, "USD", "ZELLE TO DEBBIE"),
+                NormalizedTransaction("reject-in", "savings-reject", "2026-10-05T13:00:00Z", 50_000, "USD", "ZELLE FROM ANOTHER PERSON"),
+            ),
+            next_checkpoint="reject-candidate",
+        ),
+    )
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+        candidate = client.get("/api/v1/transfers/candidates").json()[0]
+        response = client.post(
+            f"/api/v1/transfers/{candidate['transaction_a']}/reject",
+            json={"transaction_a": candidate["transaction_a"], "transaction_b": candidate["transaction_b"]},
+            headers=headers,
+        )
+        assert response.status_code == 201
+        assert client.get("/api/v1/transfers/candidates").json() == []
+        assert len(client.get("/api/v1/transactions").json()["items"]) == 2
 
 
 def test_subcategory_api_validates_revisions_security_and_parent_relationships(

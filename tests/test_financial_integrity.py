@@ -150,6 +150,61 @@ def test_transfer_candidates_require_opposite_amounts_and_confirmation_is_unique
         confirm_transfer(ledger, pair.transaction_a, _transaction_id(ledger, "same-sign"))
 
 
+def test_confirmed_counterparty_pattern_auto_confirms_matching_history_only(
+    ledger: sqlite3.Connection,
+) -> None:
+    connection_id = ledger.execute(
+        "SELECT id FROM provider_connections WHERE provider = 'synthetic'"
+    ).fetchone()[0]
+    _add_account(ledger, connection_id, "savings-extra")
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(
+            added=(
+                NormalizedTransaction("learn-out-1", "checking-1", "2026-09-01T12:00:00Z", -20_000, "USD", "ZELLE TO FAMILY SAVINGS"),
+                NormalizedTransaction("learn-in-1", "savings-extra", "2026-09-01T13:00:00Z", 20_000, "USD", "ZELLE FROM DAVID"),
+                NormalizedTransaction("learn-out-2", "checking-1", "2026-10-01T12:00:00Z", -30_000, "USD", "ZELLE TO FAMILY SAVINGS"),
+                NormalizedTransaction("learn-in-2", "savings-extra", "2026-10-02T13:00:00Z", 30_000, "USD", "ZELLE FROM DAVID"),
+                NormalizedTransaction("other-out", "checking-1", "2026-10-03T12:00:00Z", -40_000, "USD", "ZELLE TO DEBBIE YOUNG ISRAEL"),
+                NormalizedTransaction("other-in", "savings-extra", "2026-10-03T13:00:00Z", 40_000, "USD", "ZELLE FROM SOMEONE ELSE"),
+            ),
+            next_checkpoint="learned-transfers",
+        ),
+    )
+
+    confirm_transfer(
+        ledger,
+        _transaction_id(ledger, "learn-out-1"),
+        _transaction_id(ledger, "learn-in-1"),
+    )
+
+    confirmed = ledger.execute(
+        "SELECT COUNT(*) FROM transfer_links WHERE status = 'confirmed'"
+    ).fetchone()[0]
+    assert confirmed == 2
+    remaining = {
+        frozenset((candidate.external_a, candidate.external_b))
+        for candidate in transfer_candidates(ledger)
+    }
+    assert frozenset(("other-out", "other-in")) in remaining
+
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(
+            added=(
+                NormalizedTransaction("learn-out-3", "checking-1", "2026-10-10T12:00:00Z", -60_000, "USD", "ZELLE TO FAMILY SAVINGS"),
+                NormalizedTransaction("learn-in-3", "savings-extra", "2026-10-11T13:00:00Z", 60_000, "USD", "ZELLE FROM DAVID"),
+            ),
+            next_checkpoint="future-learned-transfer",
+        ),
+    )
+    assert ledger.execute(
+        "SELECT COUNT(*) FROM transfer_links WHERE status = 'confirmed'"
+    ).fetchone()[0] == 3
+
+
 def test_reconciliation_is_exact_to_one_cent(ledger: sqlite3.Connection) -> None:
     account_id = ledger.execute("SELECT id FROM accounts WHERE provider_account_id = 'checking-1'").fetchone()[0]
     activity = ledger.execute(

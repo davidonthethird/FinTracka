@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from fintracka.dates import local_date, utc_instant
 from fintracka.ids import new_id
-from fintracka.ledger import apply_rules
+from fintracka.ledger import apply_rules, confirm_learned_transfers
 from fintracka.providers import NormalizedAccount, NormalizedBalance, NormalizedTransaction, SyncBatch
 from fintracka.subcategories import automatic_subcategory_id, automatic_subcategory_source
 
@@ -48,7 +48,9 @@ def apply_batch(
         for external_id in batch.removed:
             _remove_transaction(connection, provider, connection_id, external_id, now)
         _restore_posted_aliases(connection, provider, connection_id, now)
+        _reclassify_provider_transfers(connection, connection_id, now)
         apply_rules(connection)
+        confirm_learned_transfers(connection)
         connection.execute(
             """
             INSERT INTO provider_checkpoints (connection_id, cursor, updated_at)
@@ -328,10 +330,8 @@ def _provider_category_id(
     category_name: str | None = None
     if is_cash_withdrawal if is_cash_withdrawal is not None else transaction.is_cash_withdrawal:
         category_name = "Other"
-    elif "CREDIT_CARD_PAYMENT" in text:
-        category_name = "Credit card payment"
-    elif primary.startswith("TRANSFER") or "TRANSFER_" in text:
-        category_name = "Transfer"
+    elif "CREDIT_CARD_PAYMENT" in text or primary.startswith("TRANSFER") or "TRANSFER_" in text:
+        category_name = "Other income" if transaction.amount_minor > 0 else "Other"
     elif primary == "INCOME" or primary.startswith("INCOME_"):
         category_name = "Salary" if any(word in detailed for word in ("WAGE", "PAYROLL")) else "Other income"
     elif "TAX" in detailed:
@@ -442,6 +442,37 @@ def _restore_posted_aliases(
             (now, transaction_id),
         )
         _audit(connection, "provider_alias_restore", "transaction", transaction_id, now)
+
+
+def _reclassify_provider_transfers(
+    connection: sqlite3.Connection, connection_id: str, now: str
+) -> None:
+    categories = {
+        row["name"]: row["id"]
+        for row in connection.execute(
+            "SELECT id, name FROM categories WHERE name IN ('Other', 'Other income')"
+        )
+    }
+    if set(categories) != {"Other", "Other income"}:
+        return
+    rows = connection.execute(
+        """
+        SELECT t.id, t.amount_minor
+        FROM transactions t
+        JOIN accounts a ON a.id = t.account_id
+        JOIN categories c ON c.id = t.category_id
+        WHERE a.connection_id = ? AND t.category_source = 'provider'
+          AND c.category_type = 'transfer'
+        """,
+        (connection_id,),
+    ).fetchall()
+    for row in rows:
+        category_id = categories["Other income" if row["amount_minor"] > 0 else "Other"]
+        connection.execute(
+            "UPDATE transactions SET category_id = ?, category_source = 'provider', subcategory_id = NULL, subcategory_source = NULL, updated_at = ? WHERE id = ?",
+            (category_id, now, row["id"]),
+        )
+        _audit(connection, "provider_transfer_reclassify", "transaction", row["id"], now)
 
 
 def _account_id(connection: sqlite3.Connection, connection_id: str, external_id: str) -> str:

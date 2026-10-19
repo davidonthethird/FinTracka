@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -387,12 +388,20 @@ def transfer_candidates(connection: sqlite3.Connection) -> list[TransferCandidat
         ORDER BY t.local_date, t.id
         """
     ).fetchall()
+    rejected = {
+        (row["transaction_a_id"], row["transaction_b_id"])
+        for row in connection.execute(
+            "SELECT transaction_a_id, transaction_b_id FROM transfer_links WHERE status = 'rejected'"
+        )
+    }
     candidates: list[TransferCandidate] = []
     for index, left in enumerate(rows):
         for right in rows[index + 1 :]:
             if left["account_id"] == right["account_id"] or left["currency"] != right["currency"]:
                 continue
             if left["amount_minor"] != -right["amount_minor"]:
+                continue
+            if tuple(sorted((left["id"], right["id"]))) in rejected:
                 continue
             days = abs((date.fromisoformat(left["local_date"]) - date.fromisoformat(right["local_date"])).days)
             if days <= 3:
@@ -431,15 +440,137 @@ def confirm_transfer(connection: sqlite3.Connection, transaction_a: str, transac
         raise IntegrityError("transfer transactions must use different owned accounts")
     if rows[0]["currency"] != rows[1]["currency"] or rows[0]["amount_minor"] != -rows[1]["amount_minor"]:
         raise IntegrityError("transfer amounts must be exact opposites")
+    link_id = _create_transfer_link(
+        connection,
+        transaction_a,
+        transaction_b,
+        status="confirmed",
+        reason="user confirmed exact owned-account match",
+        actor="user",
+        action="transfer_confirm",
+    )
+    confirm_learned_transfers(connection)
+    return link_id
+
+
+def reject_transfer(connection: sqlite3.Connection, transaction_a: str, transaction_b: str) -> str:
+    if transaction_a == transaction_b:
+        raise IntegrityError("a transfer requires two transactions")
+    candidate = next(
+        (
+            item
+            for item in transfer_candidates(connection)
+            if {item.transaction_a, item.transaction_b} == {transaction_a, transaction_b}
+        ),
+        None,
+    )
+    if candidate is None:
+        raise IntegrityError("transfer candidate not found")
+    return _create_transfer_link(
+        connection,
+        transaction_a,
+        transaction_b,
+        status="rejected",
+        reason="user kept transactions visible",
+        actor="user",
+        action="transfer_reject",
+    )
+
+
+def confirm_learned_transfers(connection: sqlite3.Connection) -> int:
+    learned = {
+        signature
+        for row in connection.execute(
+            "SELECT transaction_a_id, transaction_b_id FROM transfer_links WHERE status = 'confirmed'"
+        )
+        if (signature := _transfer_signature(connection, row["transaction_a_id"], row["transaction_b_id"]))
+    }
+    if not learned:
+        return 0
+    claimed = {
+        identifier
+        for row in connection.execute(
+            "SELECT transaction_a_id, transaction_b_id FROM transfer_links WHERE status = 'confirmed'"
+        )
+        for identifier in (row["transaction_a_id"], row["transaction_b_id"])
+    }
+    count = 0
+    for candidate in transfer_candidates(connection):
+        if candidate.transaction_a in claimed or candidate.transaction_b in claimed:
+            continue
+        signature = _transfer_signature(connection, candidate.transaction_a, candidate.transaction_b)
+        if signature not in learned:
+            continue
+        _create_transfer_link(
+            connection,
+            candidate.transaction_a,
+            candidate.transaction_b,
+            status="confirmed",
+            reason="learned from confirmed account and counterparty pattern",
+            actor="system",
+            action="transfer_auto_confirm",
+        )
+        claimed.update((candidate.transaction_a, candidate.transaction_b))
+        count += 1
+    return count
+
+
+def _create_transfer_link(
+    connection: sqlite3.Connection,
+    transaction_a: str,
+    transaction_b: str,
+    *,
+    status: str,
+    reason: str,
+    actor: str,
+    action: str,
+) -> str:
     first, second = sorted((transaction_a, transaction_b))
     link_id = new_id()
     now = _now()
     connection.execute(
-        "INSERT INTO transfer_links (id, transaction_a_id, transaction_b_id, status, confidence, reason, created_at, updated_at) VALUES (?, ?, ?, 'confirmed', 'high', 'user confirmed exact owned-account match', ?, ?)",
-        (link_id, first, second, now, now),
+        "INSERT INTO transfer_links (id, transaction_a_id, transaction_b_id, status, confidence, reason, created_at, updated_at) VALUES (?, ?, ?, ?, 'high', ?, ?, ?)",
+        (link_id, first, second, status, reason, now, now),
     )
-    _audit(connection, "user", "transfer_confirm", "transfer_link", link_id, now)
+    _audit(connection, actor, action, "transfer_link", link_id, now)
     return link_id
+
+
+def _transfer_signature(
+    connection: sqlite3.Connection, transaction_a: str, transaction_b: str
+) -> tuple[str, str, str, str] | None:
+    rows = connection.execute(
+        """
+        SELECT id, account_id, amount_minor,
+               COALESCE(NULLIF(user_merchant, ''), NULLIF(provider_merchant, ''), provider_description) label
+        FROM transactions WHERE id IN (?, ?)
+        """,
+        (transaction_a, transaction_b),
+    ).fetchall()
+    if len(rows) != 2:
+        return None
+    outgoing = next((row for row in rows if row["amount_minor"] < 0), None)
+    incoming = next((row for row in rows if row["amount_minor"] > 0), None)
+    if outgoing is None or incoming is None:
+        return None
+    outgoing_label = _normalized_counterparty(outgoing["label"])
+    incoming_label = _normalized_counterparty(incoming["label"])
+    if not outgoing_label or not incoming_label:
+        return None
+    return (
+        outgoing["account_id"],
+        incoming["account_id"],
+        outgoing_label,
+        incoming_label,
+    )
+
+
+def _normalized_counterparty(label: str) -> str:
+    noise = {"ACH", "CREDIT", "DEBIT", "FROM", "MOBILE", "ONLINE", "PAYMENT", "TO", "TRANSFER", "WEB", "ZELLE"}
+    return " ".join(
+        word for word in re.findall(r"[A-Z0-9]+", label.upper())
+        if word not in noise and not word.isdigit()
+    )
 
 
 def reconcile(

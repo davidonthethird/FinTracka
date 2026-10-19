@@ -56,13 +56,13 @@ def cash_flow(
         account_flag="include_overview",
         account_nature=account_nature,
     ):
-        if entry.category_type == "transfer" or entry.reporting_behavior == "excluded":
+        if entry.reporting_behavior == "excluded" and entry.category_type != "transfer":
             continue
         if entry.category_type == "income" or entry.reporting_behavior == "income" or (
             entry.category_id is None and entry.amount_minor > 0
         ):
             income += entry.amount_minor
-        elif entry.category_type == "expense" or entry.amount_minor < 0:
+        elif entry.category_type in {"expense", "transfer"} or entry.amount_minor < 0:
             spending -= entry.amount_minor
     return CashFlow(income, spending, income - spending)
 
@@ -75,7 +75,9 @@ def spending_by_category(
     start, end = month_bounds(month)
     totals: dict[tuple[str | None, str], int] = {}
     for entry in ledger_entries(connection, start, end, account_flag="include_overview"):
-        if entry.category_type != "expense" or entry.reporting_behavior == "excluded":
+        if entry.category_type not in {"expense", "transfer"} or (
+            entry.reporting_behavior == "excluded" and entry.category_type != "transfer"
+        ):
             continue
         if spending_owner and entry.spending_owner != spending_owner:
             continue
@@ -92,7 +94,9 @@ def spending_by_owner(connection: sqlite3.Connection, month: str) -> list[dict[s
     start, end = month_bounds(month)
     totals = {"David": 0, "Ariela": 0, "Shared": 0}
     for entry in ledger_entries(connection, start, end, account_flag="include_overview"):
-        if entry.category_type != "expense" or entry.reporting_behavior == "excluded":
+        if entry.category_type not in {"expense", "transfer"} or (
+            entry.reporting_behavior == "excluded" and entry.category_type != "transfer"
+        ):
             continue
         totals[entry.spending_owner] -= entry.amount_minor
     return [
@@ -134,12 +138,12 @@ def cash_flow_paths(connection: sqlite3.Connection, month: str) -> dict[str, obj
     income: dict[tuple[str, str], dict[str, object]] = {}
     expenses: dict[tuple[str, str, str, str], dict[str, object]] = {}
     for index, entry in enumerate(ledger):
-        if entry.category_type == "transfer" or entry.reporting_behavior == "excluded":
+        if entry.reporting_behavior == "excluded" and entry.category_type != "transfer":
             continue
         is_income = entry.category_type == "income" or entry.reporting_behavior == "income" or (
             entry.category_id is None and entry.amount_minor > 0
         )
-        is_expense = not is_income and (entry.category_type == "expense" or entry.amount_minor < 0)
+        is_expense = not is_income and (entry.category_type in {"expense", "transfer"} or entry.amount_minor < 0)
         if not is_income and not is_expense:
             continue
         detail = details[entry.transaction_id]

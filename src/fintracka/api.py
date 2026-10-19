@@ -52,6 +52,7 @@ from fintracka.ledger import (
     create_rule,
     preview_rules,
     reconcile,
+    reject_transfer,
     set_splits,
     transfer_candidates,
     undo_categorization,
@@ -704,7 +705,7 @@ def create_app(
             clauses.append("t.user_archived = 0")
         parameters: list[object] = []
         if not include_transfers:
-            clauses.append("COALESCE(c.category_type, '') != 'transfer'")
+            clauses.append("NOT EXISTS (SELECT 1 FROM transfer_links l WHERE l.status = 'confirmed' AND (l.transaction_a_id = t.id OR l.transaction_b_id = t.id))")
         if cursor:
             cursor_date, cursor_id = _decode_cursor(cursor)
             clauses.append("(t.local_date < ? OR (t.local_date = ? AND t.id < ?))")
@@ -1002,6 +1003,21 @@ def create_app(
         try:
             with _write_transaction(database):
                 link_id = confirm_transfer(database, payload.transaction_a, payload.transaction_b)
+            return {"id": link_id}
+        except IntegrityError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post("/api/v1/transfers/{candidate_id}/reject", status_code=201)
+    def transfer_reject_route(
+        candidate_id: str,
+        payload: TransferConfirmRequest,
+        database: Database,
+    ) -> dict[str, str]:
+        if candidate_id != payload.transaction_a:
+            raise HTTPException(status_code=404, detail="transfer candidate not found")
+        try:
+            with _write_transaction(database):
+                link_id = reject_transfer(database, payload.transaction_a, payload.transaction_b)
             return {"id": link_id}
         except IntegrityError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error

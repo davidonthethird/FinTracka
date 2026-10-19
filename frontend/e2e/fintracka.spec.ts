@@ -34,7 +34,7 @@ test("synthetic finance workflow", async ({ page }) => {
   await expect(page.getByText("Connected accounts", { exact: true })).toBeVisible();
   await expect(page.getByText("Manually tracked assets", { exact: true })).toBeVisible();
   await expect(page.getByText("Household brokerage", { exact: true })).toBeVisible();
-  await expect(page.getByText("Contribution", { exact: true })).toBeVisible();
+  await expect(page.getByText("Earnings", { exact: true }).first()).toBeVisible();
   await page.getByLabel("Savings owner").selectOption("Ariela");
   await expect(page.getByText("Household brokerage", { exact: true })).toBeVisible();
   await expect(page.getByText("Other reserve", { exact: true })).toHaveCount(0);
@@ -59,6 +59,13 @@ test("synthetic finance workflow", async ({ page }) => {
 
   await page.getByRole("link", { name: "Transactions" }).click();
   await expect(page.locator("tbody tr")).toHaveCount(100);
+  await expect(page.getByRole("button", { name: "Keep visible" })).toBeVisible();
+  await page.setViewportSize({ width: 1180, height: 900 });
+  await expect.poll(() => page.locator(".sticky-tools").evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    return bounds.right <= window.innerWidth && document.documentElement.scrollWidth <= window.innerWidth;
+  })).toBe(true);
+  await page.setViewportSize({ width: 1440, height: 900 });
   const accountFilterResponse = page.waitForResponse((response) =>
     new URL(response.url()).pathname === "/api/v1/transactions"
       && Boolean(new URL(response.url()).searchParams.get("account_id")),
@@ -90,10 +97,10 @@ test("synthetic finance workflow", async ({ page }) => {
   await expect(page.getByText("1 possible transfer")).toBeVisible();
   await page.getByLabel("Search transactions").fill("TRANSFER");
   await page.getByRole("button", { name: "Search" }).click();
-  await expect(page.locator("tbody tr")).toHaveCount(0);
-  await page.getByLabel("Include transfers and card payments").check();
-  await expect(page.locator("tbody tr")).toHaveCount(3);
-  await page.getByLabel("Include transfers and card payments").uncheck();
+  await expect(page.locator("tbody tr")).toHaveCount(2);
+  await page.getByLabel("Include confirmed transfers").check();
+  await expect(page.locator("tbody tr")).toHaveCount(2);
+  await page.getByLabel("Include confirmed transfers").uncheck();
   await page.getByLabel("Search transactions").fill("LOWE'S");
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.getByLabel("Subcategory for LOWE'S")).toHaveValue(/.+/);

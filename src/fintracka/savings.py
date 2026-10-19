@@ -134,7 +134,7 @@ def savings_summary(
                    COALESCE(NULLIF(t.user_merchant, ''), NULLIF(t.provider_merchant, ''),
                             t.provider_description) title,
                    t.amount_minor, COALESCE(t.spending_owner, a.spending_owner) owner,
-                   c.category_type,
+                   c.category_type, t.provider_category_primary,
                    EXISTS (
                        SELECT 1 FROM transfer_links l
                        JOIN transactions other ON other.id = CASE
@@ -156,9 +156,9 @@ def savings_summary(
             (*account_ids, month + "-01", _month_end(month)),
         ).fetchall()
         for row in rows:
-            if row["category_type"] == "transfer":
-                if row["internal_savings_transfer"]:
-                    continue
+            if row["internal_savings_transfer"]:
+                continue
+            if row["category_type"] == "transfer" or (row["provider_category_primary"] or "").startswith("TRANSFER"):
                 kind = "contribution" if row["amount_minor"] > 0 else "withdrawal"
             elif row["amount_minor"] > 0:
                 kind = "earnings"

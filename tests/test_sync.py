@@ -128,6 +128,59 @@ def test_provider_category_is_mapped_without_overwriting_manual_choice(
     assert tuple(preserved) == ("Fun", "manual", "FOOD_AND_DRINK_RESTAURANT")
 
 
+def test_unmatched_provider_transfers_are_visible_income_or_spending(
+    ledger: sqlite3.Connection,
+) -> None:
+    connection_id = create_synthetic_ledger(ledger, count=1, demo=True)[0]
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(
+            added=(
+                NormalizedTransaction(
+                    "zelle-out", "checking-1", "2026-10-12T12:00:00Z", -3_000,
+                    "USD", "ZELLE TO DEBBIE", provider_category_primary="TRANSFER_OUT",
+                ),
+                NormalizedTransaction(
+                    "zelle-in", "checking-1", "2026-10-13T12:00:00Z", 4_000,
+                    "USD", "ZELLE FROM FRIEND", provider_category_primary="TRANSFER_IN",
+                ),
+            ),
+            next_checkpoint="unmatched-transfers",
+        ),
+    )
+
+    categories = ledger.execute(
+        "SELECT t.amount_minor, c.name FROM transactions t JOIN categories c ON c.id=t.category_id ORDER BY t.amount_minor"
+    ).fetchall()
+    assert [tuple(row) for row in categories] == [(-3_000, "Other"), (4_000, "Other income")]
+
+
+def test_sync_reclassifies_old_provider_transfer_without_overwriting_manual_choice(
+    ledger: sqlite3.Connection,
+) -> None:
+    connection_id = create_synthetic_ledger(ledger, count=1, demo=True)[0]
+    transaction = NormalizedTransaction(
+        "legacy-transfer", "checking-1", "2026-10-12T12:00:00Z", -3_000,
+        "USD", "ZELLE TO DEBBIE", provider_category_primary="TRANSFER_OUT",
+    )
+    apply_batch(ledger, connection_id, SyncBatch(added=(transaction,), next_checkpoint="legacy-1"))
+    transfer_id = ledger.execute("SELECT id FROM categories WHERE name='Transfer'").fetchone()[0]
+    transaction_id = ledger.execute("SELECT id FROM transactions").fetchone()[0]
+    ledger.execute(
+        "UPDATE transactions SET category_id=?, category_source='provider', subcategory_id=NULL, subcategory_source=NULL WHERE id=?",
+        (transfer_id, transaction_id),
+    )
+
+    apply_batch(ledger, connection_id, SyncBatch(next_checkpoint="legacy-2"))
+
+    row = ledger.execute(
+        "SELECT c.name, t.category_source FROM transactions t JOIN categories c ON c.id=t.category_id WHERE t.id=?",
+        (transaction_id,),
+    ).fetchone()
+    assert tuple(row) == ("Other", "provider")
+
+
 def test_cash_withdrawal_defaults_to_other_and_giving_maps_to_tzedaka(
     ledger: sqlite3.Connection,
 ) -> None:
