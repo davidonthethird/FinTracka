@@ -74,3 +74,29 @@ a { color: inherit; }
 @media (max-width: 1180px) { .planning-flow { grid-template-columns: 1fr; }.plan-hub { min-height: 110px; }.planning-categories { min-height: 0; }.planning-category { flex: none; min-height: 64px; }.planning-status { grid-template-columns: 1fr 1fr; }.planning-status > div:first-child { grid-column: 1 / -1; }.planning-summary { grid-template-columns: 1fr; }.planning-summary > span { border-right: 0; border-bottom: 1px solid var(--line); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
 .planning-toolbar { grid-template-columns: auto minmax(240px, 1fr) auto auto auto; gap: 16px; }
+.categorization-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+}
+.categorization-scope button {
+  min-width: 2.35rem;
+  min-height: 2.15rem;
+  padding: 0.25rem 0.65rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+}
+.categorization-scope button[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--paper);
+}
+.categorization-scope button:focus-visible {
+  outline: 3px solid var(--teal-soft);
+  outline-offset: 2px;
+}
