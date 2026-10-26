@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
@@ -485,8 +486,6 @@ def confirm_learned_transfers(connection: sqlite3.Connection) -> int:
         )
         if (signature := _transfer_signature(connection, row["transaction_a_id"], row["transaction_b_id"]))
     }
-    if not learned:
-        return 0
     claimed = {
         identifier
         for row in connection.execute(
@@ -495,24 +494,68 @@ def confirm_learned_transfers(connection: sqlite3.Connection) -> int:
         for identifier in (row["transaction_a_id"], row["transaction_b_id"])
     }
     count = 0
-    for candidate in transfer_candidates(connection):
+    candidates = transfer_candidates(connection)
+    candidate_counts = Counter(
+        transaction_id
+        for candidate in candidates
+        for transaction_id in (candidate.transaction_a, candidate.transaction_b)
+    )
+    for candidate in candidates:
         if candidate.transaction_a in claimed or candidate.transaction_b in claimed:
             continue
         signature = _transfer_signature(connection, candidate.transaction_a, candidate.transaction_b)
-        if signature not in learned:
+        automatic_card_payment = (
+            candidate_counts[candidate.transaction_a] == 1
+            and candidate_counts[candidate.transaction_b] == 1
+            and _is_credit_card_payment(
+                connection, candidate.transaction_a, candidate.transaction_b
+            )
+        )
+        if signature not in learned and not automatic_card_payment:
             continue
         _create_transfer_link(
             connection,
             candidate.transaction_a,
             candidate.transaction_b,
             status="confirmed",
-            reason="learned from confirmed account and counterparty pattern",
+            reason=(
+                "unique exact owned-account credit card payment"
+                if automatic_card_payment
+                else "learned from confirmed account and counterparty pattern"
+            ),
             actor="system",
             action="transfer_auto_confirm",
         )
         claimed.update((candidate.transaction_a, candidate.transaction_b))
         count += 1
     return count
+
+
+def _is_credit_card_payment(
+    connection: sqlite3.Connection, transaction_a: str, transaction_b: str
+) -> bool:
+    rows = connection.execute(
+        """
+        SELECT t.amount_minor, t.provider_description, a.type, a.nature
+        FROM transactions t
+        JOIN accounts a ON a.id = t.account_id
+        WHERE t.id IN (?, ?)
+        """,
+        (transaction_a, transaction_b),
+    ).fetchall()
+    if len(rows) != 2:
+        return False
+    outgoing = next((row for row in rows if row["amount_minor"] < 0), None)
+    incoming = next((row for row in rows if row["amount_minor"] > 0), None)
+    if outgoing is None or incoming is None:
+        return False
+    payment = re.compile(r"\b(?:AUTO\s*PAY|PAYMENT|PMT|PYMT)\b", re.IGNORECASE)
+    return (
+        outgoing["nature"] == "asset"
+        and incoming["type"] == "credit"
+        and payment.search(outgoing["provider_description"]) is not None
+        and payment.search(incoming["provider_description"]) is not None
+    )
 
 
 def _create_transfer_link(

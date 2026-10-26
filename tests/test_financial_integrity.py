@@ -19,7 +19,7 @@ from fintracka.ledger import (
     transfer_candidates,
     update_transaction,
 )
-from fintracka.providers import NormalizedTransaction, SyncBatch
+from fintracka.providers import NormalizedAccount, NormalizedTransaction, SyncBatch
 from fintracka.sync import apply_batch
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
 
@@ -203,6 +203,59 @@ def test_confirmed_counterparty_pattern_auto_confirms_matching_history_only(
     assert ledger.execute(
         "SELECT COUNT(*) FROM transfer_links WHERE status = 'confirmed'"
     ).fetchone()[0] == 3
+
+
+def test_sync_auto_confirms_unique_credit_card_payment(
+    ledger: sqlite3.Connection,
+) -> None:
+    connection_id = ledger.execute(
+        "SELECT id FROM provider_connections WHERE provider = 'synthetic'"
+    ).fetchone()[0]
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(
+            accounts=(
+                NormalizedAccount(
+                    "chase-card", "Chase card", "credit", "credit_card", "liability"
+                ),
+            ),
+            added=(
+                NormalizedTransaction(
+                    "card-payment-out",
+                    "checking-1",
+                    "2026-10-23T12:00:00Z",
+                    -28_900,
+                    "USD",
+                    "Payment to Chase card ending in 8750 10/23",
+                ),
+                NormalizedTransaction(
+                    "card-payment-in",
+                    "chase-card",
+                    "2026-10-23T13:00:00Z",
+                    28_900,
+                    "USD",
+                    "Payment Thank You-Mobile",
+                ),
+            ),
+            next_checkpoint="credit-card-payment",
+        ),
+    )
+
+    linked_external_ids = {
+        row[0]
+        for row in ledger.execute(
+            """
+            SELECT e.external_id
+            FROM transfer_links l
+            JOIN transaction_external_ids e
+              ON e.transaction_id IN (l.transaction_a_id, l.transaction_b_id)
+            WHERE l.status = 'confirmed'
+              AND e.external_id IN ('card-payment-out', 'card-payment-in')
+            """
+        )
+    }
+    assert linked_external_ids == {"card-payment-out", "card-payment-in"}
 
 
 def test_reconciliation_is_exact_to_one_cent(ledger: sqlite3.Connection) -> None:

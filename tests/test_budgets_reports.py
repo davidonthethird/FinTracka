@@ -195,11 +195,9 @@ def test_overview_separates_cash_activity_and_confirmed_card_payments(
             next_checkpoint="cash-overview",
         ),
     )
-    confirm_transfer(
-        ledger,
-        _transaction_id(ledger, "card-payment-out"),
-        _transaction_id(ledger, "card-payment-in"),
-    )
+    assert ledger.execute(
+        "SELECT COUNT(*) FROM transfer_links WHERE status = 'confirmed'"
+    ).fetchone()[0] == 1
 
     result = overview(ledger, "2026-10")
     assert result.spending_minor == 18_742
