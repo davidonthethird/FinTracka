@@ -536,7 +536,7 @@ def _archive_credit_card_payments(
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
             LEFT JOIN categories c ON c.id = t.category_id
-            WHERE t.tombstoned = 0 AND t.user_archived = 0 AND t.pending = 0
+            WHERE t.tombstoned = 0 AND t.user_archived = 0
               AND (t.provider_category_detailed LIKE '%CREDIT_CARD_PAYMENT%'
                    OR (a.type = 'credit' AND t.amount_minor > 0)
                    OR c.name = 'Credit card payment')

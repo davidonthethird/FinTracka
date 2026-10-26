@@ -275,6 +275,7 @@ def test_sync_auto_archives_credit_card_payments_even_when_bank_side_is_duplicat
                     -12_256,
                     "USD",
                     "BANK OF AMERICA PAYMENT",
+                    pending=True,
                 ),
             ),
             next_checkpoint="credit-card-payment",
