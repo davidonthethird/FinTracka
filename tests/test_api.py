@@ -230,6 +230,7 @@ def test_first_production_link_creates_backup_and_filevault_is_a_hard_gate(tmp_p
         "INSERT INTO app_metadata (key, value) VALUES ('plaid.environment', 'production')"
     )
     connection.close()
+    migration_backups = set((tmp_path / "backups").glob("*.sqlite3"))
     adapter = FakePlaidAdapter()
 
     blocked = create_app(
@@ -247,7 +248,7 @@ def test_first_production_link_creates_backup_and_filevault_is_a_hard_gate(tmp_p
             headers={"origin": "http://testserver", "x-csrf-token": csrf},
         )
         assert response.status_code == 409
-        assert not list((tmp_path / "backups").glob("*.sqlite3"))
+        assert set((tmp_path / "backups").glob("*.sqlite3")) == migration_backups
 
     allowed = create_app(
         path,
@@ -264,8 +265,9 @@ def test_first_production_link_creates_backup_and_filevault_is_a_hard_gate(tmp_p
             headers={"origin": "http://testserver", "x-csrf-token": csrf},
         )
         assert response.status_code == 200
-        backups = list((tmp_path / "backups").glob("fintracka-*.sqlite3"))
-        assert len(backups) == 1 and backups[0].stat().st_mode & 0o777 == 0o600
+        backups = set((tmp_path / "backups").glob("fintracka-*.sqlite3")) - migration_backups
+        assert len(backups) == 1
+        assert next(iter(backups)).stat().st_mode & 0o777 == 0o600
 
 
 def test_google_authorization_and_export_run_as_persisted_jobs(tmp_path: Path) -> None:

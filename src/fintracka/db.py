@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from importlib.resources import files
 from pathlib import Path
+
+from fintracka.backups import backup_connection
 
 
 def connect(path: str | Path) -> sqlite3.Connection:
@@ -40,6 +43,16 @@ def migrate(connection: sqlite3.Connection) -> None:
         version = int(resource.name.split("_", 1)[0])
         if version in applied:
             continue
+        if version == 13:
+            database_file = connection.execute("PRAGMA database_list").fetchone()[2]
+            if database_file:
+                database_path = Path(database_file)
+                timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+                backup_connection(
+                    connection,
+                    database_path.parent / "backups",
+                    filename=f"fintracka-pre-migration-013-{timestamp}.sqlite3",
+                )
         name = resource.name.replace("'", "''")
         script = resource.read_text(encoding="utf-8")
         connection.executescript(

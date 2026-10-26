@@ -76,7 +76,7 @@ def test_migrations_are_idempotent_and_install_core_constraints(tmp_path: Path) 
         } <= tables
         assert [
             row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ] == list(range(1, 13))
+        ] == list(range(1, 14))
         starter_categories = {
             row[0]
             for row in connection.execute("SELECT name FROM categories WHERE archived = 0")
@@ -139,6 +139,106 @@ def test_migrations_are_idempotent_and_install_core_constraints(tmp_path: Path) 
         )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute("UPDATE transactions SET is_cash_withdrawal = 2 WHERE id = ?", (transaction_id,))
+    finally:
+        connection.close()
+
+
+def test_plaid_profile_migration_preserves_legacy_ledger_and_reference_metadata(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "legacy.sqlite3"
+    connection = connect(path)
+    try:
+        _migrate_through(connection, 12)
+        now = "2026-10-26T12:00:00Z"
+        institution_id, connection_id, account_id, transaction_id = [new_id() for _ in range(4)]
+        connection.execute(
+            "INSERT INTO institutions VALUES (?, 'plaid', 'ins-legacy', 'Legacy bank', ?)",
+            (institution_id, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO provider_connections
+            (id, provider, external_connection_id, institution_id, status, created_at,
+             updated_at, environment, history_available_from)
+            VALUES (?, 'plaid', 'item-legacy', ?, 'active', ?, ?, 'production', '2026-08-01')
+            """,
+            (connection_id, institution_id, now, now),
+        )
+        connection.execute(
+            "INSERT INTO provider_checkpoints VALUES (?, 'cursor-legacy', ?)",
+            (connection_id, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO accounts
+            (id, connection_id, provider_account_id, name, type, subtype, nature,
+             currency, spending_owner, created_at, updated_at)
+            VALUES (?, ?, 'checking-legacy', 'Checking', 'depository', 'checking',
+                    'asset', 'USD', 'Shared', ?, ?)
+            """,
+            (account_id, connection_id, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO transactions
+            (id, account_id, local_date, amount_minor, currency, provider_description,
+             created_at, updated_at)
+            VALUES (?, ?, '2026-10-25', -1234, 'USD', 'Legacy purchase', ?, ?)
+            """,
+            (transaction_id, account_id, now, now),
+        )
+        legacy_metadata = {
+            "plaid.environment": "production",
+            "plaid.sandbox.client_id_ref": "legacy-sandbox-client",
+            "plaid.sandbox.secret_ref": "legacy-sandbox-secret",
+            "plaid.production.client_id_ref": "legacy-production-client",
+            "plaid.production.secret_ref": "legacy-production-secret",
+        }
+        connection.executemany(
+            "INSERT INTO app_metadata (key, value) VALUES (?, ?)", legacy_metadata.items()
+        )
+        before = {
+            "connections": connection.execute("SELECT COUNT(*) FROM provider_connections").fetchone()[0],
+            "accounts": connection.execute("SELECT COUNT(*) FROM accounts").fetchone()[0],
+            "transactions": connection.execute("SELECT COUNT(*) FROM transactions").fetchone()[0],
+            "total": connection.execute("SELECT SUM(amount_minor) FROM transactions").fetchone()[0],
+        }
+
+        migrate(connection)
+
+        assert connection.execute(
+            "SELECT credential_profile FROM provider_connections WHERE id = ?", (connection_id,)
+        ).fetchone()[0] == "david"
+        assert connection.execute(
+            "SELECT cursor FROM provider_checkpoints WHERE connection_id = ?", (connection_id,)
+        ).fetchone()[0] == "cursor-legacy"
+        assert connection.execute("SELECT id FROM accounts WHERE id = ?", (account_id,)).fetchone()[0] == account_id
+        assert connection.execute(
+            "SELECT id FROM transactions WHERE id = ?", (transaction_id,)
+        ).fetchone()[0] == transaction_id
+        assert {
+            "connections": connection.execute("SELECT COUNT(*) FROM provider_connections").fetchone()[0],
+            "accounts": connection.execute("SELECT COUNT(*) FROM accounts").fetchone()[0],
+            "transactions": connection.execute("SELECT COUNT(*) FROM transactions").fetchone()[0],
+            "total": connection.execute("SELECT SUM(amount_minor) FROM transactions").fetchone()[0],
+        } == before
+        migrated = dict(
+            connection.execute(
+                "SELECT key, value FROM app_metadata WHERE key LIKE 'plaid.profile.david.%'"
+            )
+        )
+        assert migrated == {
+            "plaid.profile.david.environment": "production",
+            "plaid.profile.david.sandbox.client_id_ref": "legacy-sandbox-client",
+            "plaid.profile.david.sandbox.secret_ref": "legacy-sandbox-secret",
+            "plaid.profile.david.production.client_id_ref": "legacy-production-client",
+            "plaid.profile.david.production.secret_ref": "legacy-production-secret",
+        }
+        all_metadata = dict(
+            connection.execute("SELECT key, value FROM app_metadata WHERE key LIKE 'plaid.%'")
+        )
+        assert all(all_metadata[key] == value for key, value in legacy_metadata.items())
     finally:
         connection.close()
 
@@ -285,7 +385,7 @@ def test_migrations_009_and_010_add_and_backfill_subcategories(tmp_path: Path) -
             for row in connection.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
-        ] == list(range(1, 13))
+        ] == list(range(1, 14))
         assert connection.execute(
             "SELECT history_available_from FROM provider_connections WHERE id = ?",
             (connection_id,),
