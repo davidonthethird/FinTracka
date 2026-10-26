@@ -66,6 +66,12 @@ test("synthetic finance workflow edits categories from planning drawer; edits ca
   await expect(transactionDetails).toContainText("Synthetic Bank");
   await transactionDetails.getByRole("button", { name: "Close transaction details" }).click();
   await expect(page.getByRole("button", { name: "Keep visible" })).toBeVisible();
+  await page.locator(".transfer-candidate").first().click();
+  const transferDetails = page.getByRole("dialog", { name: "Transfer comparison" });
+  await expect(transferDetails).toContainText("Money out");
+  await expect(transferDetails).toContainText("Money in");
+  await expect(transferDetails.getByText("Account", { exact: true })).toHaveCount(2);
+  await transferDetails.getByRole("button", { name: "Close transfer details" }).click();
   await page.setViewportSize({ width: 1180, height: 900 });
   await expect.poll(() => page.locator(".sticky-tools").evaluate((element) => {
     const bounds = element.getBoundingClientRect();

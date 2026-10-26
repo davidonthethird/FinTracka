@@ -840,6 +840,10 @@ def create_app(
             raise HTTPException(status_code=_manual_cash_status(error), detail=str(error)) from error
         return _transaction_response(database, transaction_id)
 
+    @app.get("/api/v1/transactions/{transaction_id}", response_model=TransactionResponse)
+    def transaction_detail_route(transaction_id: str, database: Database) -> TransactionResponse:
+        return _transaction_response(database, transaction_id)
+
     @app.delete("/api/v1/transactions/{transaction_id}", status_code=204)
     def delete_transaction_route(
         transaction_id: str, expected_updated_at: str, database: Database

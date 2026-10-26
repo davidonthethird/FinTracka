@@ -423,6 +423,10 @@ def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
         assert first["items"][0]["account_mask"] == "1001"
         assert first["items"][0]["institution_name"] == "Synthetic Bank 1"
         assert first["items"][0]["provider"] == "synthetic"
+        detail = client.get(f"/api/v1/transactions/{first['items'][0]['id']}")
+        assert detail.status_code == 200
+        assert detail.json() == first["items"][0]
+        assert client.get(f"/api/v1/transactions/{new_id()}").status_code == 404
         uncategorized = client.get(
             "/api/v1/transactions", params={"category_id": "uncategorized"}
         ).json()["items"]
