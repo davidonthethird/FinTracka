@@ -239,7 +239,8 @@ test("synthetic finance workflow edits categories from planning drawer; edits ca
   await expect(page.getByRole("button", { name: "Edit Rental" })).toBeVisible();
   await page.getByLabel("Average window").fill("6");
   await expect(page.getByText("Average window:").locator(".." )).toContainText("6 months");
-  await expect(page.getByTestId("planning-status")).toContainText(/plan|projected/i);
+  await expect(page.getByTestId("planning-status")).toContainText("Monthly target");
+  await expect(page.getByTestId("planning-status")).not.toContainText(/projected/i);
   await expect(page.getByText(/\d+ of 6 months available/)).toBeVisible();
   await page.getByLabel("Split spending by person").check();
   await expect(page.locator(".owner-lane.owner-david").first()).toBeVisible();
@@ -271,7 +272,9 @@ test("synthetic finance workflow edits categories from planning drawer; edits ca
   const funLane = page.getByRole("button", { name: /Fun/ });
   await funLane.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("dialog", { name: "Fun planning details" })).toContainText("Subcategory breakdown");
+  const planningDetail = page.getByRole("dialog", { name: "Fun planning details" });
+  await expect(planningDetail).toContainText("Subcategory breakdown");
+  await expect(planningDetail).not.toContainText("Forecast");
   await page.keyboard.press("Escape");
   await expect(funLane).toBeFocused();
   await page.setViewportSize({ width: 1440, height: 900 });
