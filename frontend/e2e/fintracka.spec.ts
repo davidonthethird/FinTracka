@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("synthetic finance workflow edits categories from planning drawer; edits categories from reports drawer", async ({ page }) => {
+test("synthetic finance workflow with Plaid profiles edits categories from planning and reports", async ({ page }) => {
   const responseErrors: string[] = [];
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
@@ -470,45 +470,75 @@ test("synthetic finance workflow edits categories from planning drawer; edits ca
   await expect(page.getByRole("button", { name: "Remove schedule" })).toBeVisible();
 
   let plaidConnections: Array<Record<string, string | null>> = [];
+  let arielaConfigured = false;
+  const sessionProfiles: string[] = [];
+  const completedProfiles: string[] = [];
   await page.route("**/api/v1/providers", (route) => route.fulfill({
     contentType: "application/json",
     body: JSON.stringify([
       { id: "synthetic", name: "Synthetic", enabled: true },
-      { id: "plaid", name: "Plaid", enabled: true, environment: "production" },
+      { id: "plaid", name: "Plaid", enabled: true, profiles: [
+        { id: "david", label: "David", configured: true, environment: "production" },
+        { id: "ariela", label: "Ariela", configured: arielaConfigured, ...(arielaConfigured ? { environment: "sandbox" } : {}) },
+      ] },
     ]),
   }));
   await page.route("**/api/v1/connections", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify(plaidConnections) }));
-  await page.route("**/api/v1/connections/plaid/sessions", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ link_token: "link-test", expires_at: "2026-10-12T18:00:00Z", environment: "production" }) }));
+  await page.route("**/api/v1/connections/plaid/sessions", (route) => {
+    const profile = route.request().postDataJSON().profile as string;
+    sessionProfiles.push(profile);
+    const environment = profile === "david" ? "production" : "sandbox";
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ link_token: `link-${profile}`, expires_at: "2026-10-12T18:00:00Z", environment }) });
+  });
   await page.route("https://cdn.plaid.com/link/v2/stable/link-initialize.js", (route) => route.fulfill({
     contentType: "application/javascript",
-    body: `window.Plaid={create:function(config){setTimeout(function(){config.onLoad()},0);return{open:function(){setTimeout(function(){config.onSuccess('public-test',{})},0)},exit:function(){},destroy:function(){},submit:function(){}}}};`,
+    body: `window.Plaid={create:function(config){setTimeout(function(){config.onLoad()},0);return{open:function(){setTimeout(function(){config.onSuccess(config.token==='link-david'?'public-production':'public-sandbox',{})},0)},exit:function(){},destroy:function(){},submit:function(){}}}};`,
   }));
   await page.route("**/api/v1/connections/plaid/complete", (route) => {
-    plaidConnections = [{ id: "plaid-live", provider: "plaid", environment: "production", status: "active", institution_name: "Mock Bank", last_success_at: null, last_error_code: null, updated_at: "2026-10-12T17:00:00Z" }];
-    return route.fulfill({ contentType: "application/json", body: JSON.stringify(plaidConnections[0]) });
+    const payload = route.request().postDataJSON() as { profile: string; public_token: string };
+    completedProfiles.push(payload.profile);
+    const item = { id: `plaid-${payload.profile}`, provider: "plaid", credential_profile: payload.profile, environment: payload.profile === "david" ? "production" : "sandbox", status: "active", institution_name: `${payload.profile === "david" ? "David" : "Ariela"} Mock Bank`, last_success_at: null, last_error_code: null, updated_at: "2026-10-12T17:00:00Z" };
+    plaidConnections = [...plaidConnections, item];
+    if (payload.profile === "david") arielaConfigured = true;
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify(item) });
   });
   await page.route("**/api/v1/sync-runs", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ job_id: "job-live" }) }));
   await page.route("**/api/v1/jobs/job-live", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ status: "succeeded" }) }));
-  await page.route("**/api/v1/connections/plaid-live/repair", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ link_token: "link-repair", expires_at: "2026-10-12T18:00:00Z", environment: "production" }) }));
-  await page.route("**/api/v1/connections/plaid-live", (route) => {
+  await page.route("**/api/v1/connections/plaid-david/repair", (route) => {
+    expect(route.request().postDataJSON()).toEqual({});
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ link_token: "link-repair", expires_at: "2026-10-12T18:00:00Z", environment: "production" }) });
+  });
+  await page.route("**/api/v1/connections/plaid-david", (route) => {
     if (route.request().method() === "DELETE") {
-      plaidConnections = plaidConnections.map((item) => ({ ...item, status: "revoked" }));
+      expect(route.request().postData()).toBeNull();
+      plaidConnections = plaidConnections.map((item) => item.id === "plaid-david" ? { ...item, status: "revoked" } : item);
       return route.fulfill({ status: 204 });
     }
     return route.continue();
   });
   await page.getByRole("link", { name: "Connections" }).click();
-  await page.getByRole("button", { name: "Connect bank" }).click();
+  await expect(page.getByRole("button", { name: "Connect bank as Ariela" })).toBeDisabled();
+  await page.getByRole("button", { name: "Connect bank as David" }).click();
   await expect(page.getByRole("heading", { name: "Accounts", exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Connections" }).click();
-  await expect(page.getByText("Mock Bank", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Details" }).click();
+  await expect(page.getByText("David Mock Bank", { exact: true })).toBeVisible();
+  await expect(page.getByText("Plaid profile: David", { exact: true }).first()).toBeVisible();
+  await page.getByRole("button", { name: "Connect bank as Ariela" }).click();
+  await expect(page.getByRole("heading", { name: "Accounts", exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Connections" }).click();
+  await expect(page.getByText("Ariela Mock Bank", { exact: true })).toBeVisible();
+  expect(sessionProfiles).toEqual(["david", "ariela"]);
+  expect(completedProfiles).toEqual(["david", "ariela"]);
+  await page.locator(".connection-row").filter({ hasText: "David Mock Bank" }).getByRole("button", { name: "Details" }).click();
+  await expect(page.getByText("David", { exact: true }).last()).toBeVisible();
   await page.getByRole("button", { name: "Manage bank accounts" }).click();
   await expect(page.getByRole("status")).toContainText("Sync completed");
-  await page.getByRole("button", { name: "Details" }).click();
+  await page.locator(".connection-row").filter({ hasText: "David Mock Bank" }).getByRole("button", { name: "Details" }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Disconnect" }).click();
   await expect(page.getByRole("status")).toContainText("access revoked");
+  await page.getByRole("link", { name: "Transactions" }).click();
+  await expect(page.getByRole("heading", { name: "Transactions", exact: true })).toBeVisible();
 
   await page.getByRole("link", { name: "Overview", exact: true }).focus();
   await page.keyboard.press("Tab");

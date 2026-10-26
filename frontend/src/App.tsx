@@ -28,8 +28,10 @@ type EnvelopeData = { month: string; starting_pool_minor: number; available_to_a
 type Rule = { id: string; name: string; priority: number; enabled: number; conditions_json: string; category_id: string; category?: string };
 type RulePreview = { rule_id: string; name: string; priority: number; match_count: number };
 type TransferCandidate = { transaction_a: string; transaction_b: string; external_a: string; external_b: string; label_a: string; label_b: string; date_a: string; date_b: string; amount_minor: number; currency: string; confidence: string };
-type Connection = { id: string; provider: string; environment?: string; institution_name?: string; status: string; last_success_at?: string; last_error_code?: string };
-type Provider = { id: string; name: string; enabled: boolean; environment?: string };
+type PlaidProfile = "david" | "ariela";
+type PlaidProfileStatus = { id: PlaidProfile; label: string; configured: boolean; environment?: string };
+type Connection = { id: string; provider: string; credential_profile?: PlaidProfile; environment?: string; institution_name?: string; status: string; last_success_at?: string; last_error_code?: string };
+type Provider = { id: string; name: string; enabled: boolean; profiles?: PlaidProfileStatus[] };
 type LinkSession = { link_token: string; expires_at: string; environment: string };
 type ReadinessCheck = { id: string; label: string; status: "pass" | "fail" | "warning"; blocking: boolean; detail: string };
 type ReadinessData = { ready: boolean; checks: ReadinessCheck[] };
@@ -404,17 +406,17 @@ function ConnectionsPage() {
   const navigate = useNavigate();
   const [selected, setSelected] = useState<Connection>();
   const [refresh, setRefresh] = useState(0);
-  const [link, setLink] = useState<{ session: LinkSession; mode: "connect" | "repair" }>();
+  const [link, setLink] = useState<{ session: LinkSession; mode: "connect" | "repair"; profile?: PlaidProfile }>();
   const [message, setMessage] = useState("");
   const providers = useData<Provider[]>("/providers", refresh);
   const connections = useData<Connection[]>("/connections", refresh);
   const plaid = providers.data?.find((provider) => provider.id === "plaid");
 
-  async function beginConnect() {
+  async function beginConnect(profile: PlaidProfile) {
     setMessage("Creating a secure Plaid session…");
     try {
-      const session = await api<LinkSession>("/connections/plaid/sessions", { method: "POST", body: "{}" });
-      setLink({ session, mode: "connect" });
+      const session = await api<LinkSession>("/connections/plaid/sessions", { method: "POST", body: JSON.stringify({ profile }) });
+      setLink({ session, mode: "connect", profile });
     } catch (caught) { setMessage(caught instanceof Error ? caught.message : "Unable to start Plaid Link"); }
   }
   async function beginRepair(connection: Connection) {
@@ -437,11 +439,13 @@ function ConnectionsPage() {
   }
   async function linkSucceeded(publicToken: string | null) {
     const mode = link?.mode;
+    const profile = link?.profile;
     setLink(undefined);
     try {
       if (mode === "connect") {
         if (!publicToken) throw new Error("Plaid did not return a connection token.");
-        await api<Connection>("/connections/plaid/complete", { method: "POST", body: JSON.stringify({ public_token: publicToken }) });
+        if (!profile) throw new Error("Choose a Plaid profile before connecting.");
+        await api<Connection>("/connections/plaid/complete", { method: "POST", body: JSON.stringify({ public_token: publicToken, profile }) });
         await syncNow("/accounts");
       } else {
         await syncNow();
@@ -458,11 +462,11 @@ function ConnectionsPage() {
   return <Page title="Connections" note="Transactions-only bank access">
     <div className="notice"><strong>Live testing mode.</strong><span>Start with one institution and reconcile it before adding another. Bank credentials stay inside Plaid Link.</span></div>
     {message && <div className="operation-status connection-operation" role="status"><strong>Connection</strong><span>{message}</span></div>}
-    <DataBoundary result={connections}>{(items) => <section className="instrument-panel"><div className="section-heading"><h2>Connected sources</h2><div className="button-row"><span>{items.length} total</span>{items.some((item) => item.provider === "plaid" && item.status === "active") && <button onClick={() => syncNow().catch((caught) => setMessage(caught instanceof Error ? caught.message : "Unable to sync"))}>Sync now</button>}</div></div>{items.map((item) => <div className="connection-row" key={item.id}><span className={`connection-state ${item.status}`} /><span><strong>{item.institution_name || item.provider}</strong><small>{item.last_success_at ? `Last synced ${item.last_success_at}` : `${item.environment || "local"} · Never synced`}</small></span><b>{item.status}</b><button className="quiet-button" onClick={() => setSelected(item)}>Details</button></div>)}</section>}</DataBoundary>
-    <section className="provider-list"><DataBoundary result={providers}>{(items) => <>{items.map((item) => <div key={item.id}><span><strong>{item.name}</strong><small>{item.id === "synthetic" ? "Safe generated data" : `Transactions only · ${item.environment || "not configured"}`}</small></span>{item.id === "plaid" ? <button disabled={!item.enabled || Boolean(link)} onClick={beginConnect}>{item.enabled ? "Connect bank" : "Not configured"}</button> : <span className="good">Available</span>}</div>)}</>}</DataBoundary></section>
+    <DataBoundary result={connections}>{(items) => <section className="instrument-panel"><div className="section-heading"><h2>Connected sources</h2><div className="button-row"><span>{items.length} total</span>{items.some((item) => item.provider === "plaid" && item.status === "active") && <button onClick={() => syncNow().catch((caught) => setMessage(caught instanceof Error ? caught.message : "Unable to sync"))}>Sync now</button>}</div></div>{items.map((item) => <div className="connection-row" key={item.id}><span className={`connection-state ${item.status}`} /><span><strong>{item.institution_name || item.provider}</strong><small>{item.last_success_at ? `Last synced ${item.last_success_at}` : `${item.environment || "local"} · Never synced`}</small>{item.provider === "plaid" && item.credential_profile && <small>Plaid profile: {item.credential_profile === "david" ? "David" : "Ariela"}</small>}</span><b>{item.status}</b><button className="quiet-button" onClick={() => setSelected(item)}>Details</button></div>)}</section>}</DataBoundary>
+    <section className="provider-list"><DataBoundary result={providers}>{(items) => <>{items.map((item) => item.id === "plaid" ? <div className="provider-block" key={item.id}><span><strong>{item.name}</strong><small>Transactions only</small></span><div className="profile-options">{item.profiles?.map((profile) => <div className="profile-row" key={profile.id}><span><strong>{profile.label}</strong><small>{profile.configured ? profile.environment : "Not configured"}</small></span><button aria-label={`Connect bank as ${profile.label}`} disabled={!profile.configured || Boolean(link)} onClick={() => beginConnect(profile.id)}>{profile.configured ? "Connect bank" : "Not configured"}</button></div>)}</div></div> : <div key={item.id}><span><strong>{item.name}</strong><small>Safe generated data</small></span><span className="good">Available</span></div>)}</>}</DataBoundary></section>
     {link && <PlaidLinkLauncher session={link.session} onSuccess={linkSucceeded} onExit={(error) => { setLink(undefined); setMessage(error || "Plaid Link closed without changes."); }} />}
-    {selected && <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setSelected(undefined)}><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="connection-title"><div className="section-heading"><div><p className="eyebrow">Connection detail</p><h2 id="connection-title">{selected.institution_name || selected.provider}</h2></div><button className="quiet-button" onClick={() => setSelected(undefined)}>Close</button></div><div className="connection-detail"><span>Status<strong>{selected.status}</strong></span><span>Environment<strong>{selected.environment || "Local"}</strong></span><span>Last successful sync<strong>{selected.last_success_at || "Not yet recorded"}</strong></span><span>Latest error<strong>{selected.last_error_code || "None"}</strong></span>{selected.provider === "plaid" && selected.status !== "revoked" ? <div className="dialog-actions"><button className="quiet-button destructive" onClick={() => disconnect(selected)}>Disconnect</button><button onClick={() => beginRepair(selected)}>Manage bank accounts</button></div> : <p>Synthetic and revoked sources retain their imported ledger history.</p>}</div></section></div>}
-    {!plaid?.enabled && <p className="provider-help">Configure Plaid locally before connecting a bank. No credential is stored in this browser or repository.</p>}
+    {selected && <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setSelected(undefined)}><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="connection-title"><div className="section-heading"><div><p className="eyebrow">Connection detail</p><h2 id="connection-title">{selected.institution_name || selected.provider}</h2></div><button className="quiet-button" onClick={() => setSelected(undefined)}>Close</button></div><div className="connection-detail"><span>Status<strong>{selected.status}</strong></span>{selected.credential_profile && <span>Plaid profile<strong>{selected.credential_profile === "david" ? "David" : "Ariela"}</strong></span>}<span>Environment<strong>{selected.environment || "Local"}</strong></span><span>Last successful sync<strong>{selected.last_success_at || "Not yet recorded"}</strong></span><span>Latest error<strong>{selected.last_error_code || "None"}</strong></span>{selected.provider === "plaid" && selected.status !== "revoked" ? <div className="dialog-actions"><button className="quiet-button destructive" onClick={() => disconnect(selected)}>Disconnect</button><button onClick={() => beginRepair(selected)}>Manage bank accounts</button></div> : <p>Synthetic and revoked sources retain their imported ledger history.</p>}</div></section></div>}
+    {plaid && !plaid.profiles?.some((profile) => profile.configured) && <p className="provider-help">Configure a Plaid profile locally before connecting a bank. No credential is stored in this browser or repository.</p>}
   </Page>;
 }
 
