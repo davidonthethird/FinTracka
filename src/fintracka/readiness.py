@@ -94,17 +94,31 @@ def readiness_report(
     )
 
     for profile in PLAID_PROFILES:
-        active = connection.execute(
-            "SELECT 1 FROM provider_connections WHERE provider = 'plaid' AND credential_profile = ? AND status IN ('active', 'repair') LIMIT 1",
-            (profile,),
-        ).fetchone() is not None
+        active_environments = {
+            row[0]
+            for row in connection.execute(
+                "SELECT DISTINCT environment FROM provider_connections WHERE provider = 'plaid' AND credential_profile = ? AND status IN ('active', 'repair')",
+                (profile,),
+            )
+        }
         try:
-            plaid = load_plaid_configuration(connection, secrets, profile)
+            environments = (
+                [
+                    load_plaid_configuration(connection, secrets, profile, environment).environment
+                    for environment in active_environments
+                ]
+                if active_environments
+                else [load_plaid_configuration(connection, secrets, profile).environment]
+            )
             plaid_ok = True
-            success = f"{plaid.environment.title()} credentials are available in Keychain."
+            success = (
+                f"{' and '.join(environment.title() for environment in sorted(environments))} "
+                "credentials are available in Keychain."
+            )
         except (PlaidNotConfigured, SecretStoreUnavailable):
             plaid_ok = False
             success = ""
+        active = bool(active_environments)
         checks.append(
             _check(
                 f"plaid_{profile}",

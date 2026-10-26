@@ -535,7 +535,20 @@ def create_app(
 
     @app.get("/api/v1/providers")
     def providers(database: Database) -> list[dict[str, object]]:
-        profiles = [_plaid_profile_status(database, profile) for profile in PLAID_PROFILES]
+        profiles: list[dict[str, object]] = []
+        for profile in PLAID_PROFILES:
+            status: dict[str, object] = {
+                "id": profile,
+                "label": profile.title(),
+                "configured": False,
+            }
+            try:
+                adapter = plaid_adapter(database, profile)
+            except (PlaidNotConfigured, SecretStoreUnavailable):
+                pass
+            else:
+                status.update(configured=True, environment=adapter.environment)
+            profiles.append(status)
         return [
             {"id": "synthetic", "name": "Synthetic", "enabled": True},
             {
@@ -1766,38 +1779,28 @@ def _secured(
 
 
 def _plaid_environments(connection: sqlite3.Connection) -> set[PlaidEnvironment]:
-    return {
-        row[0]
-        for row in connection.execute(
-            "SELECT value FROM app_metadata WHERE key LIKE 'plaid.profile.%.environment'"
-        )
-        if row[0] in {"sandbox", "production"}
-    }
-
-
-def _plaid_profile_status(
-    connection: sqlite3.Connection,
-    profile: PlaidProfile,
-) -> dict[str, object]:
     rows = dict(
         connection.execute(
-            "SELECT key, value FROM app_metadata WHERE key LIKE ?",
-            (f"plaid.profile.{profile}.%",),
+            "SELECT key, value FROM app_metadata WHERE key LIKE 'plaid.profile.%'"
         )
     )
-    environment = rows.get(f"plaid.profile.{profile}.environment")
-    configured = environment in {"sandbox", "production"} and all(
-        rows.get(f"plaid.profile.{profile}.{environment}.{kind}_ref")
-        for kind in ("client_id", "secret")
-    )
-    result: dict[str, object] = {
-        "id": profile,
-        "label": profile.title(),
-        "configured": configured,
+    environments: set[PlaidEnvironment] = {
+        environment
+        for profile in PLAID_PROFILES
+        for environment in ("sandbox", "production")
+        if all(
+            rows.get(f"plaid.profile.{profile}.{environment}.{kind}_ref")
+            for kind in ("client_id", "secret")
+        )
     }
-    if configured:
-        result["environment"] = environment
-    return result
+    environments.update(
+        row[0]
+        for row in connection.execute(
+            "SELECT DISTINCT environment FROM provider_connections WHERE provider = 'plaid' AND status IN ('active', 'repair')"
+        )
+        if row[0] in {"sandbox", "production"}
+    )
+    return environments
 
 
 def _startup_sync_due(connection: sqlite3.Connection) -> bool:

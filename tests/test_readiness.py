@@ -120,3 +120,51 @@ def test_readiness_blocks_only_missing_profile_with_an_active_connection(tmp_pat
     assert checks["plaid_ariela"]["blocking"] is True
     assert report["ready"] is False
     connection.close()
+
+
+def test_readiness_checks_the_stored_environment_of_active_connections(tmp_path: Path) -> None:
+    database_path = tmp_path / "fintracka.sqlite3"
+    connection = connect(database_path)
+    migrate(connection)
+    backend = FakeKeyring()
+    secrets = KeychainSecrets(backend)
+    configure_plaid(connection, secrets, "david", "production", "prod-client", "prod-secret")
+    production_references = [
+        row[0]
+        for row in connection.execute(
+            "SELECT value FROM app_metadata WHERE key LIKE 'plaid.profile.david.production.%_ref'"
+        )
+    ]
+    now = "2026-10-26T12:00:00Z"
+    institution_id = new_id()
+    connection.execute(
+        "INSERT INTO institutions VALUES (?, 'plaid', 'ins-david', 'David bank', ?)",
+        (institution_id, now),
+    )
+    connection.execute(
+        """
+        INSERT INTO provider_connections
+        (id, provider, external_connection_id, institution_id, status, created_at,
+         updated_at, environment, credential_profile)
+        VALUES (?, 'plaid', 'item-david', ?, 'active', ?, ?, 'production', 'david')
+        """,
+        (new_id(), institution_id, now, now),
+    )
+    configure_plaid(connection, secrets, "david", "sandbox", "sandbox-client", "sandbox-secret")
+    for reference in production_references:
+        backend.delete_password(KeychainSecrets.service, reference)
+    backup_database(database_path, tmp_path / "backups")
+
+    report = readiness_report(
+        connection,
+        tmp_path,
+        secrets,
+        filevault_checker=lambda: True,
+        scheduler={"installed": True, "loaded": True},
+    )
+
+    david = next(item for item in report["checks"] if item["id"] == "plaid_david")
+    assert david["status"] == "fail"
+    assert david["blocking"] is True
+    assert report["ready"] is False
+    connection.close()

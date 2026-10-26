@@ -21,7 +21,7 @@ from fintracka.ledger import confirm_transfer
 from fintracka.google_sheets import configure_google
 from fintracka.keychain import KeychainSecrets
 from fintracka.plaid_adapter import ConnectedItem, InstitutionInfo, LinkSession, ProviderActionRequired
-from fintracka.plaid_service import complete_plaid_connection
+from fintracka.plaid_service import complete_plaid_connection, configure_plaid
 from fintracka.providers import NormalizedAccount, NormalizedBalance, NormalizedTransaction, SyncBatch
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
 from fintracka.sync import apply_batch
@@ -292,6 +292,42 @@ def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_pa
         assert client.get("/api/v1/connections").json()[0]["status"] == "revoked"
         assert ("david", "production") in factory_calls
         assert ("ariela", "sandbox") in factory_calls
+
+
+def test_plaid_profile_status_resolves_keychain_and_csp_keeps_both_configured_environments(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    backend = FakeKeyring()
+    secrets = KeychainSecrets(backend)
+    configure_plaid(connection, secrets, "david", "production", "prod-client", "prod-secret")
+    configure_plaid(connection, secrets, "david", "sandbox", "sandbox-client", "sandbox-secret")
+    sandbox_secret_ref = connection.execute(
+        "SELECT value FROM app_metadata WHERE key = 'plaid.profile.david.sandbox.secret_ref'"
+    ).fetchone()[0]
+    connection.close()
+    monkeypatch.setattr(api_module, "KeychainSecrets", lambda: secrets)
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        csp = client.get("/api/v1/health").headers["content-security-policy"]
+        assert "https://production.plaid.com/" in csp
+        assert "https://sandbox.plaid.com/" in csp
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        david = client.get("/api/v1/providers").json()[1]["profiles"][0]
+        assert david == {
+            "id": "david",
+            "label": "David",
+            "configured": True,
+            "environment": "sandbox",
+        }
+
+        backend.delete_password(KeychainSecrets.service, sandbox_secret_ref)
+        david = client.get("/api/v1/providers").json()[1]["profiles"][0]
+        assert david == {"id": "david", "label": "David", "configured": False}
 
 
 def test_first_production_link_creates_backup_and_filevault_is_a_hard_gate(tmp_path: Path) -> None:
