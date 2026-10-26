@@ -28,16 +28,23 @@ python3.14 -m venv .venv
 cd frontend && npm ci && npm run build && cd ..
 ```
 
-Configure Plaid by typing its secret into standard input when prompted. The CLI stores credentials in macOS Keychain; SQLite receives only Keychain reference names.
+Configure each Plaid developer profile by typing its secret into standard input when prompted. The CLI stores credentials in macOS Keychain; SQLite receives only profile-scoped Keychain reference names. Omitting `--profile` configures David for compatibility.
 
 ```sh
 .venv/bin/python -m fintracka.cli configure plaid \
+  --profile david \
   --environment production \
-  --client-id YOUR_PLAID_CLIENT_ID \
+  --client-id DAVID_PLAID_CLIENT_ID \
+  --secret-stdin
+
+.venv/bin/python -m fintracka.cli configure plaid \
+  --profile ariela \
+  --environment production \
+  --client-id ARIELA_PLAID_CLIENT_ID \
   --secret-stdin
 ```
 
-Use `--environment sandbox` for Plaid Sandbox. Configure a Google Desktop OAuth client from a private file outside the repository:
+Use `--environment sandbox` for either profile's Plaid Sandbox. Configure a Google Desktop OAuth client from a private file outside the repository:
 
 ```sh
 .venv/bin/python -m fintracka.cli configure google \
@@ -109,6 +116,10 @@ Scheduled work runs only while the Mac is awake. Local backups are retained acco
 Before Plaid Link opens, FinTracka checks Python 3.14, FileVault, macOS Keychain, Plaid credentials, and a verified local SQLite backup. Missing off-device backup coverage is shown as a prominent, non-blocking testing warning.
 
 Start with one institution, compare account names and balances, sync transactions, and reconcile a statement exactly before expanding use. Bank credentials are entered only inside Plaid Link and never pass through FinTracka.
+
+Every Plaid Item remains permanently bound to the David or Ariela developer profile that created it. Both profiles feed the same household ledger; the account's editable spending owner—not its Plaid profile—controls David, Ariela, or Shared reporting. A second Plaid developer team does not guarantee a separate Trial allowance or institution approval.
+
+Roth IRA holdings at Fidelity or Pershing are not imported by this Transactions-only integration. They require a separate Plaid Investments implementation and provider-coverage review.
 
 Plaid's history window cannot be expanded after Transactions has already been initialized on an Item. Do not disconnect and reconnect an existing Trial Item merely to request more history: removing it does not restore the lifetime Trial slot. Use **History import** for older records instead.
 
