@@ -76,7 +76,7 @@ def test_migrations_are_idempotent_and_install_core_constraints(tmp_path: Path) 
         } <= tables
         assert [
             row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ] == list(range(1, 14))
+        ] == list(range(1, 15))
         starter_categories = {
             row[0]
             for row in connection.execute("SELECT name FROM categories WHERE archived = 0")
@@ -385,7 +385,7 @@ def test_migrations_009_and_010_add_and_backfill_subcategories(tmp_path: Path) -
             for row in connection.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
-        ] == list(range(1, 14))
+        ] == list(range(1, 15))
         assert connection.execute(
             "SELECT history_available_from FROM provider_connections WHERE id = ?",
             (connection_id,),
@@ -448,6 +448,146 @@ def test_migrations_009_and_010_add_and_backfill_subcategories(tmp_path: Path) -
                 )
     finally:
         connection.close()
+
+
+def test_migration_014_preserves_existing_savings_data_and_adds_goal_constraints(
+    tmp_path: Path,
+) -> None:
+    connection = connect(tmp_path / "legacy-savings.sqlite3")
+    try:
+        _migrate_through(connection, 13)
+        now = "2026-10-26T12:00:00Z"
+        institution_id, provider_id, account_id, asset_id = [new_id() for _ in range(4)]
+        connection.execute(
+            "INSERT INTO institutions VALUES (?, 'plaid', 'ins-savings', 'Savings bank', ?)",
+            (institution_id, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO provider_connections
+            (id, provider, external_connection_id, institution_id, status, created_at,
+             updated_at, environment, credential_profile)
+            VALUES (?, 'plaid', 'item-savings', ?, 'active', ?, ?, 'production', 'david')
+            """,
+            (provider_id, institution_id, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO accounts
+            (id, connection_id, provider_account_id, name, type, subtype, nature,
+             currency, include_savings, created_at, updated_at)
+            VALUES (?, ?, 'joint-savings', 'Joint savings', 'depository', 'savings',
+                    'asset', 'USD', 1, ?, ?)
+            """,
+            (account_id, provider_id, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO manual_assets
+            (id, title, kind, owner, current_value_minor, currency, as_of_date,
+             active, created_at, updated_at)
+            VALUES (?, 'David Roth IRA', 'investment', 'David', 123400, 'USD',
+                    '2026-10-26', 1, ?, ?)
+            """,
+            (asset_id, now, now),
+        )
+
+        migrate(connection)
+        migrate(connection)
+
+        assert connection.execute("SELECT name FROM accounts WHERE id = ?", (account_id,)).fetchone()[0] == "Joint savings"
+        assert connection.execute("SELECT title FROM manual_assets WHERE id = ?", (asset_id,)).fetchone()[0] == "David Roth IRA"
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 14
+        assert {
+            "savings_settings",
+            "savings_goals",
+            "savings_goal_target_versions",
+            "savings_ledger_entries",
+            "savings_month_reviews",
+        } <= {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        assert {row[1] for row in connection.execute("PRAGMA table_info(accounts)")} >= {"savings_pool"}
+        assert {row[1] for row in connection.execute("PRAGMA table_info(manual_assets)")} >= {
+            "savings_pool", "savings_goal_id"
+        }
+
+        for table in ("accounts", "manual_assets"):
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(f"UPDATE {table} SET savings_pool = 'brokerage'")
+
+        valid_goal = new_id()
+        connection.execute(
+            """
+            INSERT INTO savings_goals
+            (id, name, pool, owner, icon_key, color_key, priority, active,
+             activation_month, created_at, updated_at)
+            VALUES (?, 'Emergency', 'regular', 'Shared', 'shield', 'blue', 1, 1,
+                    '2026-10', ?, ?)
+            """,
+            (valid_goal, now, now),
+        )
+        invalid_rows = (
+            ("Nobody", "shield", "blue", "USD"),
+            ("Shared", "unknown", "blue", "USD"),
+            ("Shared", "shield", "invisible", "USD"),
+        )
+        for owner, icon, color, _currency in invalid_rows:
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    """
+                    INSERT INTO savings_goals
+                    (id, name, pool, owner, icon_key, color_key, priority, active,
+                     activation_month, created_at, updated_at)
+                    VALUES (?, 'Invalid', 'regular', ?, ?, ?, 2, 1, '2026-10', ?, ?)
+                    """,
+                    (new_id(), owner, icon, color, now, now),
+                )
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO savings_ledger_entries
+                (id, movement_id, pool, bucket_type, goal_id, amount_minor, currency,
+                 event_type, effective_date, month, source_key, actor, created_at)
+                VALUES (?, ?, 'regular', 'goal', ?, 100, 'usd', 'opening',
+                        '2026-10-26', '2026-10', 'opening:bad-currency', 'system', ?)
+                """,
+                (new_id(), new_id(), valid_goal, now),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO savings_ledger_entries
+                (id, movement_id, pool, bucket_type, amount_minor, currency,
+                 event_type, effective_date, month, source_key, actor, created_at)
+                VALUES (?, ?, 'regular', 'unallocated', 100, 'USD', 'invented',
+                        '2026-10-26', '2026-10', 'invalid:event', 'system', ?)
+                """,
+                (new_id(), new_id(), now),
+            )
+    finally:
+        connection.close()
+
+
+def test_migration_014_creates_pre_migration_backup(tmp_path: Path) -> None:
+    database_path = tmp_path / "ledger.sqlite3"
+    connection = connect(database_path)
+    try:
+        _migrate_through(connection, 13)
+        migrate(connection)
+    finally:
+        connection.close()
+
+    backups = list((tmp_path / "backups").glob("fintracka-pre-migration-014-*.sqlite3"))
+    assert len(backups) == 1
+    backup = connect(backups[0])
+    try:
+        assert backup.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert backup.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 13
+    finally:
+        backup.close()
 
 
 def _migrate_through(connection: sqlite3.Connection, maximum_version: int) -> None:

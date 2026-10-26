@@ -71,11 +71,12 @@ def test_pre_migration_backup_is_verified_and_private(tmp_path: Path) -> None:
 
     migrate(connection)
 
-    backups = list((tmp_path / "backups").glob("fintracka-pre-migration-013-*.sqlite3"))
-    assert len(backups) == 1
-    verify_backup(backups[0])
-    assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
-    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 13
+    backups = sorted((tmp_path / "backups").glob("fintracka-pre-migration-*.sqlite3"))
+    assert len(backups) == 2
+    for backup in backups:
+        verify_backup(backup)
+        assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 14
     connection.close()
 
 
