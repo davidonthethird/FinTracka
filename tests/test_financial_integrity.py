@@ -268,9 +268,35 @@ def test_sync_auto_archives_credit_card_payments_even_when_bank_side_is_duplicat
                     provider_category_primary="INCOME",
                     provider_category_detailed="INCOME_OTHER_INCOME",
                 ),
+                NormalizedTransaction(
+                    "user-marked-card-payment",
+                    "checking-1",
+                    "2026-10-08T12:00:00Z",
+                    -12_256,
+                    "USD",
+                    "BANK OF AMERICA PAYMENT",
+                ),
             ),
             next_checkpoint="credit-card-payment",
         ),
+    )
+    card_payment_category = ledger.execute(
+        "SELECT id FROM categories WHERE name = 'Credit card payment'"
+    ).fetchone()[0]
+    ledger.execute(
+        """
+        UPDATE transactions SET category_id = ?, category_source = 'manual'
+        WHERE id = (
+            SELECT transaction_id FROM transaction_external_ids
+            WHERE external_id = 'user-marked-card-payment'
+        )
+        """,
+        (card_payment_category,),
+    )
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(next_checkpoint="credit-card-payment-rescan"),
     )
 
     archived = {
@@ -280,10 +306,11 @@ def test_sync_auto_archives_credit_card_payments_even_when_bank_side_is_duplicat
             SELECT e.external_id, t.user_archived
             FROM transactions t
             JOIN transaction_external_ids e ON e.transaction_id = t.id
-            WHERE e.external_id IN (
-                'card-payment-out', 'duplicate-payment-out', 'card-payment-in',
-                'provider-card-payment', 'standalone-card-credit'
-            )
+                WHERE e.external_id IN (
+                    'card-payment-out', 'duplicate-payment-out', 'card-payment-in',
+                    'provider-card-payment', 'standalone-card-credit',
+                    'user-marked-card-payment'
+                )
             """
         )
     }
@@ -293,6 +320,7 @@ def test_sync_auto_archives_credit_card_payments_even_when_bank_side_is_duplicat
         "card-payment-in": 1,
         "provider-card-payment": 1,
         "standalone-card-credit": 1,
+        "user-marked-card-payment": 1,
     }
 
 

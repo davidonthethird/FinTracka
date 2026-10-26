@@ -531,15 +531,19 @@ def _archive_credit_card_payments(
         for row in connection.execute(
             """
             SELECT t.id, t.amount_minor, t.provider_description,
-                   t.provider_category_detailed, a.type account_type
+                   t.provider_category_detailed, a.type account_type,
+                   c.name category
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
+            LEFT JOIN categories c ON c.id = t.category_id
             WHERE t.tombstoned = 0 AND t.user_archived = 0 AND t.pending = 0
               AND (t.provider_category_detailed LIKE '%CREDIT_CARD_PAYMENT%'
-                   OR (a.type = 'credit' AND t.amount_minor > 0))
+                   OR (a.type = 'credit' AND t.amount_minor > 0)
+                   OR c.name = 'Credit card payment')
             """
         )
-        if "CREDIT_CARD_PAYMENT" in (row["provider_category_detailed"] or "")
+        if row["category"] == "Credit card payment"
+        or "CREDIT_CARD_PAYMENT" in (row["provider_category_detailed"] or "")
         or _PAYMENT_DESCRIPTION.search(row["provider_description"]) is not None
     }
     transaction_ids.update(
