@@ -102,13 +102,10 @@ def readiness_report(
             )
         }
         try:
-            environments = (
-                [
-                    load_plaid_configuration(connection, secrets, profile, environment).environment
-                    for environment in active_environments
-                ]
-                if active_environments
-                else [load_plaid_configuration(connection, secrets, profile).environment]
+            environments = {load_plaid_configuration(connection, secrets, profile).environment}
+            environments.update(
+                load_plaid_configuration(connection, secrets, profile, environment).environment
+                for environment in active_environments
             )
             plaid_ok = True
             success = (

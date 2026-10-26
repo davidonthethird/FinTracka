@@ -122,7 +122,9 @@ def test_readiness_blocks_only_missing_profile_with_an_active_connection(tmp_pat
     connection.close()
 
 
-def test_readiness_checks_the_stored_environment_of_active_connections(tmp_path: Path) -> None:
+def test_readiness_checks_selected_and_stored_environments_for_active_connections(
+    tmp_path: Path,
+) -> None:
     database_path = tmp_path / "fintracka.sqlite3"
     connection = connect(database_path)
     migrate(connection)
@@ -135,6 +137,10 @@ def test_readiness_checks_the_stored_environment_of_active_connections(tmp_path:
             "SELECT value FROM app_metadata WHERE key LIKE 'plaid.profile.david.production.%_ref'"
         )
     ]
+    production_values = {
+        reference: backend.values[(KeychainSecrets.service, reference)]
+        for reference in production_references
+    }
     now = "2026-10-26T12:00:00Z"
     institution_id = new_id()
     connection.execute(
@@ -151,6 +157,12 @@ def test_readiness_checks_the_stored_environment_of_active_connections(tmp_path:
         (new_id(), institution_id, now, now),
     )
     configure_plaid(connection, secrets, "david", "sandbox", "sandbox-client", "sandbox-secret")
+    sandbox_references = [
+        row[0]
+        for row in connection.execute(
+            "SELECT value FROM app_metadata WHERE key LIKE 'plaid.profile.david.sandbox.%_ref'"
+        )
+    ]
     for reference in production_references:
         backend.delete_password(KeychainSecrets.service, reference)
     backup_database(database_path, tmp_path / "backups")
@@ -166,5 +178,20 @@ def test_readiness_checks_the_stored_environment_of_active_connections(tmp_path:
     david = next(item for item in report["checks"] if item["id"] == "plaid_david")
     assert david["status"] == "fail"
     assert david["blocking"] is True
+    assert report["ready"] is False
+
+    for reference, value in production_values.items():
+        backend.set_password(KeychainSecrets.service, reference, value)
+    for reference in sandbox_references:
+        backend.delete_password(KeychainSecrets.service, reference)
+    report = readiness_report(
+        connection,
+        tmp_path,
+        secrets,
+        filevault_checker=lambda: True,
+        scheduler={"installed": True, "loaded": True},
+    )
+    david = next(item for item in report["checks"] if item["id"] == "plaid_david")
+    assert david["status"] == "fail"
     assert report["ready"] is False
     connection.close()
