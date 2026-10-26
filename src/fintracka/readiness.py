@@ -94,7 +94,7 @@ def readiness_report(
     )
 
     try:
-        plaid = load_plaid_configuration(connection, secrets)
+        plaid = load_plaid_configuration(connection, secrets, "david")
         plaid_ok = plaid.environment == "production"
     except (PlaidNotConfigured, SecretStoreUnavailable):
         plaid_ok = False

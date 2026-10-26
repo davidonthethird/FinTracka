@@ -35,11 +35,13 @@ def test_configure_plaid_reads_secret_from_stdin_and_sync_uses_provider(tmp_path
 
     connection = connect(tmp_path / "fintracka.sqlite3")
     migrate(connection)
-    assert load_plaid_configuration(connection, secrets).environment == "production"
+    assert load_plaid_configuration(connection, secrets, "david").environment == "production"
     adapter = FakeAdapter()
     complete_plaid_connection(connection, adapter, "public-token")
     connection.close()
-    monkeypatch.setattr(cli_module, "build_plaid_adapter", lambda connection, secrets: adapter)
+    monkeypatch.setattr(
+        cli_module, "build_plaid_adapter", lambda connection, secrets, profile: adapter
+    )
 
     assert main(["sync", "--data-dir", str(tmp_path)]) == 0
     connection = connect(tmp_path / "fintracka.sqlite3")

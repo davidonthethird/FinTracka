@@ -11,6 +11,8 @@ from fintracka.plaid_adapter import OfficialPlaidClient, PlaidAdapter, PlaidClie
 from fintracka.sync import apply_batch
 
 PlaidEnvironment = Literal["sandbox", "production"]
+PlaidProfile = Literal["david", "ariela"]
+PLAID_PROFILES: tuple[PlaidProfile, ...] = ("david", "ariela")
 
 
 class PlaidNotConfigured(RuntimeError):
@@ -19,6 +21,7 @@ class PlaidNotConfigured(RuntimeError):
 
 @dataclass(frozen=True)
 class PlaidConfiguration:
+    profile: PlaidProfile
     environment: PlaidEnvironment
     client_id: str
     secret: str
@@ -27,61 +30,96 @@ class PlaidConfiguration:
 def configure_plaid(
     connection: sqlite3.Connection,
     secrets: KeychainSecrets,
+    profile: PlaidProfile,
     environment: PlaidEnvironment,
     client_id: str,
     secret: str,
 ) -> None:
+    _validate_profile(profile)
     if environment not in {"sandbox", "production"}:
         raise ValueError("Plaid environment must be sandbox or production")
-    client_ref = f"plaid:{environment}:client_id"
-    secret_ref = f"plaid:{environment}:secret"
-    secrets.put(client_ref, client_id)
-    secrets.put(secret_ref, secret)
+    prefix = f"plaid.profile.{profile}.{environment}"
+    previous = dict(
+        connection.execute(
+            "SELECT key, value FROM app_metadata WHERE key IN (?, ?)",
+            (f"{prefix}.client_id_ref", f"{prefix}.secret_ref"),
+        )
+    )
+    configuration_id = new_id()
+    client_ref = f"plaid:profile:{profile}:{environment}:client_id:{configuration_id}"
+    secret_ref = f"plaid:profile:{profile}:{environment}:secret:{configuration_id}"
+    created: list[str] = []
     now = _now()
-    connection.execute("BEGIN IMMEDIATE")
     try:
+        secrets.put(client_ref, client_id)
+        created.append(client_ref)
+        secrets.put(secret_ref, secret)
+        created.append(secret_ref)
+        connection.execute("BEGIN IMMEDIATE")
         values = {
-            "plaid.environment": environment,
-            f"plaid.{environment}.client_id_ref": client_ref,
-            f"plaid.{environment}.secret_ref": secret_ref,
+            f"plaid.profile.{profile}.environment": environment,
+            f"{prefix}.client_id_ref": client_ref,
+            f"{prefix}.secret_ref": secret_ref,
         }
         connection.executemany(
             "INSERT INTO app_metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             values.items(),
         )
         connection.execute(
-            "INSERT INTO audit_events (id, actor, action, entity_type, entity_id, occurred_at) VALUES (?, 'user', 'plaid_configure', 'provider', 'plaid', ?)",
-            (new_id(), now),
+            "INSERT INTO audit_events (id, actor, action, entity_type, entity_id, occurred_at) VALUES (?, 'user', 'plaid_configure', 'provider', ?, ?)",
+            (new_id(), f"plaid:{profile}", now),
         )
         connection.commit()
     except Exception:
         connection.rollback()
+        for reference in created:
+            try:
+                secrets.delete(reference)
+            except SecretStoreUnavailable:
+                pass
         raise
+    for reference in previous.values():
+        if reference not in {client_ref, secret_ref}:
+            try:
+                secrets.delete(reference)
+            except SecretStoreUnavailable:
+                pass
 
 
 def load_plaid_configuration(
     connection: sqlite3.Connection,
     secrets: KeychainSecrets,
+    profile: PlaidProfile,
+    environment: PlaidEnvironment | None = None,
 ) -> PlaidConfiguration:
-    rows = dict(connection.execute("SELECT key, value FROM app_metadata WHERE key LIKE 'plaid.%'"))
-    environment = rows.get("plaid.environment")
+    _validate_profile(profile)
+    rows = dict(
+        connection.execute(
+            "SELECT key, value FROM app_metadata WHERE key LIKE ?",
+            (f"plaid.profile.{profile}.%",),
+        )
+    )
+    environment = environment or rows.get(f"plaid.profile.{profile}.environment")
     if environment not in {"sandbox", "production"}:
-        raise PlaidNotConfigured("Plaid is not configured")
-    client_ref = rows.get(f"plaid.{environment}.client_id_ref")
-    secret_ref = rows.get(f"plaid.{environment}.secret_ref")
+        raise PlaidNotConfigured(f"Plaid profile {profile} is not configured")
+    prefix = f"plaid.profile.{profile}.{environment}"
+    client_ref = rows.get(f"{prefix}.client_id_ref")
+    secret_ref = rows.get(f"{prefix}.secret_ref")
     client_id = secrets.get(client_ref) if client_ref else None
     secret = secrets.get(secret_ref) if secret_ref else None
     if not client_id or not secret:
         raise PlaidNotConfigured("Plaid credentials are missing from macOS Keychain")
-    return PlaidConfiguration(environment, client_id, secret)
+    return PlaidConfiguration(profile, environment, client_id, secret)
 
 
 def build_plaid_adapter(
     connection: sqlite3.Connection,
     secrets: KeychainSecrets,
+    profile: PlaidProfile,
+    environment: PlaidEnvironment | None = None,
     client_factory: Callable[[str, str, PlaidEnvironment], PlaidClient] = OfficialPlaidClient,
 ) -> PlaidAdapter:
-    configuration = load_plaid_configuration(connection, secrets)
+    configuration = load_plaid_configuration(connection, secrets, profile, environment)
     return PlaidAdapter(
         client_factory(configuration.client_id, configuration.secret, configuration.environment),
         secrets,
@@ -221,6 +259,11 @@ def _connection_secret(connection: sqlite3.Connection, connection_id: str) -> sq
 def _require_environment(stored: str | None, active: PlaidEnvironment) -> None:
     if stored != active:
         raise SecretStoreUnavailable("Plaid environment does not match the stored connection")
+
+
+def _validate_profile(profile: str) -> None:
+    if profile not in PLAID_PROFILES:
+        raise ValueError("Plaid profile must be david or ariela")
 
 
 def _now() -> str:

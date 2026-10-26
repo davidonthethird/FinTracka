@@ -30,7 +30,7 @@ def test_readiness_requires_local_controls_but_off_device_backup_is_warning_only
     connection = connect(database_path)
     migrate(connection)
     secrets = KeychainSecrets(FakeKeyring())
-    configure_plaid(connection, secrets, "production", "client-id", "plaid-secret")
+    configure_plaid(connection, secrets, "david", "production", "client-id", "plaid-secret")
     backup_database(database_path, tmp_path / "backups")
 
     report = readiness_report(
@@ -62,7 +62,7 @@ def test_readiness_blocks_live_data_when_filevault_is_off(tmp_path: Path) -> Non
     connection = connect(database_path)
     migrate(connection)
     secrets = KeychainSecrets(FakeKeyring())
-    configure_plaid(connection, secrets, "production", "client-id", "plaid-secret")
+    configure_plaid(connection, secrets, "david", "production", "client-id", "plaid-secret")
     backup_database(database_path, tmp_path / "backups")
 
     report = readiness_report(

@@ -455,7 +455,7 @@ def create_app(
     def plaid_adapter(connection: sqlite3.Connection) -> PlaidAdapter:
         if plaid_adapter_factory is not None:
             return plaid_adapter_factory(connection)
-        return build_plaid_adapter(connection, KeychainSecrets())
+        return build_plaid_adapter(connection, KeychainSecrets(), "david")
 
     @app.get("/api/v1/health")
     def health() -> dict[str, str]:

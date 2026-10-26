@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
                 configure_plaid(
                     connection,
                     KeychainSecrets(),
+                    "david",
                     args.environment,
                     args.client_id,
                     secret,
@@ -92,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
             connection = connect(database_path)
             try:
                 migrate(connection)
-                adapter = build_plaid_adapter(connection, KeychainSecrets())
+                adapter = build_plaid_adapter(connection, KeychainSecrets(), "david")
                 runs = sync_plaid_connections(connection, adapter)
             finally:
                 connection.close()
