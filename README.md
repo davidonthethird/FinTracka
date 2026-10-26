@@ -10,7 +10,7 @@ FinTracka is a single-user, local-first personal finance application for macOS. 
 - Requests up to 730 days of history whenever a new Plaid connection is created.
 - Imports older CSV history into an existing account without creating another Plaid Item.
 - Supports category and subcategory filtering, manual cash spending, transfer review, and David/Ariela/Shared spending ownership.
-- Shows monthly Planning with historical averages, targets, current spending, projected month-end spending, and category detail drawers where transactions can be recategorized.
+- Shows monthly Planning with historical averages, targets, current spending, remaining amounts, and category detail drawers where transactions can be recategorized.
 - Splits Planning and Reports spending into clickable David, Ariela, and Shared views.
 - Lets you reversibly remove an individual duplicate account without disconnecting its bank or deleting history.
 - Maintains a 10%-of-Salary Tzedaka minimum in Planning.
