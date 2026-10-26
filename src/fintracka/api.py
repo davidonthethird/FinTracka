@@ -162,7 +162,16 @@ class BulkTransactionRequest(StrictModel):
 class TransactionResponse(StrictModel):
     id: str
     account_id: str
+    account_name: str
+    account_nickname: str | None
+    account_type: str
+    account_subtype: str | None
+    account_mask: str | None
+    provider: str
+    institution_name: str | None
     local_date: str
+    authorized_at: str | None
+    posted_at: str | None
     amount_minor: int
     currency: str
     description: str
@@ -173,6 +182,8 @@ class TransactionResponse(StrictModel):
     subcategory_id: str | None
     subcategory: str | None
     subcategory_source: str | None
+    provider_category_primary: str | None
+    provider_category_detailed: str | None
     provider_category_confidence: str | None
     spending_owner: str | None
     spending_owner_effective: str | None
@@ -740,17 +751,22 @@ def create_app(
         parameters.append(limit + 1)
         rows = database.execute(
             f"""
-            SELECT t.id, t.account_id, t.local_date, t.amount_minor, t.currency,
+            SELECT t.id, t.account_id, a.name account_name, a.nickname account_nickname,
+                   a.type account_type, a.subtype account_subtype, a.mask account_mask,
+                   pc.provider, i.name institution_name, t.local_date, t.authorized_at,
+                   t.posted_at, t.amount_minor, t.currency,
                    t.provider_description description,
                    COALESCE(t.user_merchant, t.provider_merchant) merchant,
                    t.category_id, c.name category, t.category_source,
                    t.subcategory_id, s.name subcategory, t.subcategory_source,
+                   t.provider_category_primary, t.provider_category_detailed,
                    t.provider_category_confidence, t.spending_owner,
                    CASE WHEN c.category_type = 'expense' THEN COALESCE(t.spending_owner, a.spending_owner) END spending_owner_effective,
                    t.notes, t.pending, pc.provider = 'manual' manual_cash,
                    t.is_cash_withdrawal, t.user_archived archived, t.updated_at
             FROM transactions t JOIN accounts a ON a.id = t.account_id
             JOIN provider_connections pc ON pc.id = a.connection_id
+            LEFT JOIN institutions i ON i.id = pc.institution_id
             LEFT JOIN categories c ON c.id = t.category_id
             LEFT JOIN subcategories s ON s.id = t.subcategory_id
             WHERE {' AND '.join(clauses)}
@@ -1582,17 +1598,22 @@ def create_app(
 def _transaction(connection: sqlite3.Connection, transaction_id: str) -> sqlite3.Row:
     row = connection.execute(
         """
-        SELECT t.id, t.account_id, t.local_date, t.amount_minor, t.currency,
+        SELECT t.id, t.account_id, a.name account_name, a.nickname account_nickname,
+               a.type account_type, a.subtype account_subtype, a.mask account_mask,
+               pc.provider, i.name institution_name, t.local_date, t.authorized_at,
+               t.posted_at, t.amount_minor, t.currency,
                t.provider_description description,
                COALESCE(t.user_merchant, t.provider_merchant) merchant,
                t.category_id, c.name category, t.category_source,
                t.subcategory_id, s.name subcategory, t.subcategory_source,
+               t.provider_category_primary, t.provider_category_detailed,
                t.provider_category_confidence, t.spending_owner,
                CASE WHEN c.category_type = 'expense' THEN COALESCE(t.spending_owner, a.spending_owner) END spending_owner_effective,
                t.notes, t.pending, pc.provider = 'manual' manual_cash,
                t.is_cash_withdrawal, t.user_archived archived, t.updated_at
         FROM transactions t JOIN accounts a ON a.id = t.account_id
         JOIN provider_connections pc ON pc.id = a.connection_id
+        LEFT JOIN institutions i ON i.id = pc.institution_id
         LEFT JOIN categories c ON c.id = t.category_id
         LEFT JOIN subcategories s ON s.id = t.subcategory_id
         WHERE t.id = ?

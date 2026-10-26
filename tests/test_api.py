@@ -419,6 +419,10 @@ def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
         ).json()
         assert len(first["items"]) == len(second["items"]) == 1
         assert first["items"][0]["id"] != second["items"][0]["id"]
+        assert first["items"][0]["account_name"] == "Everyday Checking"
+        assert first["items"][0]["account_mask"] == "1001"
+        assert first["items"][0]["institution_name"] == "Synthetic Bank 1"
+        assert first["items"][0]["provider"] == "synthetic"
         uncategorized = client.get(
             "/api/v1/transactions", params={"category_id": "uncategorized"}
         ).json()["items"]

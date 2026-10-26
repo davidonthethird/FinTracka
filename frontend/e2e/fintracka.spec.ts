@@ -59,6 +59,12 @@ test("synthetic finance workflow edits categories from planning drawer; edits ca
 
   await page.getByRole("link", { name: "Transactions" }).click();
   await expect(page.locator("tbody tr")).toHaveCount(100);
+  await page.locator("tbody tr").first().locator("td").nth(2).click();
+  const transactionDetails = page.getByRole("dialog", { name: "Transaction details" });
+  await expect(transactionDetails).toContainText("Account");
+  await expect(transactionDetails).toContainText("Institution");
+  await expect(transactionDetails).toContainText("Synthetic Bank");
+  await transactionDetails.getByRole("button", { name: "Close transaction details" }).click();
   await expect(page.getByRole("button", { name: "Keep visible" })).toBeVisible();
   await page.setViewportSize({ width: 1180, height: 900 });
   await expect.poll(() => page.locator(".sticky-tools").evaluate((element) => {
