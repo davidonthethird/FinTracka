@@ -79,7 +79,10 @@ from fintracka.savings import (
 )
 from fintracka.plaid_adapter import PlaidAdapter
 from fintracka.plaid_service import (
+    PLAID_PROFILES,
+    PlaidEnvironment,
     PlaidNotConfigured,
+    PlaidProfile,
     build_plaid_adapter,
     complete_plaid_connection,
     repair_plaid_connection,
@@ -314,8 +317,13 @@ class EmptyRequest(StrictModel):
     pass
 
 
+class PlaidSessionRequest(StrictModel):
+    profile: Literal["david", "ariela"]
+
+
 class PlaidCompleteRequest(StrictModel):
     public_token: str = Field(min_length=1, max_length=1_000)
+    profile: Literal["david", "ariela"]
 
 
 class SplitItem(StrictModel):
@@ -369,7 +377,10 @@ def create_app(
     *,
     bootstrap_token: str | None = None,
     static_directory: str | Path | None = None,
-    plaid_adapter_factory: Callable[[sqlite3.Connection], PlaidAdapter] | None = None,
+    plaid_adapter_factory: Callable[
+        [sqlite3.Connection, PlaidProfile, PlaidEnvironment | None], PlaidAdapter
+    ]
+    | None = None,
     google_secrets_factory: Callable[[], KeychainSecrets] = KeychainSecrets,
     google_authorizer: Callable[[dict[str, Any], list[str]], str] | None = None,
     google_authorization_gateway_factory: Callable[[str], Any] | None = None,
@@ -383,7 +394,7 @@ def create_app(
     initial = connect(path)
     migrate(initial)
     recover_interrupted_jobs(initial)
-    plaid_environment = _plaid_environment(initial)
+    plaid_environments = _plaid_environments(initial)
     initial.close()
     sessions = LocalSessions(bootstrap_token or secrets.token_urlsafe(32))
     jobs = JobRunner(path)
@@ -394,19 +405,16 @@ def create_app(
         startup = connect(path)
         try:
             if _startup_sync_due(startup):
-                try:
-                    plaid_adapter(startup)
-                except (PlaidNotConfigured, SecretStoreUnavailable):
-                    pass
-                else:
-                    def catch_up(connection: sqlite3.Connection) -> None:
-                        with ProcessLock(path.parent / "fintracka.lock"):
-                            sync_plaid_connections(
-                                connection,
-                                lambda profile, environment: plaid_adapter(connection),
-                            )
+                def catch_up(connection: sqlite3.Connection) -> None:
+                    with ProcessLock(path.parent / "fintracka.lock"):
+                        sync_plaid_connections(
+                            connection,
+                            lambda profile, environment: plaid_adapter(
+                                connection, profile, environment
+                            ),
+                        )
 
-                    jobs.submit("plaid_sync", catch_up)
+                jobs.submit("plaid_sync", catch_up)
         finally:
             startup.close()
         try:
@@ -430,21 +438,21 @@ def create_app(
     async def local_security(request: Request, call_next):  # type: ignore[no-untyped-def]
         nonce = secrets.token_urlsafe(18)
         if not host_allowed(request.headers.get("host", "")):
-            return _secured(JSONResponse({"detail": "invalid host"}, status_code=400), nonce, plaid_environment)
+            return _secured(JSONResponse({"detail": "invalid host"}, status_code=400), nonce, plaid_environments)
         api_path = request.url.path
         exempt = api_path in {"/api/v1/health", "/api/v1/session/bootstrap"}
         session = sessions.get(request.cookies.get("fintracka_session"))
         if api_path.startswith("/api/v1") and not exempt and session is None:
-            return _secured(JSONResponse({"detail": "local session required"}, status_code=401), nonce, plaid_environment)
+            return _secured(JSONResponse({"detail": "local session required"}, status_code=401), nonce, plaid_environments)
         if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not exempt:
             origin = request.headers.get("origin")
             if origin is None or not origin_allowed(origin):
-                return _secured(JSONResponse({"detail": "invalid origin"}, status_code=403), nonce, plaid_environment)
+                return _secured(JSONResponse({"detail": "invalid origin"}, status_code=403), nonce, plaid_environments)
             if session is None or not secrets.compare_digest(
                 request.headers.get("x-csrf-token", ""), session.csrf_token
             ):
-                return _secured(JSONResponse({"detail": "invalid CSRF token"}, status_code=403), nonce, plaid_environment)
-        return _secured(await call_next(request), nonce, plaid_environment)
+                return _secured(JSONResponse({"detail": "invalid CSRF token"}, status_code=403), nonce, plaid_environments)
+        return _secured(await call_next(request), nonce, plaid_environments)
 
     def database() -> Iterator[sqlite3.Connection]:
         connection = connect(path)
@@ -455,10 +463,14 @@ def create_app(
 
     Database = Annotated[sqlite3.Connection, Depends(database)]
 
-    def plaid_adapter(connection: sqlite3.Connection) -> PlaidAdapter:
+    def plaid_adapter(
+        connection: sqlite3.Connection,
+        profile: PlaidProfile,
+        environment: PlaidEnvironment | None = None,
+    ) -> PlaidAdapter:
         if plaid_adapter_factory is not None:
-            return plaid_adapter_factory(connection)
-        return build_plaid_adapter(connection, KeychainSecrets(), "david")
+            return plaid_adapter_factory(connection, profile, environment)
+        return build_plaid_adapter(connection, KeychainSecrets(), profile, environment)
 
     @app.get("/api/v1/health")
     def health() -> dict[str, str]:
@@ -522,15 +534,16 @@ def create_app(
         )
 
     @app.get("/api/v1/providers")
-    def providers(database: Database) -> list[dict[str, str | bool]]:
-        environment = _plaid_environment(database)
-        configured = database.execute(
-            "SELECT 1 FROM app_metadata WHERE key = ?",
-            (f"plaid.{environment}.secret_ref",),
-        ).fetchone() is not None
+    def providers(database: Database) -> list[dict[str, object]]:
+        profiles = [_plaid_profile_status(database, profile) for profile in PLAID_PROFILES]
         return [
             {"id": "synthetic", "name": "Synthetic", "enabled": True},
-            {"id": "plaid", "name": "Plaid", "enabled": configured, "environment": environment},
+            {
+                "id": "plaid",
+                "name": "Plaid",
+                "enabled": any(profile["configured"] for profile in profiles),
+                "profiles": profiles,
+            },
         ]
 
     @app.get("/api/v1/connections")
@@ -539,7 +552,8 @@ def create_app(
             dict(row)
             for row in database.execute(
                 """
-                SELECT pc.id, pc.provider, pc.environment, pc.status, i.name institution_name,
+                SELECT pc.id, pc.provider, pc.environment, pc.credential_profile, pc.status,
+                       i.name institution_name,
                        pc.last_success_at, pc.last_error_code, pc.updated_at
                 FROM provider_connections pc
                 LEFT JOIN institutions i ON i.id = pc.institution_id
@@ -550,10 +564,9 @@ def create_app(
         ]
 
     @app.post("/api/v1/connections/plaid/sessions")
-    def create_plaid_session(payload: EmptyRequest, database: Database) -> dict[str, str]:
-        del payload
+    def create_plaid_session(payload: PlaidSessionRequest, database: Database) -> dict[str, str]:
         try:
-            adapter = plaid_adapter(database)
+            adapter = plaid_adapter(database, payload.profile)
             if adapter.environment == "production":
                 existing = database.execute(
                     "SELECT 1 FROM provider_connections WHERE provider = 'plaid' AND environment = 'production' LIMIT 1"
@@ -579,7 +592,10 @@ def create_app(
     def complete_plaid(payload: PlaidCompleteRequest, database: Database) -> dict[str, str]:
         try:
             return complete_plaid_connection(
-                database, plaid_adapter(database), payload.public_token, "david"
+                database,
+                plaid_adapter(database, payload.profile),
+                payload.public_token,
+                payload.profile,
             )
         except (PlaidNotConfigured, SecretStoreUnavailable) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
@@ -590,7 +606,7 @@ def create_app(
         try:
             session = repair_plaid_connection(
                 database,
-                lambda profile, environment: plaid_adapter(database),
+                lambda profile, environment: plaid_adapter(database, profile, environment),
                 connection_id,
             )
         except ValueError as error:
@@ -608,7 +624,7 @@ def create_app(
         try:
             revoke_plaid_connection(
                 database,
-                lambda profile, environment: plaid_adapter(database),
+                lambda profile, environment: plaid_adapter(database, profile, environment),
                 connection_id,
             )
         except ValueError as error:
@@ -1446,17 +1462,9 @@ def create_app(
             with ProcessLock(path.parent / "fintracka.lock"):
                 sync_plaid_connections(
                     connection,
-                    lambda profile, environment: plaid_adapter(connection),
+                    lambda profile, environment: plaid_adapter(connection, profile, environment),
                 )
 
-        try:
-            check = connect(path)
-            try:
-                plaid_adapter(check)
-            finally:
-                check.close()
-        except (PlaidNotConfigured, SecretStoreUnavailable) as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
         return {"job_id": jobs.submit("plaid_sync", work)}
 
     @app.get("/api/v1/sync-runs/{run_id}")
@@ -1731,14 +1739,20 @@ def _write_transaction(connection: sqlite3.Connection) -> Iterator[None]:
         raise
 
 
-def _secured(response: Response, nonce: str, plaid_environment: str) -> Response:
-    plaid_api = "production" if plaid_environment == "production" else "sandbox"
+def _secured(
+    response: Response,
+    nonce: str,
+    plaid_environments: set[PlaidEnvironment],
+) -> Response:
+    plaid_apis = "".join(
+        f" https://{environment}.plaid.com/" for environment in sorted(plaid_environments)
+    )
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         f"script-src 'self' 'nonce-{nonce}' https://cdn.plaid.com/link/v2/stable/link-initialize.js; "
         f"style-src 'self' 'nonce-{nonce}'; style-src-attr 'unsafe-inline'; "
         "frame-src https://cdn.plaid.com/; "
-        f"connect-src 'self' https://{plaid_api}.plaid.com/; "
+        f"connect-src 'self'{plaid_apis}; "
         "frame-ancestors 'none'; form-action 'self'; base-uri 'none'; object-src 'none'"
     )
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -1751,11 +1765,39 @@ def _secured(response: Response, nonce: str, plaid_environment: str) -> Response
     return response
 
 
-def _plaid_environment(connection: sqlite3.Connection) -> str:
-    row = connection.execute(
-        "SELECT value FROM app_metadata WHERE key = 'plaid.environment'"
-    ).fetchone()
-    return row[0] if row is not None and row[0] in {"sandbox", "production"} else "sandbox"
+def _plaid_environments(connection: sqlite3.Connection) -> set[PlaidEnvironment]:
+    return {
+        row[0]
+        for row in connection.execute(
+            "SELECT value FROM app_metadata WHERE key LIKE 'plaid.profile.%.environment'"
+        )
+        if row[0] in {"sandbox", "production"}
+    }
+
+
+def _plaid_profile_status(
+    connection: sqlite3.Connection,
+    profile: PlaidProfile,
+) -> dict[str, object]:
+    rows = dict(
+        connection.execute(
+            "SELECT key, value FROM app_metadata WHERE key LIKE ?",
+            (f"plaid.profile.{profile}.%",),
+        )
+    )
+    environment = rows.get(f"plaid.profile.{profile}.environment")
+    configured = environment in {"sandbox", "production"} and all(
+        rows.get(f"plaid.profile.{profile}.{environment}.{kind}_ref")
+        for kind in ("client_id", "secret")
+    )
+    result: dict[str, object] = {
+        "id": profile,
+        "label": profile.title(),
+        "configured": configured,
+    }
+    if configured:
+        result["environment"] = environment
+    return result
 
 
 def _startup_sync_due(connection: sqlite3.Connection) -> bool:

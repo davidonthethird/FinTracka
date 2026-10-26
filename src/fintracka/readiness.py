@@ -9,7 +9,7 @@ from pathlib import Path
 from fintracka.backups import verify_backup
 from fintracka.google_sheets import google_status
 from fintracka.keychain import KeychainSecrets, SecretStoreUnavailable
-from fintracka.plaid_service import PlaidNotConfigured, load_plaid_configuration
+from fintracka.plaid_service import PLAID_PROFILES, PlaidNotConfigured, load_plaid_configuration
 
 
 def filevault_enabled() -> bool:
@@ -93,21 +93,32 @@ def readiness_report(
         )
     )
 
-    try:
-        plaid = load_plaid_configuration(connection, secrets, "david")
-        plaid_ok = plaid.environment == "production"
-    except (PlaidNotConfigured, SecretStoreUnavailable):
-        plaid_ok = False
-    checks.append(
-        _check(
-            "plaid",
-            "Plaid Production",
-            plaid_ok,
-            True,
-            "Production credentials are available in Keychain.",
-            "Configure Plaid Production credentials in Keychain.",
+    for profile in PLAID_PROFILES:
+        active = connection.execute(
+            "SELECT 1 FROM provider_connections WHERE provider = 'plaid' AND credential_profile = ? AND status IN ('active', 'repair') LIMIT 1",
+            (profile,),
+        ).fetchone() is not None
+        try:
+            plaid = load_plaid_configuration(connection, secrets, profile)
+            plaid_ok = True
+            success = f"{plaid.environment.title()} credentials are available in Keychain."
+        except (PlaidNotConfigured, SecretStoreUnavailable):
+            plaid_ok = False
+            success = ""
+        checks.append(
+            _check(
+                f"plaid_{profile}",
+                f"Plaid — {profile.title()}",
+                plaid_ok,
+                active,
+                success,
+                (
+                    f"Configure {profile.title()}'s Plaid credentials; an active connection depends on them."
+                    if active
+                    else f"Optional: configure {profile.title()}'s Plaid credentials to connect banks."
+                ),
+            )
         )
-    )
 
     google = google_status(connection)
     checks.append(

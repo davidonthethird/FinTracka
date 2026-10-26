@@ -20,7 +20,7 @@ from fintracka.jobs import recover_interrupted_jobs
 from fintracka.ledger import confirm_transfer
 from fintracka.google_sheets import configure_google
 from fintracka.keychain import KeychainSecrets
-from fintracka.plaid_adapter import ConnectedItem, InstitutionInfo, LinkSession
+from fintracka.plaid_adapter import ConnectedItem, InstitutionInfo, LinkSession, ProviderActionRequired
 from fintracka.plaid_service import complete_plaid_connection
 from fintracka.providers import NormalizedAccount, NormalizedBalance, NormalizedTransaction, SyncBatch
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
@@ -31,33 +31,39 @@ from fintracka.sync import apply_batch
 class FakePlaidAdapter:
     environment: str = "production"
     revoked: list[str] | None = None
+    failure: Exception | None = None
 
     def __post_init__(self) -> None:
         if self.revoked is None:
             self.revoked = []
 
     def create_link_session(self) -> LinkSession:
-        return LinkSession("link-production", "2026-10-12T14:00:00Z", "production")
+        return LinkSession(
+            f"link-{self.environment}", "2026-10-12T14:00:00Z", self.environment
+        )
 
     def complete_link(self, public_token: str, secret_reference: str) -> ConnectedItem:
-        assert public_token == "public-production"
-        return ConnectedItem("item-production", secret_reference)
+        assert public_token == f"public-{self.environment}"
+        return ConnectedItem(f"item-{self.environment}", secret_reference)
 
     def connection_info(self, secret_reference: str) -> InstitutionInfo:
-        assert secret_reference.startswith("plaid:production:connection:")
-        return InstitutionInfo("ins_1", "Example Bank")
+        assert secret_reference.startswith(f"plaid:{self.environment}:connection:")
+        return InstitutionInfo(f"ins_{self.environment}", f"{self.environment.title()} Bank")
 
     def repair_connection(self, secret_reference: str) -> LinkSession:
-        assert secret_reference.startswith("plaid:production:connection:")
-        return LinkSession("link-repair", "2026-10-12T15:00:00Z", "production")
+        assert secret_reference.startswith(f"plaid:{self.environment}:connection:")
+        return LinkSession("link-repair", "2026-10-12T15:00:00Z", self.environment)
 
     def fetch_updates(self, secret_reference: str, checkpoint: str | None) -> SyncBatch:
         del secret_reference, checkpoint
-        account = NormalizedAccount("checking-1", "Everyday Checking", "depository", "checking", "asset", "USD", None)
+        if self.failure is not None:
+            raise self.failure
+        account_id = f"checking-{self.environment}"
+        account = NormalizedAccount(account_id, "Everyday Checking", "depository", "checking", "asset", "USD", None)
         return SyncBatch(
             accounts=(account,),
-            balances=(NormalizedBalance("checking-1", "2026-10-12T12:00:00Z", 100_00, 90_00, "USD", "plaid"),),
-            added=(NormalizedTransaction("txn-1", "checking-1", "2026-10-12T12:00:00Z", -12_34, "USD", "Corner Store", "Corner Store", False),),
+            balances=(NormalizedBalance(account_id, "2026-10-12T12:00:00Z", 100_00, 90_00, "USD", "plaid"),),
+            added=(NormalizedTransaction(f"txn-{self.environment}", account_id, "2026-10-12T12:00:00Z", -12_34, "USD", f"{self.environment.title()} Store", f"{self.environment.title()} Store", False),),
             modified=(),
             removed=(),
             next_checkpoint="cursor-1",
@@ -136,15 +142,35 @@ def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_pa
     path = tmp_path / "ledger.sqlite3"
     connection = connect(path)
     migrate(connection)
-    connection.execute(
-        "INSERT INTO app_metadata (key, value) VALUES ('plaid.environment', 'production')"
+    connection.executemany(
+        "INSERT INTO app_metadata (key, value) VALUES (?, ?)",
+        (
+            ("plaid.profile.david.environment", "production"),
+            ("plaid.profile.david.production.client_id_ref", "david-client-ref"),
+            ("plaid.profile.david.production.secret_ref", "david-secret-ref"),
+            ("plaid.profile.ariela.environment", "sandbox"),
+            ("plaid.profile.ariela.sandbox.client_id_ref", "ariela-client-ref"),
+            ("plaid.profile.ariela.sandbox.secret_ref", "ariela-secret-ref"),
+        ),
     )
     connection.close()
-    adapter = FakePlaidAdapter()
+    adapters = {
+        "david": FakePlaidAdapter("production"),
+        "ariela": FakePlaidAdapter("sandbox"),
+    }
+    factory_calls: list[tuple[str, str | None]] = []
+
+    def adapter_factory(connection, profile, environment):  # type: ignore[no-untyped-def]
+        del connection
+        factory_calls.append((profile, environment))
+        adapter = adapters[profile]
+        assert environment is None or environment == adapter.environment
+        return adapter
+
     app = create_app(
         path,
         bootstrap_token="bootstrap",
-        plaid_adapter_factory=lambda _: adapter,
+        plaid_adapter_factory=adapter_factory,
         filevault_checker=lambda: True,
     )
 
@@ -154,7 +180,8 @@ def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_pa
         assert "https://cdn.plaid.com/link/v2/stable/link-initialize.js" in csp
         assert "frame-src https://cdn.plaid.com/" in csp
         assert "connect-src 'self' https://production.plaid.com/" in csp
-        assert "https://sandbox.plaid.com/" not in csp
+        assert "https://sandbox.plaid.com/" in csp
+        assert "connect-src *" not in csp
         assert "'nonce-" in csp
         assert "form-action 'self'" in csp
         assert health.headers["x-frame-options"] == "DENY"
@@ -165,9 +192,30 @@ def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_pa
         csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
         headers = {"origin": "http://testserver", "x-csrf-token": csrf}
 
-        assert client.post("/api/v1/connections/plaid/sessions", json={}).status_code == 403
-        session = client.post(
+        providers = client.get("/api/v1/providers").json()
+        plaid = next(item for item in providers if item["id"] == "plaid")
+        assert plaid == {
+            "id": "plaid",
+            "name": "Plaid",
+            "enabled": True,
+            "profiles": [
+                {"id": "david", "label": "David", "configured": True, "environment": "production"},
+                {"id": "ariela", "label": "Ariela", "configured": True, "environment": "sandbox"},
+            ],
+        }
+        assert "ref" not in str(plaid).lower()
+
+        assert client.post(
+            "/api/v1/connections/plaid/sessions", json={"profile": "david"}
+        ).status_code == 403
+        assert client.post(
             "/api/v1/connections/plaid/sessions", json={}, headers=headers
+        ).status_code == 422
+        assert client.post(
+            "/api/v1/connections/plaid/sessions", json={"profile": "other"}, headers=headers
+        ).status_code == 422
+        session = client.post(
+            "/api/v1/connections/plaid/sessions", json={"profile": "david"}, headers=headers
         )
         assert session.status_code == 200
         assert session.json() == {
@@ -178,25 +226,27 @@ def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_pa
 
         invalid = client.post(
             "/api/v1/connections/plaid/complete",
-            json={"public_token": "public-production", "access_token": "must-not-be-accepted"},
+            json={"public_token": "public-production", "profile": "david", "access_token": "must-not-be-accepted"},
             headers=headers,
         )
         assert invalid.status_code == 422
         completed = client.post(
             "/api/v1/connections/plaid/complete",
-            json={"public_token": "public-production"},
+            json={"public_token": "public-production", "profile": "david"},
             headers=headers,
         )
         assert completed.status_code == 201
         connection_payload = completed.json()
-        assert connection_payload["institution_name"] == "Example Bank"
+        assert connection_payload["institution_name"] == "Production Bank"
         assert connection_payload["environment"] == "production"
+        assert connection_payload["credential_profile"] == "david"
         assert "access_token" not in str(connection_payload)
         connection_id = connection_payload["id"]
 
         listed = client.get("/api/v1/connections").json()
-        assert listed[0]["institution_name"] == "Example Bank"
+        assert listed[0]["institution_name"] == "Production Bank"
         assert listed[0]["environment"] == "production"
+        assert listed[0]["credential_profile"] == "david"
         assert "keychain" not in str(listed).lower()
         assert "token" not in str(listed).lower()
 
@@ -209,17 +259,39 @@ def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_pa
             "expires_at": "2026-10-12T15:00:00Z",
             "environment": "production",
         }
+        assert client.post(
+            f"/api/v1/connections/{connection_id}/repair",
+            json={"profile": "ariela"},
+            headers=headers,
+        ).status_code == 422
+
+        ariela_session = client.post(
+            "/api/v1/connections/plaid/sessions", json={"profile": "ariela"}, headers=headers
+        )
+        assert ariela_session.json()["environment"] == "sandbox"
+        ariela_completed = client.post(
+            "/api/v1/connections/plaid/complete",
+            json={"public_token": "public-sandbox", "profile": "ariela"},
+            headers=headers,
+        )
+        assert ariela_completed.status_code == 201
+        assert ariela_completed.json()["credential_profile"] == "ariela"
 
         sync = client.post("/api/v1/sync-runs", json={}, headers=headers)
         assert sync.status_code == 202
         assert _wait_for_job(client, sync.json()["job_id"])["status"] == "succeeded"
         transactions = client.get("/api/v1/transactions").json()["items"]
-        assert [item["description"] for item in transactions] == ["Corner Store"]
+        assert {item["description"] for item in transactions} == {
+            "Production Store",
+            "Sandbox Store",
+        }
 
         deleted = client.delete(f"/api/v1/connections/{connection_id}", headers=headers)
         assert deleted.status_code == 204
-        assert adapter.revoked and adapter.revoked[0].startswith("plaid:production:connection:")
+        assert adapters["david"].revoked and adapters["david"].revoked[0].startswith("plaid:production:connection:")
         assert client.get("/api/v1/connections").json()[0]["status"] == "revoked"
+        assert ("david", "production") in factory_calls
+        assert ("ariela", "sandbox") in factory_calls
 
 
 def test_first_production_link_creates_backup_and_filevault_is_a_hard_gate(tmp_path: Path) -> None:
@@ -227,7 +299,7 @@ def test_first_production_link_creates_backup_and_filevault_is_a_hard_gate(tmp_p
     connection = connect(path)
     migrate(connection)
     connection.execute(
-        "INSERT INTO app_metadata (key, value) VALUES ('plaid.environment', 'production')"
+        "INSERT INTO app_metadata (key, value) VALUES ('plaid.profile.david.environment', 'production')"
     )
     connection.close()
     migration_backups = set((tmp_path / "backups").glob("*.sqlite3"))
@@ -236,7 +308,7 @@ def test_first_production_link_creates_backup_and_filevault_is_a_hard_gate(tmp_p
     blocked = create_app(
         path,
         bootstrap_token="blocked",
-        plaid_adapter_factory=lambda _: adapter,
+        plaid_adapter_factory=lambda connection, profile, environment: adapter,
         filevault_checker=lambda: False,
     )
     with TestClient(blocked) as client:
@@ -244,7 +316,7 @@ def test_first_production_link_creates_backup_and_filevault_is_a_hard_gate(tmp_p
         csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
         response = client.post(
             "/api/v1/connections/plaid/sessions",
-            json={},
+            json={"profile": "david"},
             headers={"origin": "http://testserver", "x-csrf-token": csrf},
         )
         assert response.status_code == 409
@@ -253,7 +325,7 @@ def test_first_production_link_creates_backup_and_filevault_is_a_hard_gate(tmp_p
     allowed = create_app(
         path,
         bootstrap_token="allowed",
-        plaid_adapter_factory=lambda _: adapter,
+        plaid_adapter_factory=lambda connection, profile, environment: adapter,
         filevault_checker=lambda: True,
     )
     with TestClient(allowed) as client:
@@ -261,7 +333,7 @@ def test_first_production_link_creates_backup_and_filevault_is_a_hard_gate(tmp_p
         csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
         response = client.post(
             "/api/v1/connections/plaid/sessions",
-            json={},
+            json={"profile": "david"},
             headers={"origin": "http://testserver", "x-csrf-token": csrf},
         )
         assert response.status_code == 200
@@ -365,7 +437,11 @@ def test_each_startup_queues_sync_for_live_connection(tmp_path: Path) -> None:
     )
     connection.close()
 
-    app = create_app(path, bootstrap_token="first", plaid_adapter_factory=lambda _: adapter)
+    app = create_app(
+        path,
+        bootstrap_token="first",
+        plaid_adapter_factory=lambda connection, profile, environment: adapter,
+    )
     with TestClient(app) as client:
         client.post("/api/v1/session/bootstrap", json={"token": "first"})
         for _ in range(200):
@@ -379,7 +455,11 @@ def test_each_startup_queues_sync_for_live_connection(tmp_path: Path) -> None:
             time.sleep(0.01)
         assert row is not None and row["status"] == "succeeded"
 
-    second = create_app(path, bootstrap_token="second", plaid_adapter_factory=lambda _: adapter)
+    second = create_app(
+        path,
+        bootstrap_token="second",
+        plaid_adapter_factory=lambda connection, profile, environment: adapter,
+    )
     with TestClient(second):
         for _ in range(200):
             check = connect(path)
@@ -396,6 +476,51 @@ def test_each_startup_queues_sync_for_live_connection(tmp_path: Path) -> None:
     ).fetchone()[0] == 2
     assert connection.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
     connection.close()
+
+
+def test_manual_sync_attempts_both_profiles_and_marks_job_failed_after_partial_success(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    david = FakePlaidAdapter("production")
+    ariela = FakePlaidAdapter("sandbox", failure=ProviderActionRequired("repair required"))
+    complete_plaid_connection(connection, david, "public-production", "david")
+    complete_plaid_connection(connection, ariela, "public-sandbox", "ariela")
+    connection.execute("UPDATE provider_connections SET status = 'disabled' WHERE provider = 'plaid'")
+    connection.close()
+    calls: list[tuple[str, str | None]] = []
+
+    def adapter_factory(connection, profile, environment):  # type: ignore[no-untyped-def]
+        del connection
+        calls.append((profile, environment))
+        return {"david": david, "ariela": ariela}[profile]
+
+    app = create_app(path, bootstrap_token="bootstrap", plaid_adapter_factory=adapter_factory)
+    with TestClient(app) as client:
+        check = connect(path)
+        check.execute("UPDATE provider_connections SET status = 'active' WHERE provider = 'plaid'")
+        check.close()
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        response = client.post(
+            "/api/v1/sync-runs",
+            json={},
+            headers={"origin": "http://testserver", "x-csrf-token": csrf},
+        )
+        assert response.status_code == 202
+        assert _wait_for_job(client, response.json()["job_id"])["status"] == "failed"
+
+    check = connect(path)
+    assert check.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
+    assert tuple(
+        check.execute(
+            "SELECT status, last_error_code FROM provider_connections WHERE credential_profile = 'ariela'"
+        ).fetchone()
+    ) == ("repair", "ITEM_REPAIR_REQUIRED")
+    check.close()
+    assert calls == [("david", "production"), ("ariela", "sandbox")]
 
 
 def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
