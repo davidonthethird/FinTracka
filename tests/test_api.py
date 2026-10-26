@@ -1213,7 +1213,7 @@ def test_withdrawal_api_exposes_marker_and_forces_single_categorization(tmp_path
         assert result.status_code == 200 and result.json()["affected_count"] == 1
 
 
-def test_transaction_api_hides_only_confirmed_transfers_by_default(
+def test_transaction_api_hides_confirmed_transfers_and_credit_card_payments_by_default(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "ledger.sqlite3"
@@ -1258,10 +1258,10 @@ def test_transaction_api_hides_only_confirmed_transfers_by_default(
     with TestClient(app) as client:
         client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
         ordinary = client.get("/api/v1/transactions").json()["items"]
-        assert [row["description"] for row in ordinary] == ["BOOK STORE", "SAVINGS TRANSFER", "CARD PAYMENT"]
+        assert [row["description"] for row in ordinary] == ["BOOK STORE", "SAVINGS TRANSFER"]
         assert client.get(
             "/api/v1/transactions", params={"search": "PAYMENT"}
-        ).json()["items"][0]["description"] == "CARD PAYMENT"
+        ).json()["items"] == []
         included = client.get(
             "/api/v1/transactions", params={"include_transfers": True, "limit": 1}
         ).json()
@@ -1277,9 +1277,11 @@ def test_transaction_api_hides_only_confirmed_transfers_by_default(
         assert second["items"][0]["description"] == "SAVINGS TRANSFER"
         searched = client.get(
             "/api/v1/transactions",
-            params={"include_transfers": True, "search": "PAYMENT"},
+            params={"include_archived": True, "search": "PAYMENT"},
         ).json()["items"]
         assert [row["description"] for row in searched] == ["CARD PAYMENT"]
+        assert searched[0]["archived"] is True
+        assert searched[0]["category"] == "Credit card payment"
 
 
 def test_rejecting_transfer_candidate_keeps_transactions_visible(tmp_path: Path) -> None:

@@ -205,7 +205,7 @@ def test_confirmed_counterparty_pattern_auto_confirms_matching_history_only(
     ).fetchone()[0] == 3
 
 
-def test_sync_auto_confirms_unique_credit_card_payment(
+def test_sync_auto_archives_credit_card_payments_even_when_bank_side_is_duplicated(
     ledger: sqlite3.Connection,
 ) -> None:
     connection_id = ledger.execute(
@@ -219,11 +219,22 @@ def test_sync_auto_confirms_unique_credit_card_payment(
                 NormalizedAccount(
                     "chase-card", "Chase card", "credit", "credit_card", "liability"
                 ),
+                NormalizedAccount(
+                    "duplicate-checking", "Joint checking", "depository", "checking", "asset"
+                ),
             ),
             added=(
                 NormalizedTransaction(
                     "card-payment-out",
                     "checking-1",
+                    "2026-10-23T12:00:00Z",
+                    -28_900,
+                    "USD",
+                    "Payment to Chase card ending in 8750 10/23",
+                ),
+                NormalizedTransaction(
+                    "duplicate-payment-out",
+                    "duplicate-checking",
                     "2026-10-23T12:00:00Z",
                     -28_900,
                     "USD",
@@ -237,25 +248,41 @@ def test_sync_auto_confirms_unique_credit_card_payment(
                     "USD",
                     "Payment Thank You-Mobile",
                 ),
+                NormalizedTransaction(
+                    "provider-card-payment",
+                    "checking-1",
+                    "2026-10-24T12:00:00Z",
+                    -12_256,
+                    "USD",
+                    "BANK CARD PAYMENT",
+                    provider_category_primary="TRANSFER_OUT",
+                    provider_category_detailed="TRANSFER_OUT_CREDIT_CARD_PAYMENT",
+                ),
             ),
             next_checkpoint="credit-card-payment",
         ),
     )
 
-    linked_external_ids = {
-        row[0]
+    archived = {
+        row["external_id"]: row["user_archived"]
         for row in ledger.execute(
             """
-            SELECT e.external_id
-            FROM transfer_links l
-            JOIN transaction_external_ids e
-              ON e.transaction_id IN (l.transaction_a_id, l.transaction_b_id)
-            WHERE l.status = 'confirmed'
-              AND e.external_id IN ('card-payment-out', 'card-payment-in')
+            SELECT e.external_id, t.user_archived
+            FROM transactions t
+            JOIN transaction_external_ids e ON e.transaction_id = t.id
+            WHERE e.external_id IN (
+                'card-payment-out', 'duplicate-payment-out', 'card-payment-in',
+                'provider-card-payment'
+            )
             """
         )
     }
-    assert linked_external_ids == {"card-payment-out", "card-payment-in"}
+    assert archived == {
+        "card-payment-out": 1,
+        "duplicate-payment-out": 1,
+        "card-payment-in": 1,
+        "provider-card-payment": 1,
+    }
 
 
 def test_reconciliation_is_exact_to_one_cent(ledger: sqlite3.Connection) -> None:

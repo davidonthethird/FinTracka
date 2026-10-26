@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
@@ -479,6 +478,8 @@ def reject_transfer(connection: sqlite3.Connection, transaction_a: str, transact
 
 
 def confirm_learned_transfers(connection: sqlite3.Connection) -> int:
+    candidates = transfer_candidates(connection)
+    archived = _archive_credit_card_payments(connection, candidates)
     learned = {
         signature
         for row in connection.execute(
@@ -486,6 +487,8 @@ def confirm_learned_transfers(connection: sqlite3.Connection) -> int:
         )
         if (signature := _transfer_signature(connection, row["transaction_a_id"], row["transaction_b_id"]))
     }
+    if not learned:
+        return 0
     claimed = {
         identifier
         for row in connection.execute(
@@ -494,41 +497,70 @@ def confirm_learned_transfers(connection: sqlite3.Connection) -> int:
         for identifier in (row["transaction_a_id"], row["transaction_b_id"])
     }
     count = 0
-    candidates = transfer_candidates(connection)
-    candidate_counts = Counter(
-        transaction_id
-        for candidate in candidates
-        for transaction_id in (candidate.transaction_a, candidate.transaction_b)
-    )
     for candidate in candidates:
-        if candidate.transaction_a in claimed or candidate.transaction_b in claimed:
+        if (
+            candidate.transaction_a in claimed
+            or candidate.transaction_b in claimed
+            or candidate.transaction_a in archived
+            or candidate.transaction_b in archived
+        ):
             continue
         signature = _transfer_signature(connection, candidate.transaction_a, candidate.transaction_b)
-        automatic_card_payment = (
-            candidate_counts[candidate.transaction_a] == 1
-            and candidate_counts[candidate.transaction_b] == 1
-            and _is_credit_card_payment(
-                connection, candidate.transaction_a, candidate.transaction_b
-            )
-        )
-        if signature not in learned and not automatic_card_payment:
+        if signature not in learned:
             continue
         _create_transfer_link(
             connection,
             candidate.transaction_a,
             candidate.transaction_b,
             status="confirmed",
-            reason=(
-                "unique exact owned-account credit card payment"
-                if automatic_card_payment
-                else "learned from confirmed account and counterparty pattern"
-            ),
+            reason="learned from confirmed account and counterparty pattern",
             actor="system",
             action="transfer_auto_confirm",
         )
         claimed.update((candidate.transaction_a, candidate.transaction_b))
         count += 1
     return count
+
+
+def _archive_credit_card_payments(
+    connection: sqlite3.Connection, candidates: list[TransferCandidate]
+) -> set[str]:
+    transaction_ids = {
+        row["id"]
+        for row in connection.execute(
+            """
+            SELECT id FROM transactions
+            WHERE tombstoned = 0 AND user_archived = 0 AND pending = 0
+              AND provider_category_detailed LIKE '%CREDIT_CARD_PAYMENT%'
+            """
+        )
+    }
+    transaction_ids.update(
+        transaction_id
+        for candidate in candidates
+        if _is_credit_card_payment(
+            connection, candidate.transaction_a, candidate.transaction_b
+        )
+        for transaction_id in (candidate.transaction_a, candidate.transaction_b)
+    )
+    category = connection.execute(
+        "SELECT id FROM categories WHERE name = 'Credit card payment' AND archived = 0"
+    ).fetchone()
+    now = _now()
+    for transaction_id in transaction_ids:
+        connection.execute(
+            """
+            UPDATE transactions
+            SET user_archived = 1,
+                category_id = CASE WHEN category_source IN ('manual', 'rule') THEN category_id ELSE ? END,
+                category_source = CASE WHEN category_source IN ('manual', 'rule') THEN category_source ELSE 'provider' END,
+                subcategory_id = NULL, subcategory_source = NULL, updated_at = ?
+            WHERE id = ? AND user_archived = 0
+            """,
+            (category["id"] if category else None, now, transaction_id),
+        )
+        _audit(connection, "system", "transaction_auto_archive", "transaction", transaction_id, now)
+    return transaction_ids
 
 
 def _is_credit_card_payment(

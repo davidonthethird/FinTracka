@@ -330,7 +330,9 @@ def _provider_category_id(
     category_name: str | None = None
     if is_cash_withdrawal if is_cash_withdrawal is not None else transaction.is_cash_withdrawal:
         category_name = "Other"
-    elif "CREDIT_CARD_PAYMENT" in text or primary.startswith("TRANSFER") or "TRANSFER_" in text:
+    elif "CREDIT_CARD_PAYMENT" in text:
+        category_name = "Credit card payment"
+    elif primary.startswith("TRANSFER") or "TRANSFER_" in text:
         category_name = "Other income" if transaction.amount_minor > 0 else "Other"
     elif primary == "INCOME" or primary.startswith("INCOME_"):
         category_name = "Salary" if any(word in detailed for word in ("WAGE", "PAYROLL")) else "Other income"
@@ -462,7 +464,7 @@ def _reclassify_provider_transfers(
         JOIN accounts a ON a.id = t.account_id
         JOIN categories c ON c.id = t.category_id
         WHERE a.connection_id = ? AND t.category_source = 'provider'
-          AND c.category_type = 'transfer'
+          AND c.category_type = 'transfer' AND c.name != 'Credit card payment'
         """,
         (connection_id,),
     ).fetchall()
