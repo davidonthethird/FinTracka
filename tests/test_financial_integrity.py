@@ -258,6 +258,16 @@ def test_sync_auto_archives_credit_card_payments_even_when_bank_side_is_duplicat
                     provider_category_primary="TRANSFER_OUT",
                     provider_category_detailed="TRANSFER_OUT_CREDIT_CARD_PAYMENT",
                 ),
+                NormalizedTransaction(
+                    "standalone-card-credit",
+                    "chase-card",
+                    "2026-10-09T12:00:00Z",
+                    78_038,
+                    "USD",
+                    "ONLINE PAYMENT, THANK YOU",
+                    provider_category_primary="INCOME",
+                    provider_category_detailed="INCOME_OTHER_INCOME",
+                ),
             ),
             next_checkpoint="credit-card-payment",
         ),
@@ -272,7 +282,7 @@ def test_sync_auto_archives_credit_card_payments_even_when_bank_side_is_duplicat
             JOIN transaction_external_ids e ON e.transaction_id = t.id
             WHERE e.external_id IN (
                 'card-payment-out', 'duplicate-payment-out', 'card-payment-in',
-                'provider-card-payment'
+                'provider-card-payment', 'standalone-card-credit'
             )
             """
         )
@@ -282,6 +292,7 @@ def test_sync_auto_archives_credit_card_payments_even_when_bank_side_is_duplicat
         "duplicate-payment-out": 1,
         "card-payment-in": 1,
         "provider-card-payment": 1,
+        "standalone-card-credit": 1,
     }
 
 

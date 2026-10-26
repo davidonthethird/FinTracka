@@ -47,6 +47,7 @@ class CategorizationResult:
 
 
 _UNSET = object()
+_PAYMENT_DESCRIPTION = re.compile(r"\b(?:AUTO\s*PAY|PAYMENT|PMT|PYMT)\b", re.IGNORECASE)
 
 
 def update_transaction(
@@ -529,11 +530,17 @@ def _archive_credit_card_payments(
         row["id"]
         for row in connection.execute(
             """
-            SELECT id FROM transactions
-            WHERE tombstoned = 0 AND user_archived = 0 AND pending = 0
-              AND provider_category_detailed LIKE '%CREDIT_CARD_PAYMENT%'
+            SELECT t.id, t.amount_minor, t.provider_description,
+                   t.provider_category_detailed, a.type account_type
+            FROM transactions t
+            JOIN accounts a ON a.id = t.account_id
+            WHERE t.tombstoned = 0 AND t.user_archived = 0 AND t.pending = 0
+              AND (t.provider_category_detailed LIKE '%CREDIT_CARD_PAYMENT%'
+                   OR (a.type = 'credit' AND t.amount_minor > 0))
             """
         )
+        if "CREDIT_CARD_PAYMENT" in (row["provider_category_detailed"] or "")
+        or _PAYMENT_DESCRIPTION.search(row["provider_description"]) is not None
     }
     transaction_ids.update(
         transaction_id
@@ -581,12 +588,11 @@ def _is_credit_card_payment(
     incoming = next((row for row in rows if row["amount_minor"] > 0), None)
     if outgoing is None or incoming is None:
         return False
-    payment = re.compile(r"\b(?:AUTO\s*PAY|PAYMENT|PMT|PYMT)\b", re.IGNORECASE)
     return (
         outgoing["nature"] == "asset"
         and incoming["type"] == "credit"
-        and payment.search(outgoing["provider_description"]) is not None
-        and payment.search(incoming["provider_description"]) is not None
+        and _PAYMENT_DESCRIPTION.search(outgoing["provider_description"]) is not None
+        and _PAYMENT_DESCRIPTION.search(incoming["provider_description"]) is not None
     )
 
 
