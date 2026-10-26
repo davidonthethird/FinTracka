@@ -93,8 +93,13 @@ def main(argv: list[str] | None = None) -> int:
             connection = connect(database_path)
             try:
                 migrate(connection)
-                adapter = build_plaid_adapter(connection, KeychainSecrets(), "david")
-                runs = sync_plaid_connections(connection, adapter)
+                keychain = KeychainSecrets()
+                runs = sync_plaid_connections(
+                    connection,
+                    lambda profile, environment: build_plaid_adapter(
+                        connection, keychain, profile, environment
+                    ),
+                )
             finally:
                 connection.close()
         print(f"Completed {len(runs)} Plaid connection sync(s).")

@@ -13,9 +13,14 @@ from fintracka.sync import apply_batch
 PlaidEnvironment = Literal["sandbox", "production"]
 PlaidProfile = Literal["david", "ariela"]
 PLAID_PROFILES: tuple[PlaidProfile, ...] = ("david", "ariela")
+PlaidAdapterFactory = Callable[[PlaidProfile, PlaidEnvironment], PlaidAdapter]
 
 
 class PlaidNotConfigured(RuntimeError):
+    pass
+
+
+class PlaidSyncFailed(RuntimeError):
     pass
 
 
@@ -131,7 +136,9 @@ def complete_plaid_connection(
     connection: sqlite3.Connection,
     adapter: PlaidAdapter,
     public_token: str,
+    profile: PlaidProfile,
 ) -> dict[str, str]:
+    _validate_profile(profile)
     connection_id = new_id()
     reference = f"plaid:{adapter.environment}:connection:{connection_id}"
     connected = adapter.complete_link(public_token, reference)
@@ -148,8 +155,16 @@ def complete_plaid_connection(
             (institution.external_id,),
         ).fetchone()[0]
         connection.execute(
-            "INSERT INTO provider_connections (id, provider, external_connection_id, institution_id, status, created_at, updated_at, environment) VALUES (?, 'plaid', ?, ?, 'active', ?, ?, ?)",
-            (connection_id, connected.external_connection_id, institution_id, now, now, adapter.environment),
+            "INSERT INTO provider_connections (id, provider, external_connection_id, institution_id, status, created_at, updated_at, environment, credential_profile) VALUES (?, 'plaid', ?, ?, 'active', ?, ?, ?, ?)",
+            (
+                connection_id,
+                connected.external_connection_id,
+                institution_id,
+                now,
+                now,
+                adapter.environment,
+                profile,
+            ),
         )
         store_secret_reference(connection, connection_id, KeychainSecrets.service, reference)
         connection.execute(
@@ -168,6 +183,7 @@ def complete_plaid_connection(
         "id": connection_id,
         "provider": "plaid",
         "environment": adapter.environment,
+        "credential_profile": profile,
         "status": "active",
         "institution_name": institution.name,
         "updated_at": now,
@@ -176,25 +192,25 @@ def complete_plaid_connection(
 
 def repair_plaid_connection(
     connection: sqlite3.Connection,
-    adapter: PlaidAdapter,
+    adapter_factory: PlaidAdapterFactory,
     connection_id: str,
 ):  # type: ignore[no-untyped-def]
     row = _connection_secret(connection, connection_id)
-    _require_environment(row["environment"], adapter.environment)
     if row["status"] == "revoked":
         raise ValueError("connection is revoked")
+    adapter = adapter_factory(row["credential_profile"], row["environment"])
     return adapter.repair_connection(row["keychain_account"])
 
 
 def revoke_plaid_connection(
     connection: sqlite3.Connection,
-    adapter: PlaidAdapter,
+    adapter_factory: PlaidAdapterFactory,
     connection_id: str,
 ) -> None:
     row = _connection_secret(connection, connection_id)
-    _require_environment(row["environment"], adapter.environment)
     if row["status"] == "revoked":
         return
+    adapter = adapter_factory(row["credential_profile"], row["environment"])
     adapter.revoke(row["keychain_account"])
     now = _now()
     connection.execute("BEGIN IMMEDIATE")
@@ -215,11 +231,12 @@ def revoke_plaid_connection(
 
 def sync_plaid_connections(
     connection: sqlite3.Connection,
-    adapter: PlaidAdapter,
+    adapter_factory: PlaidAdapterFactory,
 ) -> list[str]:
     rows = connection.execute(
         """
-        SELECT pc.id, pc.environment, csr.keychain_account, checkpoints.cursor
+        SELECT pc.id, pc.environment, pc.credential_profile, csr.keychain_account,
+               checkpoints.cursor
         FROM provider_connections pc
         JOIN connection_secret_refs csr ON csr.connection_id = pc.id
         LEFT JOIN provider_checkpoints checkpoints ON checkpoints.connection_id = pc.id
@@ -228,24 +245,38 @@ def sync_plaid_connections(
         """
     ).fetchall()
     runs: list[str] = []
+    adapters: dict[tuple[PlaidProfile, PlaidEnvironment], PlaidAdapter] = {}
+    failures = 0
     for row in rows:
-        _require_environment(row["environment"], adapter.environment)
         try:
+            key = (row["credential_profile"], row["environment"])
+            adapter = adapters.get(key)
+            if adapter is None:
+                adapter = adapter_factory(*key)
+                adapters[key] = adapter
             batch = adapter.fetch_updates(row["keychain_account"], row["cursor"])
             runs.append(apply_batch(connection, row["id"], batch))
         except ProviderActionRequired:
-            connection.execute(
-                "UPDATE provider_connections SET status = 'repair', last_error_code = 'ITEM_REPAIR_REQUIRED', updated_at = ? WHERE id = ?",
-                (_now(), row["id"]),
-            )
-            raise
+            _record_sync_error(connection, row["id"], "ITEM_REPAIR_REQUIRED", repair=True)
+            failures += 1
+        except PlaidNotConfigured:
+            _record_sync_error(connection, row["id"], "PLAID_NOT_CONFIGURED")
+            failures += 1
+        except SecretStoreUnavailable:
+            _record_sync_error(connection, row["id"], "KEYCHAIN_UNAVAILABLE")
+            failures += 1
+        except Exception:
+            _record_sync_error(connection, row["id"], "SYNC_FAILED")
+            failures += 1
+    if failures:
+        raise PlaidSyncFailed(f"{failures} Plaid connection sync(s) failed")
     return runs
 
 
 def _connection_secret(connection: sqlite3.Connection, connection_id: str) -> sqlite3.Row:
     row = connection.execute(
         """
-        SELECT pc.status, pc.environment, csr.keychain_account
+        SELECT pc.status, pc.environment, pc.credential_profile, csr.keychain_account
         FROM provider_connections pc JOIN connection_secret_refs csr ON csr.connection_id = pc.id
         WHERE pc.id = ? AND pc.provider = 'plaid'
         """,
@@ -256,9 +287,17 @@ def _connection_secret(connection: sqlite3.Connection, connection_id: str) -> sq
     return row
 
 
-def _require_environment(stored: str | None, active: PlaidEnvironment) -> None:
-    if stored != active:
-        raise SecretStoreUnavailable("Plaid environment does not match the stored connection")
+def _record_sync_error(
+    connection: sqlite3.Connection,
+    connection_id: str,
+    code: str,
+    *,
+    repair: bool = False,
+) -> None:
+    connection.execute(
+        "UPDATE provider_connections SET status = CASE WHEN ? THEN 'repair' ELSE status END, last_error_code = ?, updated_at = ? WHERE id = ?",
+        (repair, code, _now(), connection_id),
+    )
 
 
 def _validate_profile(profile: str) -> None:

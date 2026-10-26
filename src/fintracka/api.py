@@ -401,7 +401,10 @@ def create_app(
                 else:
                     def catch_up(connection: sqlite3.Connection) -> None:
                         with ProcessLock(path.parent / "fintracka.lock"):
-                            sync_plaid_connections(connection, plaid_adapter(connection))
+                            sync_plaid_connections(
+                                connection,
+                                lambda profile, environment: plaid_adapter(connection),
+                            )
 
                     jobs.submit("plaid_sync", catch_up)
         finally:
@@ -575,7 +578,9 @@ def create_app(
     @app.post("/api/v1/connections/plaid/complete", status_code=201)
     def complete_plaid(payload: PlaidCompleteRequest, database: Database) -> dict[str, str]:
         try:
-            return complete_plaid_connection(database, plaid_adapter(database), payload.public_token)
+            return complete_plaid_connection(
+                database, plaid_adapter(database), payload.public_token, "david"
+            )
         except (PlaidNotConfigured, SecretStoreUnavailable) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
@@ -583,7 +588,11 @@ def create_app(
     def repair_plaid(connection_id: str, payload: EmptyRequest, database: Database) -> dict[str, str]:
         del payload
         try:
-            session = repair_plaid_connection(database, plaid_adapter(database), connection_id)
+            session = repair_plaid_connection(
+                database,
+                lambda profile, environment: plaid_adapter(database),
+                connection_id,
+            )
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except (PlaidNotConfigured, SecretStoreUnavailable) as error:
@@ -597,7 +606,11 @@ def create_app(
     @app.delete("/api/v1/connections/{connection_id}", status_code=204)
     def disconnect_plaid(connection_id: str, database: Database) -> None:
         try:
-            revoke_plaid_connection(database, plaid_adapter(database), connection_id)
+            revoke_plaid_connection(
+                database,
+                lambda profile, environment: plaid_adapter(database),
+                connection_id,
+            )
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except (PlaidNotConfigured, SecretStoreUnavailable) as error:
@@ -1431,7 +1444,10 @@ def create_app(
 
         def work(connection: sqlite3.Connection) -> None:
             with ProcessLock(path.parent / "fintracka.lock"):
-                sync_plaid_connections(connection, plaid_adapter(connection))
+                sync_plaid_connections(
+                    connection,
+                    lambda profile, environment: plaid_adapter(connection),
+                )
 
         try:
             check = connect(path)

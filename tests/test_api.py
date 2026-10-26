@@ -359,7 +359,7 @@ def test_each_startup_queues_sync_for_live_connection(tmp_path: Path) -> None:
     connection = connect(path)
     migrate(connection)
     adapter = FakePlaidAdapter()
-    complete_plaid_connection(connection, adapter, "public-production")
+    complete_plaid_connection(connection, adapter, "public-production", "david")
     connection.execute(
         "UPDATE provider_connections SET last_success_at = '2026-10-01T00:00:00Z'"
     )
