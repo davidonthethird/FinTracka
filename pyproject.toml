@@ -17,7 +17,7 @@ dependencies = [
 bank = [
     "certifi==2026.10.19",
     "keyring==25.7.0",
-    "plaid-python==45.0.0",
+    "plaid-python==46.0.0",
 ]
 google = [
     "google-api-python-client==2.201.0",
