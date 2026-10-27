@@ -8,6 +8,7 @@ import pytest
 from fintracka.db import connect, migrate
 from fintracka.ids import new_id
 from fintracka.savings_goals import (
+    AllocationPlanRow,
     SavingsGoalConflict,
     SavingsGoalError,
     archive_savings_goal,
@@ -17,7 +18,12 @@ from fintracka.savings_goals import (
     delete_unused_savings_goal,
     initialization_preview,
     initialize_goal_ledger,
+    allocate_contribution,
+    allocation_preview,
+    rebalance_allocation,
+    reverse_source_events,
     reorder_savings_goals,
+    set_allocation_plan,
     update_savings_goal,
 )
 
@@ -202,6 +208,83 @@ def test_pool_assignments_require_current_revision_and_compatible_goal(
     ).fetchone()) == ("retirement", goal_id)
 
 
+def test_allocation_priority_excess_replay_and_reversal(ledger: sqlite3.Connection) -> None:
+    account_id = _add_savings_account(ledger, 0)
+    initialize_goal_ledger(ledger, "2026-10", 0)
+    goals = {
+        row["name"]: row["id"]
+        for row in ledger.execute("SELECT id, name FROM savings_goals WHERE pool = 'regular'")
+    }
+    fun_id = create_savings_goal(
+        ledger, name="Fun", pool="regular", owner="Shared", icon_key="gamepad",
+        color_key="purple", activation_month="2026-10",
+    )
+    revision = ledger.execute("SELECT updated_at FROM savings_settings WHERE id = 1").fetchone()[0]
+    set_allocation_plan(
+        ledger, "regular", "2026-10",
+        [
+            AllocationPlanRow(goals["Emergency"], 50_000, False, 1),
+            AllocationPlanRow(goals["General Savings"], 40_000, False, 2),
+            AllocationPlanRow(fun_id, 10_000, False, 3),
+        ],
+        revision,
+    )
+
+    preview = allocation_preview(ledger, "regular", "2026-10", 80_000)
+    assert [(row.target_minor, row.basis_points, row.allocated_minor) for row in preview.rows] == [
+        (50_000, 5_000, 50_000), (40_000, 4_000, 30_000), (10_000, 1_000, 0),
+    ]
+    assert preview.unallocated_minor == 0
+    assert [row.allocated_minor for row in allocation_preview(
+        ledger, "regular", "2026-10", 110_000
+    ).rows] == [55_000, 44_000, 11_000]
+
+    transaction_id = _add_savings_transaction(ledger, account_id, 80_000)
+    allocate_contribution(ledger, transaction_id)
+    allocate_contribution(ledger, transaction_id)
+    entries = ledger.execute(
+        "SELECT amount_minor FROM savings_ledger_entries WHERE source_transaction_id = ? AND reverses_entry_id IS NULL ORDER BY amount_minor DESC",
+        (transaction_id,),
+    ).fetchall()
+    assert [row[0] for row in entries] == [50_000, 30_000]
+
+    reverse_source_events(ledger, f"transaction:{transaction_id}", "provider removed")
+    reverse_source_events(ledger, f"transaction:{transaction_id}", "provider removed")
+    assert ledger.execute(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE source_transaction_id = ?",
+        (transaction_id,),
+    ).fetchone()[0] == 0
+
+
+def test_allocation_without_targets_stays_unallocated(ledger: sqlite3.Connection) -> None:
+    _add_savings_account(ledger, 0)
+    initialize_goal_ledger(ledger, "2026-10", 0)
+
+    preview = allocation_preview(ledger, "regular", "2026-10", 12_345)
+
+    assert preview.rows == ()
+    assert preview.unallocated_minor == 12_345
+
+
+def test_allocation_rounding_and_locked_rebalance_are_exact(ledger: sqlite3.Connection) -> None:
+    rows = (
+        AllocationPlanRow("a", 1, True, 1),
+        AllocationPlanRow("b", 1, True, 2),
+        AllocationPlanRow("c", 1, True, 3),
+    )
+
+    result = rebalance_allocation(rows, "a", 5_000)
+
+    assert sum(row.monthly_target_minor for row in result) == 3
+    assert result[0].locked is False
+    assert result[1].locked is True
+    assert result[2].locked is False
+    assert [row.monthly_target_minor for row in result] == [2, 1, 0]
+
+    # Lock All is stable until a slider is actually edited.
+    assert rows == tuple(rows)
+
+
 def _add_savings_account(connection: sqlite3.Connection, balance_minor: int) -> str:
     now = "2026-10-26T12:00:00Z"
     institution_id, provider_id, account_id = new_id(), new_id(), new_id()
@@ -236,6 +319,23 @@ def _add_savings_account(connection: sqlite3.Connection, balance_minor: int) -> 
         (new_id(), account_id, now, balance_minor),
     )
     return account_id
+
+
+def _add_savings_transaction(
+    connection: sqlite3.Connection, account_id: str, amount_minor: int
+) -> str:
+    transaction_id = new_id()
+    now = "2026-10-26T12:00:00Z"
+    connection.execute(
+        """
+        INSERT INTO transactions
+        (id, account_id, local_date, amount_minor, currency, provider_description,
+         pending, tombstoned, created_at, updated_at)
+        VALUES (?, ?, '2026-10-26', ?, 'USD', 'Savings transfer', 0, 0, ?, ?)
+        """,
+        (transaction_id, account_id, amount_minor, now, now),
+    )
+    return transaction_id
 
 
 def _add_manual_investment(connection: sqlite3.Connection, value_minor: int) -> str:

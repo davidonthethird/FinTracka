@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 import json
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 
 from fintracka.ids import new_id
@@ -32,6 +33,32 @@ class SavingsInitializationPreview:
     emergency_minor: int
     general_minor: int
     retirement_balance_minor: int
+
+
+@dataclass(frozen=True)
+class AllocationPlanRow:
+    goal_id: str
+    monthly_target_minor: int
+    locked: bool
+    priority: int
+
+
+@dataclass(frozen=True)
+class AllocationPreviewRow:
+    goal_id: str
+    target_minor: int
+    basis_points: int
+    allocated_minor: int
+
+
+@dataclass(frozen=True)
+class AllocationPreview:
+    pool: str
+    month: str
+    contribution_minor: int
+    planned_minor: int
+    unallocated_minor: int
+    rows: tuple[AllocationPreviewRow, ...]
 
 
 def initialization_preview(
@@ -319,6 +346,323 @@ def assign_manual_asset_pool(
         (pool, goal_id, now, asset_id),
     )
     _audit(connection, "savings_asset_pool_set", "manual_asset", asset_id, now, dict(row), None)
+
+
+def set_allocation_plan(
+    connection: sqlite3.Connection,
+    pool: str,
+    effective_month: str,
+    rows: Sequence[AllocationPlanRow],
+    expected_updated_at: str,
+) -> None:
+    _validate_pool(pool)
+    _validate_month(effective_month)
+    settings = connection.execute("SELECT * FROM savings_settings WHERE id = 1").fetchone()
+    if settings is None:
+        raise SavingsGoalError("savings goal ledger is not initialized")
+    _require_current(settings, expected_updated_at, "savings plan")
+    active_leaf_ids = {
+        row[0]
+        for row in connection.execute(
+            """
+            SELECT g.id FROM savings_goals g
+            WHERE g.pool = ? AND g.active = 1
+              AND NOT EXISTS (SELECT 1 FROM savings_goals c WHERE c.parent_id = g.id AND c.active = 1)
+            """,
+            (pool,),
+        )
+    }
+    row_ids = [row.goal_id for row in rows]
+    if len(row_ids) != len(set(row_ids)) or set(row_ids) != active_leaf_ids:
+        raise SavingsGoalError("allocation rows must contain every active leaf goal exactly once")
+    if len({row.priority for row in rows}) != len(rows):
+        raise SavingsGoalError("allocation priorities must be unique")
+    for row in rows:
+        if (
+            isinstance(row.monthly_target_minor, bool)
+            or not isinstance(row.monthly_target_minor, int)
+            or row.monthly_target_minor < 0
+            or isinstance(row.priority, bool)
+            or not isinstance(row.priority, int)
+            or row.priority < 0
+        ):
+            raise SavingsGoalError("targets and priorities must be nonnegative integers")
+        if not isinstance(row.locked, bool):
+            raise SavingsGoalError("locked must be a boolean")
+    now = _now()
+    for row in rows:
+        connection.execute(
+            "UPDATE savings_goals SET locked = ?, priority = ?, updated_at = ? WHERE id = ?",
+            (int(row.locked), row.priority, now, row.goal_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO savings_goal_target_versions
+            (id, goal_id, effective_month, monthly_target_minor, currency, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'USD', ?, ?)
+            ON CONFLICT(goal_id, effective_month) DO UPDATE SET
+                monthly_target_minor = excluded.monthly_target_minor,
+                updated_at = excluded.updated_at
+            """,
+            (new_id(), row.goal_id, effective_month, row.monthly_target_minor, now, now),
+        )
+    connection.execute("UPDATE savings_settings SET updated_at = ? WHERE id = 1", (now,))
+    _audit(connection, "savings_allocation_plan_set", "savings_settings", "1", now)
+
+
+def allocation_preview(
+    connection: sqlite3.Connection, pool: str, month: str, contribution_minor: int
+) -> AllocationPreview:
+    _validate_pool(pool)
+    _validate_month(month)
+    if (
+        isinstance(contribution_minor, bool)
+        or not isinstance(contribution_minor, int)
+        or contribution_minor < 0
+    ):
+        raise SavingsGoalError("contribution must be a nonnegative integer")
+    plan = _allocation_rows(connection, pool, month)
+    if not plan:
+        return AllocationPreview(pool, month, contribution_minor, 0, contribution_minor, ())
+    targets = [row.monthly_target_minor for row in plan]
+    basis_points = _exact_shares(10_000, targets, [row.priority for row in plan])
+    funded = {
+        row["goal_id"]: row["amount_minor"]
+        for row in connection.execute(
+            """
+            SELECT goal_id, COALESCE(SUM(amount_minor), 0) amount_minor
+            FROM savings_ledger_entries
+            WHERE pool = ? AND month = ? AND bucket_type = 'goal'
+              AND event_type IN ('deposit', 'allocation', 'review')
+            GROUP BY goal_id
+            """,
+            (pool, month),
+        )
+    }
+    allocations = [0] * len(plan)
+    remaining = contribution_minor
+    for index, row in enumerate(plan):
+        shortfall = max(row.monthly_target_minor - funded.get(row.goal_id, 0), 0)
+        amount = min(shortfall, remaining)
+        allocations[index] += amount
+        remaining -= amount
+    if remaining:
+        extra = _exact_shares(remaining, targets, [row.priority for row in plan])
+        allocations = [current + addition for current, addition in zip(allocations, extra, strict=True)]
+        remaining = 0
+    return AllocationPreview(
+        pool,
+        month,
+        contribution_minor,
+        sum(targets),
+        remaining,
+        tuple(
+            AllocationPreviewRow(row.goal_id, row.monthly_target_minor, basis, allocation)
+            for row, basis, allocation in zip(plan, basis_points, allocations, strict=True)
+        ),
+    )
+
+
+def allocate_contribution(connection: sqlite3.Connection, transaction_id: str) -> None:
+    transaction = connection.execute(
+        """
+        SELECT t.*, a.savings_pool FROM transactions t
+        JOIN accounts a ON a.id = t.account_id
+        WHERE t.id = ?
+        """,
+        (transaction_id,),
+    ).fetchone()
+    if transaction is None:
+        raise SavingsGoalError("transaction not found")
+    if (
+        transaction["savings_pool"] not in POOLS
+        or transaction["amount_minor"] <= 0
+        or transaction["pending"]
+        or transaction["tombstoned"]
+    ):
+        return
+    prefix = f"transaction:{transaction_id}"
+    if connection.execute(
+        "SELECT 1 FROM savings_ledger_entries WHERE source_key = ? OR instr(source_key, ? || ':') = 1",
+        (prefix, prefix),
+    ).fetchone():
+        return
+    preview = allocation_preview(
+        connection,
+        transaction["savings_pool"],
+        transaction["local_date"][:7],
+        transaction["amount_minor"],
+    )
+    movement_id = new_id()
+    now = _now()
+    for row in preview.rows:
+        if row.allocated_minor:
+            _allocation_entry(
+                connection, movement_id, transaction, "goal", row.goal_id,
+                row.allocated_minor, f"{prefix}:goal:{row.goal_id}", now,
+            )
+    if preview.unallocated_minor:
+        _allocation_entry(
+            connection, movement_id, transaction, "unallocated", None,
+            preview.unallocated_minor, f"{prefix}:unallocated", now,
+        )
+
+
+def reverse_source_events(
+    connection: sqlite3.Connection, source_key: str, reason: str
+) -> None:
+    entries = connection.execute(
+        """
+        SELECT e.* FROM savings_ledger_entries e
+        WHERE (e.source_key = ? OR instr(e.source_key, ? || ':') = 1)
+          AND e.event_type != 'reversal'
+          AND NOT EXISTS (
+              SELECT 1 FROM savings_ledger_entries r WHERE r.reverses_entry_id = e.id
+          )
+        ORDER BY e.created_at, e.id
+        """,
+        (source_key, source_key),
+    ).fetchall()
+    now = _now()
+    for entry in entries:
+        connection.execute(
+            """
+            INSERT INTO savings_ledger_entries
+            (id, movement_id, pool, bucket_type, goal_id, amount_minor, currency,
+             event_type, effective_date, month, source_key, source_transaction_id,
+             source_review_month, manual_asset_id, reverses_entry_id, actor,
+             explanation, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'USD', 'reversal', ?, ?, ?, ?, ?, ?, ?,
+                    'system', ?, ?)
+            """,
+            (
+                new_id(), new_id(), entry["pool"], entry["bucket_type"], entry["goal_id"],
+                -entry["amount_minor"], entry["effective_date"], entry["month"],
+                f"reversal:{entry['id']}", entry["source_transaction_id"],
+                entry["source_review_month"], entry["manual_asset_id"], entry["id"],
+                reason, now,
+            ),
+        )
+
+
+def rebalance_allocation(
+    rows: Sequence[AllocationPlanRow], edited_goal_id: str, desired_basis_points: int
+) -> tuple[AllocationPlanRow, ...]:
+    if not 0 <= desired_basis_points <= 10_000:
+        raise SavingsGoalError("allocation percentage must be between 0 and 10000 basis points")
+    if not rows or edited_goal_id not in {row.goal_id for row in rows}:
+        raise SavingsGoalError("edited savings goal is not in the allocation plan")
+    total = sum(row.monthly_target_minor for row in rows)
+    if total <= 0:
+        raise SavingsGoalError("a nonzero monthly plan is required for percentage editing")
+    result = list(rows)
+    edited_index = next(index for index, row in enumerate(result) if row.goal_id == edited_goal_id)
+    result[edited_index] = replace(result[edited_index], locked=False)
+    if sum(not row.locked for row in result) < 2:
+        other_index = max(
+            (index for index, row in enumerate(result) if index != edited_index),
+            key=lambda index: (result[index].priority, result[index].goal_id),
+        )
+        result[other_index] = replace(result[other_index], locked=False)
+    edited_target = (total * desired_basis_points + 5_000) // 10_000
+    fixed = sum(
+        row.monthly_target_minor
+        for index, row in enumerate(result)
+        if row.locked and index != edited_index
+    )
+    if edited_target + fixed > total:
+        raise SavingsGoalError("locked targets leave too little room for that percentage")
+    flexible_indices = [
+        index for index, row in enumerate(result)
+        if not row.locked and index != edited_index
+    ]
+    remaining = total - fixed - edited_target
+    weights = [result[index].monthly_target_minor for index in flexible_indices]
+    redistributed = _exact_shares(
+        remaining,
+        weights if sum(weights) else [1] * len(weights),
+        [result[index].priority for index in flexible_indices],
+    )
+    result[edited_index] = replace(result[edited_index], monthly_target_minor=edited_target)
+    for index, target in zip(flexible_indices, redistributed, strict=True):
+        result[index] = replace(result[index], monthly_target_minor=target)
+    return tuple(result)
+
+
+def _allocation_rows(
+    connection: sqlite3.Connection, pool: str, month: str
+) -> tuple[AllocationPlanRow, ...]:
+    return tuple(
+        AllocationPlanRow(
+            row["id"], row["monthly_target_minor"], bool(row["locked"]), row["priority"]
+        )
+        for row in connection.execute(
+            """
+            SELECT g.id, g.locked, g.priority,
+                   COALESCE((
+                       SELECT v.monthly_target_minor
+                       FROM savings_goal_target_versions v
+                       WHERE v.goal_id = g.id AND v.effective_month <= ?
+                       ORDER BY v.effective_month DESC LIMIT 1
+                   ), 0) monthly_target_minor
+            FROM savings_goals g
+            WHERE g.pool = ? AND g.active = 1
+              AND NOT EXISTS (
+                  SELECT 1 FROM savings_goals c
+                  WHERE c.parent_id = g.id AND c.active = 1
+              )
+            ORDER BY g.priority, g.id
+            """,
+            (month, pool),
+        )
+        if row["monthly_target_minor"] > 0
+    )
+
+
+def _exact_shares(total: int, weights: Sequence[int], priorities: Sequence[int]) -> list[int]:
+    weight_total = sum(weights)
+    if total == 0:
+        return [0] * len(weights)
+    if weight_total <= 0 or len(weights) != len(priorities):
+        raise SavingsGoalError("allocation weights must have a positive total")
+    shares = [total * weight // weight_total for weight in weights]
+    remainder = total - sum(shares)
+    order = sorted(
+        range(len(weights)),
+        key=lambda index: (
+            -(total * weights[index] % weight_total), priorities[index], index
+        ),
+    )
+    for index in order[:remainder]:
+        shares[index] += 1
+    return shares
+
+
+def _allocation_entry(
+    connection: sqlite3.Connection,
+    movement_id: str,
+    transaction: sqlite3.Row,
+    bucket_type: str,
+    goal_id: str | None,
+    amount_minor: int,
+    source_key: str,
+    now: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO savings_ledger_entries
+        (id, movement_id, pool, bucket_type, goal_id, amount_minor, currency,
+         event_type, effective_date, month, source_key, source_transaction_id,
+         actor, explanation, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'USD', 'allocation', ?, ?, ?, ?, 'system',
+                'Allocated savings contribution', ?)
+        """,
+        (
+            new_id(), movement_id, transaction["savings_pool"], bucket_type, goal_id,
+            amount_minor, transaction["local_date"], transaction["local_date"][:7],
+            source_key, transaction["id"], now,
+        ),
+    )
 
 
 def _insert_goal(
