@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 
 import { formatMoney } from "../format";
-import { flowScale, laneWeight, percentLabel, remainingLabel, type PlanningCategory, type PlanningIncome, type PlanningSnapshot, type SpendingOwner } from "./model";
+import { actualCategoryStatus, flowScale, laneWeight, percentLabel, remainingLabel, type PlanningCategory, type PlanningIncome, type PlanningSnapshot, type SpendingOwner } from "./model";
 
 export function PlanningFlow({
   incomes,
@@ -28,6 +28,7 @@ export function PlanningFlow({
       {categories.map((category) => {
         const scale = flowScale(category);
         const weight = laneWeight(category, categories);
+        const status = actualCategoryStatus(category);
         const style = {
           "--lane-weight": weight,
           minHeight: `${52 + Math.round(weight * 160)}px`,
@@ -36,7 +37,7 @@ export function PlanningFlow({
           owner,
           category: ownerSnapshots[owner]?.categories.find((row) => row.category_id === category.category_id),
         }));
-        return <div role="button" tabIndex={0} className={`planning-category ${category.status}`} style={style} data-status={category.status} key={category.category_id} onClick={(event) => onCategory(category, event.currentTarget)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onCategory(category, event.currentTarget); } }}>
+        return <div role="button" tabIndex={0} className={`planning-category ${status}`} style={style} data-status={status} key={category.category_id} onClick={(event) => onCategory(category, event.currentTarget)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onCategory(category, event.currentTarget); } }}>
           <span className="planning-category-name"><strong>{category.category}</strong>{category.tzedaka_minimum_minor > 0 && <small>10% Salary minimum</small>}</span>
           <span className="planning-bars" aria-hidden="true">
             <i className="average" style={{ width: `${scale.average * 100}%` }} />

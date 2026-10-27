@@ -20,9 +20,11 @@ from fintracka.jobs import recover_interrupted_jobs
 from fintracka.ledger import confirm_transfer
 from fintracka.google_sheets import configure_google
 from fintracka.keychain import KeychainSecrets
-from fintracka.plaid_adapter import ConnectedItem, InstitutionInfo, LinkSession
-from fintracka.plaid_service import complete_plaid_connection
+from fintracka.plaid_adapter import ConnectedItem, InstitutionInfo, LinkSession, ProviderActionRequired
+from fintracka.plaid_service import complete_plaid_connection, configure_plaid
+from fintracka.planning import set_recurring_target
 from fintracka.providers import NormalizedAccount, NormalizedBalance, NormalizedTransaction, SyncBatch
+from fintracka.savings_goals import initialize_goal_ledger, update_savings_goal
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
 from fintracka.sync import apply_batch
 
@@ -31,33 +33,39 @@ from fintracka.sync import apply_batch
 class FakePlaidAdapter:
     environment: str = "production"
     revoked: list[str] | None = None
+    failure: Exception | None = None
 
     def __post_init__(self) -> None:
         if self.revoked is None:
             self.revoked = []
 
     def create_link_session(self) -> LinkSession:
-        return LinkSession("link-production", "2026-10-12T14:00:00Z", "production")
+        return LinkSession(
+            f"link-{self.environment}", "2026-10-12T14:00:00Z", self.environment
+        )
 
     def complete_link(self, public_token: str, secret_reference: str) -> ConnectedItem:
-        assert public_token == "public-production"
-        return ConnectedItem("item-production", secret_reference)
+        assert public_token == f"public-{self.environment}"
+        return ConnectedItem(f"item-{self.environment}", secret_reference)
 
     def connection_info(self, secret_reference: str) -> InstitutionInfo:
-        assert secret_reference.startswith("plaid:production:connection:")
-        return InstitutionInfo("ins_1", "Example Bank")
+        assert secret_reference.startswith(f"plaid:{self.environment}:connection:")
+        return InstitutionInfo(f"ins_{self.environment}", f"{self.environment.title()} Bank")
 
     def repair_connection(self, secret_reference: str) -> LinkSession:
-        assert secret_reference.startswith("plaid:production:connection:")
-        return LinkSession("link-repair", "2026-10-12T15:00:00Z", "production")
+        assert secret_reference.startswith(f"plaid:{self.environment}:connection:")
+        return LinkSession("link-repair", "2026-10-12T15:00:00Z", self.environment)
 
     def fetch_updates(self, secret_reference: str, checkpoint: str | None) -> SyncBatch:
         del secret_reference, checkpoint
-        account = NormalizedAccount("checking-1", "Everyday Checking", "depository", "checking", "asset", "USD", None)
+        if self.failure is not None:
+            raise self.failure
+        account_id = f"checking-{self.environment}"
+        account = NormalizedAccount(account_id, "Everyday Checking", "depository", "checking", "asset", "USD", None)
         return SyncBatch(
             accounts=(account,),
-            balances=(NormalizedBalance("checking-1", "2026-10-12T12:00:00Z", 100_00, 90_00, "USD", "plaid"),),
-            added=(NormalizedTransaction("txn-1", "checking-1", "2026-10-12T12:00:00Z", -12_34, "USD", "Corner Store", "Corner Store", False),),
+            balances=(NormalizedBalance(account_id, "2026-10-12T12:00:00Z", 100_00, 90_00, "USD", "plaid"),),
+            added=(NormalizedTransaction(f"txn-{self.environment}", account_id, "2026-10-12T12:00:00Z", -12_34, "USD", f"{self.environment.title()} Store", f"{self.environment.title()} Store", False),),
             modified=(),
             removed=(),
             next_checkpoint="cursor-1",
@@ -136,15 +144,35 @@ def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_pa
     path = tmp_path / "ledger.sqlite3"
     connection = connect(path)
     migrate(connection)
-    connection.execute(
-        "INSERT INTO app_metadata (key, value) VALUES ('plaid.environment', 'production')"
+    connection.executemany(
+        "INSERT INTO app_metadata (key, value) VALUES (?, ?)",
+        (
+            ("plaid.profile.david.environment", "production"),
+            ("plaid.profile.david.production.client_id_ref", "david-client-ref"),
+            ("plaid.profile.david.production.secret_ref", "david-secret-ref"),
+            ("plaid.profile.ariela.environment", "sandbox"),
+            ("plaid.profile.ariela.sandbox.client_id_ref", "ariela-client-ref"),
+            ("plaid.profile.ariela.sandbox.secret_ref", "ariela-secret-ref"),
+        ),
     )
     connection.close()
-    adapter = FakePlaidAdapter()
+    adapters = {
+        "david": FakePlaidAdapter("production"),
+        "ariela": FakePlaidAdapter("sandbox"),
+    }
+    factory_calls: list[tuple[str, str | None]] = []
+
+    def adapter_factory(connection, profile, environment):  # type: ignore[no-untyped-def]
+        del connection
+        factory_calls.append((profile, environment))
+        adapter = adapters[profile]
+        assert environment is None or environment == adapter.environment
+        return adapter
+
     app = create_app(
         path,
         bootstrap_token="bootstrap",
-        plaid_adapter_factory=lambda _: adapter,
+        plaid_adapter_factory=adapter_factory,
         filevault_checker=lambda: True,
     )
 
@@ -154,7 +182,8 @@ def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_pa
         assert "https://cdn.plaid.com/link/v2/stable/link-initialize.js" in csp
         assert "frame-src https://cdn.plaid.com/" in csp
         assert "connect-src 'self' https://production.plaid.com/" in csp
-        assert "https://sandbox.plaid.com/" not in csp
+        assert "https://sandbox.plaid.com/" in csp
+        assert "connect-src *" not in csp
         assert "'nonce-" in csp
         assert "form-action 'self'" in csp
         assert health.headers["x-frame-options"] == "DENY"
@@ -165,9 +194,30 @@ def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_pa
         csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
         headers = {"origin": "http://testserver", "x-csrf-token": csrf}
 
-        assert client.post("/api/v1/connections/plaid/sessions", json={}).status_code == 403
-        session = client.post(
+        providers = client.get("/api/v1/providers").json()
+        plaid = next(item for item in providers if item["id"] == "plaid")
+        assert plaid == {
+            "id": "plaid",
+            "name": "Plaid",
+            "enabled": True,
+            "profiles": [
+                {"id": "david", "label": "David", "configured": True, "environment": "production"},
+                {"id": "ariela", "label": "Ariela", "configured": True, "environment": "sandbox"},
+            ],
+        }
+        assert "ref" not in str(plaid).lower()
+
+        assert client.post(
+            "/api/v1/connections/plaid/sessions", json={"profile": "david"}
+        ).status_code == 403
+        assert client.post(
             "/api/v1/connections/plaid/sessions", json={}, headers=headers
+        ).status_code == 422
+        assert client.post(
+            "/api/v1/connections/plaid/sessions", json={"profile": "other"}, headers=headers
+        ).status_code == 422
+        session = client.post(
+            "/api/v1/connections/plaid/sessions", json={"profile": "david"}, headers=headers
         )
         assert session.status_code == 200
         assert session.json() == {
@@ -178,25 +228,27 @@ def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_pa
 
         invalid = client.post(
             "/api/v1/connections/plaid/complete",
-            json={"public_token": "public-production", "access_token": "must-not-be-accepted"},
+            json={"public_token": "public-production", "profile": "david", "access_token": "must-not-be-accepted"},
             headers=headers,
         )
         assert invalid.status_code == 422
         completed = client.post(
             "/api/v1/connections/plaid/complete",
-            json={"public_token": "public-production"},
+            json={"public_token": "public-production", "profile": "david"},
             headers=headers,
         )
         assert completed.status_code == 201
         connection_payload = completed.json()
-        assert connection_payload["institution_name"] == "Example Bank"
+        assert connection_payload["institution_name"] == "Production Bank"
         assert connection_payload["environment"] == "production"
+        assert connection_payload["credential_profile"] == "david"
         assert "access_token" not in str(connection_payload)
         connection_id = connection_payload["id"]
 
         listed = client.get("/api/v1/connections").json()
-        assert listed[0]["institution_name"] == "Example Bank"
+        assert listed[0]["institution_name"] == "Production Bank"
         assert listed[0]["environment"] == "production"
+        assert listed[0]["credential_profile"] == "david"
         assert "keychain" not in str(listed).lower()
         assert "token" not in str(listed).lower()
 
@@ -209,17 +261,75 @@ def test_plaid_connection_api_uses_production_csp_and_sanitized_contracts(tmp_pa
             "expires_at": "2026-10-12T15:00:00Z",
             "environment": "production",
         }
+        assert client.post(
+            f"/api/v1/connections/{connection_id}/repair",
+            json={"profile": "ariela"},
+            headers=headers,
+        ).status_code == 422
+
+        ariela_session = client.post(
+            "/api/v1/connections/plaid/sessions", json={"profile": "ariela"}, headers=headers
+        )
+        assert ariela_session.json()["environment"] == "sandbox"
+        ariela_completed = client.post(
+            "/api/v1/connections/plaid/complete",
+            json={"public_token": "public-sandbox", "profile": "ariela"},
+            headers=headers,
+        )
+        assert ariela_completed.status_code == 201
+        assert ariela_completed.json()["credential_profile"] == "ariela"
 
         sync = client.post("/api/v1/sync-runs", json={}, headers=headers)
         assert sync.status_code == 202
         assert _wait_for_job(client, sync.json()["job_id"])["status"] == "succeeded"
         transactions = client.get("/api/v1/transactions").json()["items"]
-        assert [item["description"] for item in transactions] == ["Corner Store"]
+        assert {item["description"] for item in transactions} == {
+            "Production Store",
+            "Sandbox Store",
+        }
 
         deleted = client.delete(f"/api/v1/connections/{connection_id}", headers=headers)
         assert deleted.status_code == 204
-        assert adapter.revoked and adapter.revoked[0].startswith("plaid:production:connection:")
+        assert adapters["david"].revoked and adapters["david"].revoked[0].startswith("plaid:production:connection:")
         assert client.get("/api/v1/connections").json()[0]["status"] == "revoked"
+        assert ("david", "production") in factory_calls
+        assert ("ariela", "sandbox") in factory_calls
+
+
+def test_plaid_profile_status_resolves_keychain_and_csp_keeps_both_configured_environments(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    backend = FakeKeyring()
+    secrets = KeychainSecrets(backend)
+    configure_plaid(connection, secrets, "david", "production", "prod-client", "prod-secret")
+    configure_plaid(connection, secrets, "david", "sandbox", "sandbox-client", "sandbox-secret")
+    sandbox_secret_ref = connection.execute(
+        "SELECT value FROM app_metadata WHERE key = 'plaid.profile.david.sandbox.secret_ref'"
+    ).fetchone()[0]
+    connection.close()
+    monkeypatch.setattr(api_module, "KeychainSecrets", lambda: secrets)
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        csp = client.get("/api/v1/health").headers["content-security-policy"]
+        assert "https://production.plaid.com/" in csp
+        assert "https://sandbox.plaid.com/" in csp
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        david = client.get("/api/v1/providers").json()[1]["profiles"][0]
+        assert david == {
+            "id": "david",
+            "label": "David",
+            "configured": True,
+            "environment": "sandbox",
+        }
+
+        backend.delete_password(KeychainSecrets.service, sandbox_secret_ref)
+        david = client.get("/api/v1/providers").json()[1]["profiles"][0]
+        assert david == {"id": "david", "label": "David", "configured": False}
 
 
 def test_first_production_link_creates_backup_and_filevault_is_a_hard_gate(tmp_path: Path) -> None:
@@ -227,15 +337,16 @@ def test_first_production_link_creates_backup_and_filevault_is_a_hard_gate(tmp_p
     connection = connect(path)
     migrate(connection)
     connection.execute(
-        "INSERT INTO app_metadata (key, value) VALUES ('plaid.environment', 'production')"
+        "INSERT INTO app_metadata (key, value) VALUES ('plaid.profile.david.environment', 'production')"
     )
     connection.close()
+    migration_backups = set((tmp_path / "backups").glob("*.sqlite3"))
     adapter = FakePlaidAdapter()
 
     blocked = create_app(
         path,
         bootstrap_token="blocked",
-        plaid_adapter_factory=lambda _: adapter,
+        plaid_adapter_factory=lambda connection, profile, environment: adapter,
         filevault_checker=lambda: False,
     )
     with TestClient(blocked) as client:
@@ -243,16 +354,16 @@ def test_first_production_link_creates_backup_and_filevault_is_a_hard_gate(tmp_p
         csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
         response = client.post(
             "/api/v1/connections/plaid/sessions",
-            json={},
+            json={"profile": "david"},
             headers={"origin": "http://testserver", "x-csrf-token": csrf},
         )
         assert response.status_code == 409
-        assert not list((tmp_path / "backups").glob("*.sqlite3"))
+        assert set((tmp_path / "backups").glob("*.sqlite3")) == migration_backups
 
     allowed = create_app(
         path,
         bootstrap_token="allowed",
-        plaid_adapter_factory=lambda _: adapter,
+        plaid_adapter_factory=lambda connection, profile, environment: adapter,
         filevault_checker=lambda: True,
     )
     with TestClient(allowed) as client:
@@ -260,12 +371,13 @@ def test_first_production_link_creates_backup_and_filevault_is_a_hard_gate(tmp_p
         csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
         response = client.post(
             "/api/v1/connections/plaid/sessions",
-            json={},
+            json={"profile": "david"},
             headers={"origin": "http://testserver", "x-csrf-token": csrf},
         )
         assert response.status_code == 200
-        backups = list((tmp_path / "backups").glob("fintracka-*.sqlite3"))
-        assert len(backups) == 1 and backups[0].stat().st_mode & 0o777 == 0o600
+        backups = set((tmp_path / "backups").glob("fintracka-*.sqlite3")) - migration_backups
+        assert len(backups) == 1
+        assert next(iter(backups)).stat().st_mode & 0o777 == 0o600
 
 
 def test_google_authorization_and_export_run_as_persisted_jobs(tmp_path: Path) -> None:
@@ -357,13 +469,17 @@ def test_each_startup_queues_sync_for_live_connection(tmp_path: Path) -> None:
     connection = connect(path)
     migrate(connection)
     adapter = FakePlaidAdapter()
-    complete_plaid_connection(connection, adapter, "public-production")
+    complete_plaid_connection(connection, adapter, "public-production", "david")
     connection.execute(
         "UPDATE provider_connections SET last_success_at = '2026-10-01T00:00:00Z'"
     )
     connection.close()
 
-    app = create_app(path, bootstrap_token="first", plaid_adapter_factory=lambda _: adapter)
+    app = create_app(
+        path,
+        bootstrap_token="first",
+        plaid_adapter_factory=lambda connection, profile, environment: adapter,
+    )
     with TestClient(app) as client:
         client.post("/api/v1/session/bootstrap", json={"token": "first"})
         for _ in range(200):
@@ -377,7 +493,11 @@ def test_each_startup_queues_sync_for_live_connection(tmp_path: Path) -> None:
             time.sleep(0.01)
         assert row is not None and row["status"] == "succeeded"
 
-    second = create_app(path, bootstrap_token="second", plaid_adapter_factory=lambda _: adapter)
+    second = create_app(
+        path,
+        bootstrap_token="second",
+        plaid_adapter_factory=lambda connection, profile, environment: adapter,
+    )
     with TestClient(second):
         for _ in range(200):
             check = connect(path)
@@ -394,6 +514,51 @@ def test_each_startup_queues_sync_for_live_connection(tmp_path: Path) -> None:
     ).fetchone()[0] == 2
     assert connection.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
     connection.close()
+
+
+def test_manual_sync_attempts_both_profiles_and_marks_job_failed_after_partial_success(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    david = FakePlaidAdapter("production")
+    ariela = FakePlaidAdapter("sandbox", failure=ProviderActionRequired("repair required"))
+    complete_plaid_connection(connection, david, "public-production", "david")
+    complete_plaid_connection(connection, ariela, "public-sandbox", "ariela")
+    connection.execute("UPDATE provider_connections SET status = 'disabled' WHERE provider = 'plaid'")
+    connection.close()
+    calls: list[tuple[str, str | None]] = []
+
+    def adapter_factory(connection, profile, environment):  # type: ignore[no-untyped-def]
+        del connection
+        calls.append((profile, environment))
+        return {"david": david, "ariela": ariela}[profile]
+
+    app = create_app(path, bootstrap_token="bootstrap", plaid_adapter_factory=adapter_factory)
+    with TestClient(app) as client:
+        check = connect(path)
+        check.execute("UPDATE provider_connections SET status = 'active' WHERE provider = 'plaid'")
+        check.close()
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        response = client.post(
+            "/api/v1/sync-runs",
+            json={},
+            headers={"origin": "http://testserver", "x-csrf-token": csrf},
+        )
+        assert response.status_code == 202
+        assert _wait_for_job(client, response.json()["job_id"])["status"] == "failed"
+
+    check = connect(path)
+    assert check.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
+    assert tuple(
+        check.execute(
+            "SELECT status, last_error_code FROM provider_connections WHERE credential_profile = 'ariela'"
+        ).fetchone()
+    ) == ("repair", "ITEM_REPAIR_REQUIRED")
+    check.close()
+    assert calls == [("david", "production"), ("ariela", "sandbox")]
 
 
 def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
@@ -419,6 +584,14 @@ def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
         ).json()
         assert len(first["items"]) == len(second["items"]) == 1
         assert first["items"][0]["id"] != second["items"][0]["id"]
+        assert first["items"][0]["account_name"] == "Everyday Checking"
+        assert first["items"][0]["account_mask"] == "1001"
+        assert first["items"][0]["institution_name"] == "Synthetic Bank 1"
+        assert first["items"][0]["provider"] == "synthetic"
+        detail = client.get(f"/api/v1/transactions/{first['items'][0]['id']}")
+        assert detail.status_code == 200
+        assert detail.json() == first["items"][0]
+        assert client.get(f"/api/v1/transactions/{new_id()}").status_code == 404
         uncategorized = client.get(
             "/api/v1/transactions", params={"category_id": "uncategorized"}
         ).json()["items"]
@@ -726,6 +899,19 @@ def test_cash_flow_report_includes_clickable_transaction_drilldowns(tmp_path: Pa
     assert groceries["entry_ids"]
     assert {entry["id"] for entry in report["entries"]} >= set(groceries["entry_ids"])
     assert all(entry["currency"] == "USD" for entry in report["entries"])
+    assert all(
+        {"category_id", "updated_at", "is_cash_withdrawal"} <= set(entry)
+        for entry in report["entries"]
+    )
+    connection = connect(path)
+    first = report["entries"][0]
+    stored = connection.execute(
+        "SELECT updated_at, is_cash_withdrawal FROM transactions WHERE id = ?",
+        (first["transaction_id"],),
+    ).fetchone()
+    assert first["updated_at"] == stored["updated_at"]
+    assert first["is_cash_withdrawal"] is bool(stored["is_cash_withdrawal"])
+    connection.close()
 
 
 def test_concurrent_account_edits_allow_only_one_expected_version(
@@ -1200,7 +1386,7 @@ def test_withdrawal_api_exposes_marker_and_forces_single_categorization(tmp_path
         assert result.status_code == 200 and result.json()["affected_count"] == 1
 
 
-def test_transaction_api_hides_only_confirmed_transfers_by_default(
+def test_transaction_api_hides_confirmed_transfers_and_credit_card_payments_by_default(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "ledger.sqlite3"
@@ -1245,10 +1431,10 @@ def test_transaction_api_hides_only_confirmed_transfers_by_default(
     with TestClient(app) as client:
         client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
         ordinary = client.get("/api/v1/transactions").json()["items"]
-        assert [row["description"] for row in ordinary] == ["BOOK STORE", "SAVINGS TRANSFER", "CARD PAYMENT"]
+        assert [row["description"] for row in ordinary] == ["BOOK STORE", "SAVINGS TRANSFER"]
         assert client.get(
             "/api/v1/transactions", params={"search": "PAYMENT"}
-        ).json()["items"][0]["description"] == "CARD PAYMENT"
+        ).json()["items"] == []
         included = client.get(
             "/api/v1/transactions", params={"include_transfers": True, "limit": 1}
         ).json()
@@ -1264,9 +1450,11 @@ def test_transaction_api_hides_only_confirmed_transfers_by_default(
         assert second["items"][0]["description"] == "SAVINGS TRANSFER"
         searched = client.get(
             "/api/v1/transactions",
-            params={"include_transfers": True, "search": "PAYMENT"},
+            params={"include_archived": True, "search": "PAYMENT"},
         ).json()["items"]
         assert [row["description"] for row in searched] == ["CARD PAYMENT"]
+        assert searched[0]["archived"] is True
+        assert searched[0]["category"] == "Credit card payment"
 
 
 def test_rejecting_transfer_candidate_keeps_transactions_visible(tmp_path: Path) -> None:
@@ -1453,6 +1641,9 @@ def test_planning_api_includes_forecast_coverage_and_subcategory_totals(tmp_path
             f"/api/v1/planning/2026-10/categories/{shopping}/transactions"
         ).json()
         assert details[0]["subcategory"] == "Clothing"
+        assert details[0]["category_id"] == shopping
+        assert details[0]["updated_at"]
+        assert details[0]["is_cash_withdrawal"] is False
 
 
 def test_savings_api_manages_assets_and_account_scope(tmp_path: Path) -> None:
@@ -1506,6 +1697,206 @@ def test_savings_api_manages_assets_and_account_scope(tmp_path: Path) -> None:
             params={"expected_updated_at": changed.json()["updated_at"]}, headers=headers,
         ).status_code == 204
         assert client.get("/api/v1/savings/2026-10").json()["investments_minor"] == 0
+
+
+def test_savings_goal_api_initializes_and_rejects_unknown_or_stale_mutations(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    apply_batch(connection, connection_id, synthetic_batches([connection_id])[connection_id])
+    account = connection.execute(
+        "SELECT id FROM accounts WHERE provider_account_id = 'checking-1'"
+    ).fetchone()
+    connection.execute(
+        "UPDATE accounts SET subtype = 'savings', include_savings = 1 WHERE id = ?", (account["id"],)
+    )
+    connection.commit()
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+        preview = client.get(
+            "/api/v1/savings/initialization-preview", params={"activation_month": "2026-10"}
+        )
+        assert preview.status_code == 200
+        balance = preview.json()["regular_balance_minor"]
+        assert client.post(
+            "/api/v1/savings/initialize",
+            json={"activation_month": "2026-10", "expected_regular_balance_minor": balance, "secret": "no"},
+            headers=headers,
+        ).status_code == 422
+        initialized = client.post(
+            "/api/v1/savings/initialize",
+            json={"activation_month": "2026-10", "expected_regular_balance_minor": balance},
+            headers=headers,
+        )
+        assert initialized.status_code == 201
+        assert initialized.json()["combined_minor"] == balance
+        emergency = next(goal for goal in initialized.json()["goals"] if goal["name"] == "Emergency")
+        stale = client.patch(
+            f"/api/v1/savings/goals/{emergency['goal_id']}",
+            json={
+                "expected_updated_at": "stale", "name": "Emergency", "owner": "Shared",
+                "icon_key": "shield", "color_key": "blue", "parent_id": None,
+                "linked_category_id": None,
+            },
+            headers=headers,
+        )
+        assert stale.status_code == 409
+        changed_goal = client.patch(
+            f"/api/v1/savings/goals/{emergency['goal_id']}",
+            json={
+                "expected_updated_at": emergency["updated_at"], "name": "Emergency",
+                "owner": "Shared", "icon_key": "shield", "color_key": "blue",
+                "parent_id": None, "linked_category_id": None,
+                "monthly_target_minor": 50_000, "effective_month": "2026-10",
+            },
+            headers=headers,
+        )
+        assert changed_goal.status_code == 200
+        assert changed_goal.json()["monthly_target_minor"] == 50_000
+        body = client.get("/api/v1/savings/2026-10").json()
+        assert body["goal_ledger"]["combined_minor"] == balance
+        assert "secret" not in json.dumps(body).lower()
+
+        initialized_account = client.get("/api/v1/accounts").json()[0]
+        reassigned = client.patch(
+            f"/api/v1/accounts/{initialized_account['id']}",
+            json={
+                "expected_updated_at": initialized_account["updated_at"],
+                "savings_pool": "retirement",
+            },
+            headers=headers,
+        )
+        assert reassigned.status_code == 409
+        assert client.get("/api/v1/savings/2026-10").json()["goal_ledger"]["combined_minor"] == balance
+
+        retirement = client.post(
+            "/api/v1/savings/goals",
+            json={
+                "name": "David Roth IRA", "pool": "retirement", "owner": "David",
+                "icon_key": "chart", "color_key": "purple",
+                "activation_month": "2026-10", "monthly_target_minor": 50_000,
+            },
+            headers=headers,
+        ).json()
+        asset = client.post(
+            "/api/v1/savings/assets",
+            json={
+                "title": "Fidelity Roth IRA", "kind": "investment", "owner": "David",
+                "current_value_minor": 200_000, "as_of_date": "2026-10-26",
+                "savings_pool": "retirement", "savings_goal_id": retirement["goal_id"],
+            },
+            headers=headers,
+        )
+        assert asset.status_code == 201
+        changed = client.patch(
+            f"/api/v1/savings/assets/{asset.json()['id']}",
+            json={
+                "title": "Fidelity Roth IRA", "kind": "investment", "owner": "David",
+                "current_value_minor": 210_000, "as_of_date": "2026-10-27",
+                "expected_updated_at": asset.json()["updated_at"],
+                "savings_pool": "retirement", "savings_goal_id": retirement["goal_id"],
+            },
+            headers=headers,
+        )
+        assert changed.status_code == 200
+        goal = client.get(
+            f"/api/v1/savings/goals/{retirement['goal_id']}",
+            params={"through_month": "2026-10"},
+        ).json()
+        assert goal["balance_minor"] == 210_000
+        assert goal["months"][-1]["valuation_minor"] == 10_000
+
+
+def test_savings_draw_reconciles_after_category_undo_and_split(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    apply_batch(connection, connection_id, synthetic_batches([connection_id])[connection_id])
+    connection.execute("UPDATE accounts SET include_savings = 0")
+    savings_account = new_id()
+    now = "2026-10-26T12:00:00Z"
+    connection.execute(
+        """
+        INSERT INTO accounts
+        (id, connection_id, provider_account_id, name, type, subtype, nature,
+         currency, include_savings, savings_pool, created_at, updated_at)
+        VALUES (?, ?, 'savings-reconcile', 'Joint savings', 'depository', 'savings',
+                'asset', 'USD', 1, 'regular', ?, ?)
+        """,
+        (savings_account, connection_id, now, now),
+    )
+    connection.execute(
+        """
+        INSERT INTO account_balance_snapshots
+        (id, account_id, observed_at, current_minor, currency, source)
+        VALUES (?, ?, ?, 10000, 'USD', 'synthetic')
+        """,
+        (new_id(), savings_account, now),
+    )
+    initialize_goal_ledger(connection, "2026-10", 10_000)
+    shopping = connection.execute("SELECT id FROM categories WHERE name = 'Shopping'").fetchone()[0]
+    groceries = connection.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()[0]
+    goal = connection.execute("SELECT * FROM savings_goals WHERE name = 'Emergency'").fetchone()
+    update_savings_goal(
+        connection, goal["id"], goal["updated_at"], name="Shopping reserve",
+        owner="Shared", icon_key="shopping_bag", color_key="pink",
+        parent_id=None, linked_category_id=shopping,
+    )
+    set_recurring_target(connection, shopping, 0, "2026-10")
+    transaction_id = connection.execute(
+        "SELECT transaction_id FROM transaction_external_ids WHERE external_id = 'groceries-1'"
+    ).fetchone()[0]
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+        transaction = client.get(f"/api/v1/transactions/{transaction_id}").json()
+        categorized = client.post(
+            f"/api/v1/transactions/{transaction_id}/categorize",
+            json={
+                "expected_updated_at": transaction["updated_at"],
+                "category_id": shopping,
+                "scope": "one_time",
+            },
+            headers=headers,
+        )
+        assert categorized.status_code == 200
+        assert client.get("/api/v1/savings/2026-10").json()["goal_ledger"]["pending_transfer_minor"] == 8_742
+
+        undo = client.post(
+            f"/api/v1/categorizations/{categorized.json()['undo_id']}/undo",
+            json={},
+            headers=headers,
+        )
+        assert undo.status_code == 200
+        assert client.get("/api/v1/savings/2026-10").json()["goal_ledger"]["pending_transfer_minor"] == 0
+
+        transaction = client.get(f"/api/v1/transactions/{transaction_id}").json()
+        split = client.post(
+            f"/api/v1/transactions/{transaction_id}/split",
+            json={
+                "expected_updated_at": transaction["updated_at"],
+                "splits": [
+                    {"amount_minor": -4_000, "category_id": shopping, "notes": None},
+                    {"amount_minor": -4_742, "category_id": groceries, "notes": None},
+                ],
+            },
+            headers=headers,
+        )
+        assert split.status_code == 200
+        assert client.get("/api/v1/savings/2026-10").json()["goal_ledger"]["pending_transfer_minor"] == 4_000
 
 
 def _category_payload(name: str = "Test expense") -> dict[str, str | int]:

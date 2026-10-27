@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import plistlib
 import json
+import sqlite3
 import subprocess
+import stat
 from pathlib import Path
 
 import pytest
 from openpyxl import load_workbook
 
-from fintracka.backups import backup_database, restore_database
+from fintracka.backups import backup_database, restore_database, verify_backup
 from fintracka.db import connect, migrate
 from fintracka.exports import SHEET_ORDER, build_snapshot, export_excel, export_google
 from fintracka.google_sheets import (
@@ -60,6 +62,41 @@ def test_backup_is_private_verified_and_restores_into_empty_target(
     connection = connect(restored)
     assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert connection.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == source_count
+    connection.close()
+
+
+def test_pre_migration_backup_is_verified_and_private(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+
+    migrate(connection)
+
+    backups = sorted((tmp_path / "backups").glob("fintracka-pre-migration-*.sqlite3"))
+    assert len(backups) == 2
+    for backup in backups:
+        verify_backup(backup)
+        assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 14
+    connection.close()
+
+
+def test_pre_migration_backup_failure_leaves_version_12_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+
+    def fail_backup(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise sqlite3.DatabaseError("verification failed")
+
+    monkeypatch.setattr("fintracka.db.backup_connection", fail_backup, raising=False)
+    with pytest.raises(sqlite3.DatabaseError, match="verification failed"):
+        migrate(connection)
+
+    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 12
+    assert "credential_profile" not in {
+        row[1] for row in connection.execute("PRAGMA table_info(provider_connections)")
+    }
     connection.close()
 
 

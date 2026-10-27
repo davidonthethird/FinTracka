@@ -1,5 +1,3 @@
-import { formatMoney } from "../format";
-
 export type SpendingOwner = "David" | "Ariela" | "Shared";
 
 export type PlanningTrendPoint = { month: string; amount_minor: number };
@@ -83,37 +81,14 @@ export function coverageLabel(snapshot: Pick<PlanningSnapshot, "usable_average_m
   return `${snapshot.usable_average_months} of ${snapshot.average_months} months available`;
 }
 
-export type PaceIndicator = {
-  tone: "good" | "steady" | "warning" | "bad" | "neutral";
-  label: string;
-};
-
-export function planningPace(categories: PlanningCategory[], projectedMinor: number | null): PaceIndicator {
-  const historicalMinor = categories.reduce(
-    (total, category) => total + Math.max(category.historical_average_minor, 0),
-    0,
-  );
-  if (projectedMinor === null || historicalMinor <= 0) {
-    return { tone: "neutral", label: "No historical comparison" };
-  }
-  const percent = Math.round((Math.max(projectedMinor, 0) / historicalMinor) * 100);
-  const tone = percent <= 90 ? "good" : percent <= 100 ? "steady" : percent <= 110 ? "warning" : "bad";
-  return { tone, label: `Projected ${percent}% of usual` };
-}
-
 export function visiblePlanningCategories(categories: PlanningCategory[], showInactive: boolean): PlanningCategory[] {
   return showInactive ? categories : categories.filter((category) => category.target_minor !== 0 || category.actual_minor !== 0);
 }
 
-export function overallStatusLabel(
-  snapshot: Pick<PlanningSnapshot, "status" | "projected_surplus_shortfall_minor">,
-): string {
-  if (snapshot.status === "no_plan") return "No spending plan yet";
-  if (snapshot.status === "unplanned") return "Spending has no monthly target";
-  const projected = snapshot.projected_surplus_shortfall_minor;
-  if (projected === null) return snapshot.status === "close" ? "Close to the monthly limit" : "On track";
-  if (projected < 0) return `Projected ${formatMoney(Math.abs(projected))} over plan`;
-  return `Projected ${formatMoney(projected)} under plan`;
+export function actualCategoryStatus(category: PlanningCategory): "no_target" | "unplanned" | "refund" | "on_track" | "overspent" {
+  if (category.actual_minor < 0) return "refund";
+  if (!category.target_minor) return category.actual_minor > 0 ? "unplanned" : "no_target";
+  return category.remaining_minor < 0 ? "overspent" : "on_track";
 }
 
 export function laneWeight(category: PlanningCategory, categories: PlanningCategory[]): number {

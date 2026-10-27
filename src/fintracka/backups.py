@@ -10,28 +10,14 @@ from pathlib import Path
 def backup_database(source_path: str | Path, backup_directory: str | Path, *, keep: int = 30) -> Path:
     source_path = Path(source_path)
     backup_directory = Path(backup_directory)
-    backup_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
-    destination = backup_directory / f"fintracka-{timestamp}.sqlite3"
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".fintracka-backup-", dir=backup_directory)
-    os.close(descriptor)
-    temporary = Path(temporary_name)
+    source = sqlite3.connect(source_path)
     try:
-        source = sqlite3.connect(source_path)
-        target = sqlite3.connect(temporary)
-        try:
-            source.backup(target)
-        finally:
-            target.close()
-            source.close()
-        verify_backup(temporary)
-        temporary.chmod(0o600)
-        os.replace(temporary, destination)
-        _sync_file(destination)
-        _sync_directory(backup_directory)
+        destination = backup_connection(
+            source, backup_directory, filename=f"fintracka-{timestamp}.sqlite3"
+        )
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        source.close()
     backups = sorted(backup_directory.glob("fintracka-*.sqlite3"), reverse=True)
     retained_days: set[str] = set()
     expired: list[Path] = []
@@ -45,6 +31,36 @@ def backup_database(source_path: str | Path, backup_directory: str | Path, *, ke
         expired_backup.unlink()
     if expired:
         _sync_directory(backup_directory)
+    return destination
+
+
+def backup_connection(
+    source: sqlite3.Connection,
+    backup_directory: str | Path,
+    *,
+    filename: str,
+) -> Path:
+    backup_directory = Path(backup_directory)
+    backup_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    backup_directory.chmod(0o700)
+    destination = backup_directory / filename
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".fintracka-backup-", dir=backup_directory)
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        target = sqlite3.connect(temporary)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+        verify_backup(temporary)
+        temporary.chmod(0o600)
+        os.replace(temporary, destination)
+        _sync_file(destination)
+        _sync_directory(backup_directory)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
     return destination
 
 

@@ -10,7 +10,7 @@ FinTracka is a single-user, local-first personal finance application for macOS. 
 - Requests up to 730 days of history whenever a new Plaid connection is created.
 - Imports older CSV history into an existing account without creating another Plaid Item.
 - Supports category and subcategory filtering, manual cash spending, transfer review, and David/Ariela/Shared spending ownership.
-- Shows monthly Planning with historical averages, targets, current spending, projected month-end spending, and category detail drawers.
+- Shows monthly Planning with historical averages, targets, current spending, remaining amounts, and category detail drawers where transactions can be recategorized.
 - Splits Planning and Reports spending into clickable David, Ariela, and Shared views.
 - Lets you reversibly remove an individual duplicate account without disconnecting its bank or deleting history.
 - Maintains a 10%-of-Salary Tzedaka minimum in Planning.
@@ -28,16 +28,23 @@ python3.14 -m venv .venv
 cd frontend && npm ci && npm run build && cd ..
 ```
 
-Configure Plaid by typing its secret into standard input when prompted. The CLI stores credentials in macOS Keychain; SQLite receives only Keychain reference names.
+Configure each Plaid developer profile by typing its secret into standard input when prompted. The CLI stores credentials in macOS Keychain; SQLite receives only profile-scoped Keychain reference names. Omitting `--profile` configures David for compatibility.
 
 ```sh
 .venv/bin/python -m fintracka.cli configure plaid \
+  --profile david \
   --environment production \
-  --client-id YOUR_PLAID_CLIENT_ID \
+  --client-id DAVID_PLAID_CLIENT_ID \
+  --secret-stdin
+
+.venv/bin/python -m fintracka.cli configure plaid \
+  --profile ariela \
+  --environment production \
+  --client-id ARIELA_PLAID_CLIENT_ID \
   --secret-stdin
 ```
 
-Use `--environment sandbox` for Plaid Sandbox. Configure a Google Desktop OAuth client from a private file outside the repository:
+Use `--environment sandbox` for either profile's Plaid Sandbox. Configure a Google Desktop OAuth client from a private file outside the repository:
 
 ```sh
 .venv/bin/python -m fintracka.cli configure google \
@@ -68,12 +75,12 @@ The first browser visit exchanges a short-lived, one-use bootstrap token for an 
 2. Use **Accounts** to set nicknames, spending ownership, reporting scope, and Savings inclusion.
 3. Use **Transactions** to search, filter, correct categories/subcategories, add cash spending, and review transfers.
 4. Use **History import** to preview and import older bank CSV files into the matching account. Supported files can use Date, Transaction Date, or Posted Date; Description or Payee; and either Amount or separate Debit/Credit columns. Currency defaults to USD.
-5. Use **Planning** to enter recurring income, compare usual spending with targets and actuals, and adjust category targets.
+5. Use **Planning** to enter recurring income, compare usual spending with targets and actuals, adjust category targets, and correct transaction categories from the detail drawer. Reports flow drawers support the same `1×` (once), `→` (future), and `↔` (past and future) correction modes; FinTracka remembers the last mode selected.
 6. Use **Connections → Details → Manage bank accounts** to add another account from an existing Plaid bank connection. This uses the existing Plaid Item rather than a new Trial Item.
 
 If the same joint account appears through two bank logins, open **Accounts → Edit → Remove from FinTracka** on the duplicate. Removed accounts and their transactions are hidden from normal views, calculations, savings, and exports but remain locally stored and can be restored with **Show removed accounts**.
-6. Use **Savings** for connected savings balances and manually tracked investments or other assets.
-7. Use **Settings** for readiness checks, Google authorization, exports, backups, scheduling, and theme.
+7. Use **Savings** for connected savings balances, Regular Savings goals, Retirement goals, manually tracked investments, and monthly allocation reviews.
+8. Use **Settings** for readiness checks, Google authorization, exports, backups, scheduling, and theme.
 
 Data and corrections persist in the local SQLite ledger when the browser or application closes. Spreadsheets are exports only; edits made in them are not imported.
 
@@ -109,6 +116,18 @@ Scheduled work runs only while the Mac is awake. Local backups are retained acco
 Before Plaid Link opens, FinTracka checks Python 3.14, FileVault, macOS Keychain, Plaid credentials, and a verified local SQLite backup. Missing off-device backup coverage is shown as a prominent, non-blocking testing warning.
 
 Start with one institution, compare account names and balances, sync transactions, and reconcile a statement exactly before expanding use. Bank credentials are entered only inside Plaid Link and never pass through FinTracka.
+
+Every Plaid Item remains permanently bound to the David or Ariela developer profile that created it. Both profiles feed the same household ledger; the account's editable spending owner—not its Plaid profile—controls David, Ariela, or Shared reporting. A second Plaid developer team does not guarantee a separate Trial allowance or institution approval.
+
+Roth IRA holdings are tracked as Retirement only when explicitly assigned or entered as a manual investment. Fidelity data already present in FinTracka can be assigned to Retirement; Pershing is intentionally unsupported until it is connected and reviewed. The Transactions-only Plaid integration does not guess that an account is retirement from its provider or account name.
+
+## Savings goals
+
+Savings goal tracking starts in the month you activate it; it never fabricates earlier goal history. Before activation, create and verify a local SQLite backup. The setup preview allocates up to **$25,000** of current Regular Savings to **Emergency**, assigns any remainder to **General Savings**, and shows Retirement separately. Review that preview in the UI before confirming it.
+
+Monthly dollar targets are authoritative. Percentage sliders redistribute the same exact cents across unlocked goals, while priority order controls which goals receive money first when a deposit is smaller than planned. Deposits above the monthly plan are divided by the saved percentages. Goals linked to Planning categories draw only category spending above that category's target.
+
+Money committed to cover overspending remains visible as **Pending transfer** until a unique matching savings withdrawal settles it. Unmatched withdrawals require an explicit goal, Unallocated, or Pending-transfer assignment. Corrections and undo operations append reversing ledger events; historical entries are not silently rewritten. Regular Savings and Retirement always remain separate, and reconciliation warnings are visible instead of being auto-balanced.
 
 Plaid's history window cannot be expanded after Transactions has already been initialized on an Item. Do not disconnect and reconnect an existing Trial Item merely to request more history: removing it does not restore the lifetime Trial slot. Use **History import** for older records instead.
 

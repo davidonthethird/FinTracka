@@ -19,7 +19,7 @@ from fintracka.ledger import (
     transfer_candidates,
     update_transaction,
 )
-from fintracka.providers import NormalizedTransaction, SyncBatch
+from fintracka.providers import NormalizedAccount, NormalizedTransaction, SyncBatch
 from fintracka.sync import apply_batch
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
 
@@ -203,6 +203,126 @@ def test_confirmed_counterparty_pattern_auto_confirms_matching_history_only(
     assert ledger.execute(
         "SELECT COUNT(*) FROM transfer_links WHERE status = 'confirmed'"
     ).fetchone()[0] == 3
+
+
+def test_sync_auto_archives_credit_card_payments_even_when_bank_side_is_duplicated(
+    ledger: sqlite3.Connection,
+) -> None:
+    connection_id = ledger.execute(
+        "SELECT id FROM provider_connections WHERE provider = 'synthetic'"
+    ).fetchone()[0]
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(
+            accounts=(
+                NormalizedAccount(
+                    "chase-card", "Chase card", "credit", "credit_card", "liability"
+                ),
+                NormalizedAccount(
+                    "duplicate-checking", "Joint checking", "depository", "checking", "asset"
+                ),
+            ),
+            added=(
+                NormalizedTransaction(
+                    "card-payment-out",
+                    "checking-1",
+                    "2026-10-23T12:00:00Z",
+                    -28_900,
+                    "USD",
+                    "Payment to Chase card ending in 8750 10/23",
+                ),
+                NormalizedTransaction(
+                    "duplicate-payment-out",
+                    "duplicate-checking",
+                    "2026-10-23T12:00:00Z",
+                    -28_900,
+                    "USD",
+                    "Payment to Chase card ending in 8750 10/23",
+                ),
+                NormalizedTransaction(
+                    "card-payment-in",
+                    "chase-card",
+                    "2026-10-23T13:00:00Z",
+                    28_900,
+                    "USD",
+                    "Payment Thank You-Mobile",
+                ),
+                NormalizedTransaction(
+                    "provider-card-payment",
+                    "checking-1",
+                    "2026-10-24T12:00:00Z",
+                    -12_256,
+                    "USD",
+                    "BANK CARD PAYMENT",
+                    provider_category_primary="TRANSFER_OUT",
+                    provider_category_detailed="TRANSFER_OUT_CREDIT_CARD_PAYMENT",
+                ),
+                NormalizedTransaction(
+                    "standalone-card-credit",
+                    "chase-card",
+                    "2026-10-09T12:00:00Z",
+                    78_038,
+                    "USD",
+                    "ONLINE PAYMENT, THANK YOU",
+                    provider_category_primary="INCOME",
+                    provider_category_detailed="INCOME_OTHER_INCOME",
+                ),
+                NormalizedTransaction(
+                    "user-marked-card-payment",
+                    "checking-1",
+                    "2026-10-08T12:00:00Z",
+                    -12_256,
+                    "USD",
+                    "BANK OF AMERICA PAYMENT",
+                    pending=True,
+                ),
+            ),
+            next_checkpoint="credit-card-payment",
+        ),
+    )
+    card_payment_category = ledger.execute(
+        "SELECT id FROM categories WHERE name = 'Credit card payment'"
+    ).fetchone()[0]
+    ledger.execute(
+        """
+        UPDATE transactions SET category_id = ?, category_source = 'manual'
+        WHERE id = (
+            SELECT transaction_id FROM transaction_external_ids
+            WHERE external_id = 'user-marked-card-payment'
+        )
+        """,
+        (card_payment_category,),
+    )
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(next_checkpoint="credit-card-payment-rescan"),
+    )
+
+    archived = {
+        row["external_id"]: row["user_archived"]
+        for row in ledger.execute(
+            """
+            SELECT e.external_id, t.user_archived
+            FROM transactions t
+            JOIN transaction_external_ids e ON e.transaction_id = t.id
+                WHERE e.external_id IN (
+                    'card-payment-out', 'duplicate-payment-out', 'card-payment-in',
+                    'provider-card-payment', 'standalone-card-credit',
+                    'user-marked-card-payment'
+                )
+            """
+        )
+    }
+    assert archived == {
+        "card-payment-out": 1,
+        "duplicate-payment-out": 1,
+        "card-payment-in": 1,
+        "provider-card-payment": 1,
+        "standalone-card-credit": 1,
+        "user-marked-card-payment": 1,
+    }
 
 
 def test_reconciliation_is_exact_to_one_cent(ledger: sqlite3.Connection) -> None:

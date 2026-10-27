@@ -9,7 +9,7 @@ from pathlib import Path
 from fintracka.backups import verify_backup
 from fintracka.google_sheets import google_status
 from fintracka.keychain import KeychainSecrets, SecretStoreUnavailable
-from fintracka.plaid_service import PlaidNotConfigured, load_plaid_configuration
+from fintracka.plaid_service import PLAID_PROFILES, PlaidNotConfigured, load_plaid_configuration
 
 
 def filevault_enabled() -> bool:
@@ -93,21 +93,43 @@ def readiness_report(
         )
     )
 
-    try:
-        plaid = load_plaid_configuration(connection, secrets)
-        plaid_ok = plaid.environment == "production"
-    except (PlaidNotConfigured, SecretStoreUnavailable):
-        plaid_ok = False
-    checks.append(
-        _check(
-            "plaid",
-            "Plaid Production",
-            plaid_ok,
-            True,
-            "Production credentials are available in Keychain.",
-            "Configure Plaid Production credentials in Keychain.",
+    for profile in PLAID_PROFILES:
+        active_environments = {
+            row[0]
+            for row in connection.execute(
+                "SELECT DISTINCT environment FROM provider_connections WHERE provider = 'plaid' AND credential_profile = ? AND status IN ('active', 'repair')",
+                (profile,),
+            )
+        }
+        try:
+            environments = {load_plaid_configuration(connection, secrets, profile).environment}
+            environments.update(
+                load_plaid_configuration(connection, secrets, profile, environment).environment
+                for environment in active_environments
+            )
+            plaid_ok = True
+            success = (
+                f"{' and '.join(environment.title() for environment in sorted(environments))} "
+                "credentials are available in Keychain."
+            )
+        except (PlaidNotConfigured, SecretStoreUnavailable):
+            plaid_ok = False
+            success = ""
+        active = bool(active_environments)
+        checks.append(
+            _check(
+                f"plaid_{profile}",
+                f"Plaid — {profile.title()}",
+                plaid_ok,
+                active,
+                success,
+                (
+                    f"Configure {profile.title()}'s Plaid credentials; an active connection depends on them."
+                    if active
+                    else f"Optional: configure {profile.title()}'s Plaid credentials to connect banks."
+                ),
+            )
         )
-    )
 
     google = google_status(connection)
     checks.append(

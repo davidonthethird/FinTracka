@@ -25,6 +25,7 @@ class SavingsAccount:
     owner: str
     balance_minor: int
     currency: str
+    pool: str | None
     history: tuple[BalancePoint, ...]
 
 
@@ -38,6 +39,8 @@ class ManualAsset:
     currency: str
     as_of_date: str
     updated_at: str
+    savings_pool: str | None
+    savings_goal_id: str | None
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,9 @@ class SavingsActivity:
     kind: str
     amount_minor: int
     owner: str
+    pool: str | None
+    needs_allocation: bool
+    updated_at: str
 
 
 @dataclass(frozen=True)
@@ -78,7 +84,7 @@ def savings_summary(
     account_rows = connection.execute(
         f"""
         SELECT a.id, COALESCE(NULLIF(a.nickname, ''), a.name) name,
-               a.spending_owner owner, a.currency,
+               a.spending_owner owner, a.currency, a.savings_pool pool,
                COALESCE((
                    SELECT b.current_minor FROM account_balance_snapshots b
                    WHERE b.account_id = a.id
@@ -98,6 +104,7 @@ def savings_summary(
             row["owner"],
             row["balance_minor"],
             row["currency"],
+            row["pool"],
             tuple(
                 BalancePoint(point["observed_at"], point["current_minor"])
                 for point in connection.execute(
@@ -118,7 +125,7 @@ def savings_summary(
         for row in connection.execute(
             f"""
             SELECT id, title, kind, owner, current_value_minor, currency,
-                   as_of_date, updated_at
+                   as_of_date, updated_at, savings_pool, savings_goal_id
             FROM manual_assets WHERE active = 1 {asset_clause}
             ORDER BY kind, title, id
             """,
@@ -134,6 +141,7 @@ def savings_summary(
                    COALESCE(NULLIF(t.user_merchant, ''), NULLIF(t.provider_merchant, ''),
                             t.provider_description) title,
                    t.amount_minor, COALESCE(t.spending_owner, a.spending_owner) owner,
+                   a.savings_pool pool, t.updated_at,
                    c.category_type, t.provider_category_primary,
                    EXISTS (
                        SELECT 1 FROM transfer_links l
@@ -145,6 +153,13 @@ def savings_summary(
                          AND (l.transaction_a_id = t.id OR l.transaction_b_id = t.id)
                          AND other_account.include_savings = 1 AND other_account.hidden = 0
                    ) internal_savings_transfer
+                   ,NOT EXISTS (
+                       SELECT 1 FROM savings_ledger_entries e
+                       WHERE e.source_transaction_id = t.id AND e.event_type != 'reversal'
+                         AND NOT EXISTS (
+                             SELECT 1 FROM savings_ledger_entries r WHERE r.reverses_entry_id = e.id
+                         )
+                   ) needs_allocation
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
             LEFT JOIN categories c ON c.id = t.category_id
@@ -167,7 +182,9 @@ def savings_summary(
             activity.append(
                 SavingsActivity(
                     row["id"], row["account_id"], row["local_date"], row["title"],
-                    kind, abs(row["amount_minor"]), row["owner"]
+                    kind, abs(row["amount_minor"]), row["owner"], row["pool"],
+                    bool(row["needs_allocation"] and row["amount_minor"] < 0),
+                    row["updated_at"],
                 )
             )
 
@@ -235,6 +252,16 @@ def update_manual_asset(
     _require_current(before, expected_updated_at)
     if not before["active"]:
         raise ManualAssetError("manual asset is inactive")
+    if (
+        before["savings_pool"] is not None
+        and before["current_value_minor"] != current_value_minor
+    ):
+        from fintracka.savings_goals import record_retirement_valuation
+
+        record_retirement_valuation(
+            connection, identifier, current_value_minor, as_of_date, before["updated_at"]
+        )
+        before = _asset(connection, identifier)
     now = _now()
     connection.execute(
         """

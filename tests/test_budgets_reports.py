@@ -177,7 +177,7 @@ def test_overview_separates_off_bank_manual_cash_from_observed_balances(
     )
 
 
-def test_overview_separates_cash_activity_and_confirmed_card_payments(
+def test_overview_excludes_archived_credit_card_payments(
     ledger: sqlite3.Connection,
 ) -> None:
     connection_id = ledger.execute(
@@ -195,16 +195,14 @@ def test_overview_separates_cash_activity_and_confirmed_card_payments(
             next_checkpoint="cash-overview",
         ),
     )
-    confirm_transfer(
-        ledger,
-        _transaction_id(ledger, "card-payment-out"),
-        _transaction_id(ledger, "card-payment-in"),
-    )
+    assert ledger.execute(
+        "SELECT COUNT(*) FROM transactions WHERE provider_description = 'Card payment' AND user_archived = 1"
+    ).fetchone()[0] == 2
 
     result = overview(ledger, "2026-10")
     assert result.spending_minor == 18_742
     assert result.cash_spending_minor == 8_742
-    assert result.cash_transfer_minor == -20_000
+    assert result.cash_transfer_minor == 0
     assert result.opening_cash_minor is None
 
 

@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  actualCategoryStatus,
   coverageLabel,
   flowScale,
   laneWeight,
   minimumTarget,
-  overallStatusLabel,
-  planningPace,
   percentLabel,
   planningPath,
   remainingLabel,
@@ -47,7 +46,7 @@ describe("planning view model", () => {
     expect(flowScale({ ...row, historical_average_minor: 0, target_minor: 0, actual_minor: 0 })).toEqual({ average: 0, target: 0, actual: 0 });
   });
 
-  it("labels unplanned spending, coverage, percentages, and projected outcomes", () => {
+  it("labels unplanned spending, coverage, and percentages", () => {
     expect(percentLabel(row)).toBe("12.5% over");
     expect(percentLabel({
       ...row, target_minor: 0, actual_minor: 5_000, remaining_minor: -5_000,
@@ -56,11 +55,8 @@ describe("planning view model", () => {
     const snapshot = {
       average_months: 12,
       usable_average_months: 2,
-      projected_surplus_shortfall_minor: -2_500,
-      status: "projected_over",
     } as PlanningSnapshot;
     expect(coverageLabel(snapshot)).toBe("2 of 12 months available");
-    expect(overallStatusLabel(snapshot)).toBe("Projected $25.00 over plan");
   });
 
   it("allocates category lanes by target with a readable minimum", () => {
@@ -82,13 +78,11 @@ describe("planning view model", () => {
     expect(visiblePlanningCategories([inactive, row, unplanned], true)).toHaveLength(3);
   });
 
-  it("colors projected spending against the positive historical average", () => {
-    const categories = [row, { ...row, category_id: "refunds", historical_average_minor: -10_000 }];
-
-    expect(planningPace(categories, 42_500)).toEqual({ tone: "good", label: "Projected 85% of usual" });
-    expect(planningPace(categories, 47_500)).toEqual({ tone: "steady", label: "Projected 95% of usual" });
-    expect(planningPace(categories, 52_500)).toEqual({ tone: "warning", label: "Projected 105% of usual" });
-    expect(planningPace(categories, 57_500)).toEqual({ tone: "bad", label: "Projected 115% of usual" });
-    expect(planningPace([{ ...row, historical_average_minor: 0 }], null)).toEqual({ tone: "neutral", label: "No historical comparison" });
+  it("colors categories from actual spending only", () => {
+    expect(actualCategoryStatus({ ...row, status: "projected_over", actual_minor: 20_000, remaining_minor: 20_000 })).toBe("on_track");
+    expect(actualCategoryStatus(row)).toBe("overspent");
+    expect(actualCategoryStatus({ ...row, target_minor: 0, actual_minor: 5_000 })).toBe("unplanned");
+    expect(actualCategoryStatus({ ...row, target_minor: 0, actual_minor: 0 })).toBe("no_target");
+    expect(actualCategoryStatus({ ...row, actual_minor: -500 })).toBe("refund");
   });
 });

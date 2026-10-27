@@ -47,6 +47,7 @@ class CategorizationResult:
 
 
 _UNSET = object()
+_PAYMENT_DESCRIPTION = re.compile(r"\b(?:AUTO\s*PAY|PAYMENT|PMT|PYMT)\b", re.IGNORECASE)
 
 
 def update_transaction(
@@ -108,8 +109,10 @@ def set_splits(
     if any(amount == 0 for amount, _, _ in splits):
         raise IntegrityError("split amounts cannot be zero")
     now = _now()
+    owns_transaction = not connection.in_transaction
     try:
-        connection.execute("BEGIN IMMEDIATE")
+        if owns_transaction:
+            connection.execute("BEGIN IMMEDIATE")
         parent = connection.execute(
             "SELECT amount_minor, updated_at FROM transactions WHERE id = ?", (transaction_id,)
         ).fetchone()
@@ -128,9 +131,11 @@ def set_splits(
             "UPDATE transactions SET has_splits = 1, updated_at = ? WHERE id = ?", (now, transaction_id)
         )
         _audit(connection, "user", "transaction_split", "transaction", transaction_id, now)
-        connection.commit()
+        if owns_transaction:
+            connection.commit()
     except Exception:
-        connection.rollback()
+        if owns_transaction:
+            connection.rollback()
         raise
 
 
@@ -478,6 +483,8 @@ def reject_transfer(connection: sqlite3.Connection, transaction_a: str, transact
 
 
 def confirm_learned_transfers(connection: sqlite3.Connection) -> int:
+    candidates = transfer_candidates(connection)
+    archived = _archive_credit_card_payments(connection, candidates)
     learned = {
         signature
         for row in connection.execute(
@@ -495,8 +502,13 @@ def confirm_learned_transfers(connection: sqlite3.Connection) -> int:
         for identifier in (row["transaction_a_id"], row["transaction_b_id"])
     }
     count = 0
-    for candidate in transfer_candidates(connection):
-        if candidate.transaction_a in claimed or candidate.transaction_b in claimed:
+    for candidate in candidates:
+        if (
+            candidate.transaction_a in claimed
+            or candidate.transaction_b in claimed
+            or candidate.transaction_a in archived
+            or candidate.transaction_b in archived
+        ):
             continue
         signature = _transfer_signature(connection, candidate.transaction_a, candidate.transaction_b)
         if signature not in learned:
@@ -513,6 +525,83 @@ def confirm_learned_transfers(connection: sqlite3.Connection) -> int:
         claimed.update((candidate.transaction_a, candidate.transaction_b))
         count += 1
     return count
+
+
+def _archive_credit_card_payments(
+    connection: sqlite3.Connection, candidates: list[TransferCandidate]
+) -> set[str]:
+    transaction_ids = {
+        row["id"]
+        for row in connection.execute(
+            """
+            SELECT t.id, t.amount_minor, t.provider_description,
+                   t.provider_category_detailed, a.type account_type,
+                   c.name category
+            FROM transactions t
+            JOIN accounts a ON a.id = t.account_id
+            LEFT JOIN categories c ON c.id = t.category_id
+            WHERE t.tombstoned = 0 AND t.user_archived = 0
+              AND (t.provider_category_detailed LIKE '%CREDIT_CARD_PAYMENT%'
+                   OR (a.type = 'credit' AND t.amount_minor > 0)
+                   OR c.name = 'Credit card payment')
+            """
+        )
+        if row["category"] == "Credit card payment"
+        or "CREDIT_CARD_PAYMENT" in (row["provider_category_detailed"] or "")
+        or _PAYMENT_DESCRIPTION.search(row["provider_description"]) is not None
+    }
+    transaction_ids.update(
+        transaction_id
+        for candidate in candidates
+        if _is_credit_card_payment(
+            connection, candidate.transaction_a, candidate.transaction_b
+        )
+        for transaction_id in (candidate.transaction_a, candidate.transaction_b)
+    )
+    category = connection.execute(
+        "SELECT id FROM categories WHERE name = 'Credit card payment' AND archived = 0"
+    ).fetchone()
+    now = _now()
+    for transaction_id in transaction_ids:
+        connection.execute(
+            """
+            UPDATE transactions
+            SET user_archived = 1,
+                category_id = CASE WHEN category_source IN ('manual', 'rule') THEN category_id ELSE ? END,
+                category_source = CASE WHEN category_source IN ('manual', 'rule') THEN category_source ELSE 'provider' END,
+                subcategory_id = NULL, subcategory_source = NULL, updated_at = ?
+            WHERE id = ? AND user_archived = 0
+            """,
+            (category["id"] if category else None, now, transaction_id),
+        )
+        _audit(connection, "system", "transaction_auto_archive", "transaction", transaction_id, now)
+    return transaction_ids
+
+
+def _is_credit_card_payment(
+    connection: sqlite3.Connection, transaction_a: str, transaction_b: str
+) -> bool:
+    rows = connection.execute(
+        """
+        SELECT t.amount_minor, t.provider_description, a.type, a.nature
+        FROM transactions t
+        JOIN accounts a ON a.id = t.account_id
+        WHERE t.id IN (?, ?)
+        """,
+        (transaction_a, transaction_b),
+    ).fetchall()
+    if len(rows) != 2:
+        return False
+    outgoing = next((row for row in rows if row["amount_minor"] < 0), None)
+    incoming = next((row for row in rows if row["amount_minor"] > 0), None)
+    if outgoing is None or incoming is None:
+        return False
+    return (
+        outgoing["nature"] == "asset"
+        and incoming["type"] == "credit"
+        and _PAYMENT_DESCRIPTION.search(outgoing["provider_description"]) is not None
+        and _PAYMENT_DESCRIPTION.search(incoming["provider_description"]) is not None
+    )
 
 
 def _create_transfer_link(

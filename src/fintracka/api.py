@@ -77,9 +77,36 @@ from fintracka.savings import (
     savings_summary,
     update_manual_asset,
 )
+from fintracka.savings_goals import (
+    AllocationPlanRow,
+    SavingsGoalConflict,
+    SavingsGoalError,
+    accept_month_review,
+    allocation_preview,
+    archive_savings_goal,
+    assign_account_pool,
+    assign_manual_asset_pool,
+    assign_savings_withdrawal,
+    create_savings_goal,
+    delete_unused_savings_goal,
+    generate_month_review,
+    ignore_month_review,
+    initialization_preview,
+    initialize_goal_ledger,
+    reconcile_savings_draws,
+    reconcile_savings_transactions,
+    savings_goal_detail,
+    savings_goal_overview,
+    set_allocation_plan,
+    undo_savings_event,
+    update_savings_goal,
+)
 from fintracka.plaid_adapter import PlaidAdapter
 from fintracka.plaid_service import (
+    PLAID_PROFILES,
+    PlaidEnvironment,
     PlaidNotConfigured,
+    PlaidProfile,
     build_plaid_adapter,
     complete_plaid_connection,
     repair_plaid_connection,
@@ -134,6 +161,7 @@ class AccountPatch(StrictModel):
     include_export: bool | None = None
     include_savings: bool | None = None
     spending_owner: Literal["David", "Ariela", "Shared"] | None = None
+    savings_pool: Literal["regular", "retirement"] | None = None
 
 
 class TransactionPatch(StrictModel):
@@ -162,7 +190,16 @@ class BulkTransactionRequest(StrictModel):
 class TransactionResponse(StrictModel):
     id: str
     account_id: str
+    account_name: str
+    account_nickname: str | None
+    account_type: str
+    account_subtype: str | None
+    account_mask: str | None
+    provider: str
+    institution_name: str | None
     local_date: str
+    authorized_at: str | None
+    posted_at: str | None
     amount_minor: int
     currency: str
     description: str
@@ -173,6 +210,8 @@ class TransactionResponse(StrictModel):
     subcategory_id: str | None
     subcategory: str | None
     subcategory_source: str | None
+    provider_category_primary: str | None
+    provider_category_detailed: str | None
     provider_category_confidence: str | None
     spending_owner: str | None
     spending_owner_effective: str | None
@@ -223,10 +262,75 @@ class ManualAssetCreate(StrictModel):
     owner: Literal["David", "Ariela", "Shared"]
     current_value_minor: StrictInt = Field(ge=0, le=10**15)
     as_of_date: StrictStr = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    savings_pool: Literal["regular", "retirement"] | None = None
+    savings_goal_id: StrictStr | None = None
 
 
 class ManualAssetPatch(ManualAssetCreate):
     expected_updated_at: StrictStr
+
+
+class SavingsInitialize(StrictModel):
+    activation_month: StrictStr = Field(pattern=r"^\d{4}-\d{2}$")
+    expected_regular_balance_minor: StrictInt = Field(ge=0, le=10**15)
+
+
+class SavingsGoalCreate(StrictModel):
+    name: StrictStr = Field(min_length=1, max_length=120)
+    pool: Literal["regular", "retirement"]
+    owner: Literal["David", "Ariela", "Shared"]
+    icon_key: Literal["piggy_bank", "shield", "palm_tree", "shopping_bag", "gamepad", "house", "gift", "car", "chart", "wallet", "coins"]
+    color_key: Literal["blue", "green", "orange", "pink", "purple", "teal", "navy"]
+    activation_month: StrictStr = Field(pattern=r"^\d{4}-\d{2}$")
+    parent_id: StrictStr | None = None
+    linked_category_id: StrictStr | None = None
+    priority: StrictInt | None = Field(default=None, ge=0)
+    monthly_target_minor: StrictInt = Field(default=0, ge=0, le=10**15)
+
+
+class SavingsGoalPatch(StrictModel):
+    expected_updated_at: StrictStr
+    name: StrictStr = Field(min_length=1, max_length=120)
+    owner: Literal["David", "Ariela", "Shared"]
+    icon_key: Literal["piggy_bank", "shield", "palm_tree", "shopping_bag", "gamepad", "house", "gift", "car", "chart", "wallet", "coins"]
+    color_key: Literal["blue", "green", "orange", "pink", "purple", "teal", "navy"]
+    parent_id: StrictStr | None = None
+    linked_category_id: StrictStr | None = None
+    monthly_target_minor: StrictInt | None = Field(default=None, ge=0, le=10**15)
+    effective_month: StrictStr | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
+
+
+class SavingsRevision(StrictModel):
+    expected_updated_at: StrictStr
+
+
+class SavingsAllocationRow(StrictModel):
+    goal_id: StrictStr
+    monthly_target_minor: StrictInt = Field(ge=0, le=10**15)
+    locked: StrictBool
+    priority: StrictInt = Field(ge=0)
+
+
+class SavingsAllocationPlan(StrictModel):
+    expected_updated_at: StrictStr
+    effective_month: StrictStr = Field(pattern=r"^\d{4}-\d{2}$")
+    rows: list[SavingsAllocationRow] = Field(min_length=1, max_length=100)
+
+
+class SavingsAllocationPreviewRequest(StrictModel):
+    pool: Literal["regular", "retirement"]
+    month: StrictStr = Field(pattern=r"^\d{4}-\d{2}$")
+    contribution_minor: StrictInt = Field(ge=0, le=10**15)
+
+
+class SavingsWithdrawalAssign(StrictModel):
+    expected_updated_at: StrictStr
+    destination: Literal["goal", "unallocated", "pending_transfer"]
+    goal_id: StrictStr | None = None
+
+
+class SavingsUndo(StrictModel):
+    reason: StrictStr = Field(min_length=1, max_length=300)
 
 
 class PlannedIncomeCreate(StrictModel):
@@ -303,8 +407,13 @@ class EmptyRequest(StrictModel):
     pass
 
 
+class PlaidSessionRequest(StrictModel):
+    profile: Literal["david", "ariela"]
+
+
 class PlaidCompleteRequest(StrictModel):
     public_token: str = Field(min_length=1, max_length=1_000)
+    profile: Literal["david", "ariela"]
 
 
 class SplitItem(StrictModel):
@@ -358,7 +467,10 @@ def create_app(
     *,
     bootstrap_token: str | None = None,
     static_directory: str | Path | None = None,
-    plaid_adapter_factory: Callable[[sqlite3.Connection], PlaidAdapter] | None = None,
+    plaid_adapter_factory: Callable[
+        [sqlite3.Connection, PlaidProfile, PlaidEnvironment | None], PlaidAdapter
+    ]
+    | None = None,
     google_secrets_factory: Callable[[], KeychainSecrets] = KeychainSecrets,
     google_authorizer: Callable[[dict[str, Any], list[str]], str] | None = None,
     google_authorization_gateway_factory: Callable[[str], Any] | None = None,
@@ -372,7 +484,7 @@ def create_app(
     initial = connect(path)
     migrate(initial)
     recover_interrupted_jobs(initial)
-    plaid_environment = _plaid_environment(initial)
+    plaid_environments = _plaid_environments(initial)
     initial.close()
     sessions = LocalSessions(bootstrap_token or secrets.token_urlsafe(32))
     jobs = JobRunner(path)
@@ -383,16 +495,16 @@ def create_app(
         startup = connect(path)
         try:
             if _startup_sync_due(startup):
-                try:
-                    plaid_adapter(startup)
-                except (PlaidNotConfigured, SecretStoreUnavailable):
-                    pass
-                else:
-                    def catch_up(connection: sqlite3.Connection) -> None:
-                        with ProcessLock(path.parent / "fintracka.lock"):
-                            sync_plaid_connections(connection, plaid_adapter(connection))
+                def catch_up(connection: sqlite3.Connection) -> None:
+                    with ProcessLock(path.parent / "fintracka.lock"):
+                        sync_plaid_connections(
+                            connection,
+                            lambda profile, environment: plaid_adapter(
+                                connection, profile, environment
+                            ),
+                        )
 
-                    jobs.submit("plaid_sync", catch_up)
+                jobs.submit("plaid_sync", catch_up)
         finally:
             startup.close()
         try:
@@ -416,21 +528,21 @@ def create_app(
     async def local_security(request: Request, call_next):  # type: ignore[no-untyped-def]
         nonce = secrets.token_urlsafe(18)
         if not host_allowed(request.headers.get("host", "")):
-            return _secured(JSONResponse({"detail": "invalid host"}, status_code=400), nonce, plaid_environment)
+            return _secured(JSONResponse({"detail": "invalid host"}, status_code=400), nonce, plaid_environments)
         api_path = request.url.path
         exempt = api_path in {"/api/v1/health", "/api/v1/session/bootstrap"}
         session = sessions.get(request.cookies.get("fintracka_session"))
         if api_path.startswith("/api/v1") and not exempt and session is None:
-            return _secured(JSONResponse({"detail": "local session required"}, status_code=401), nonce, plaid_environment)
+            return _secured(JSONResponse({"detail": "local session required"}, status_code=401), nonce, plaid_environments)
         if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not exempt:
             origin = request.headers.get("origin")
             if origin is None or not origin_allowed(origin):
-                return _secured(JSONResponse({"detail": "invalid origin"}, status_code=403), nonce, plaid_environment)
+                return _secured(JSONResponse({"detail": "invalid origin"}, status_code=403), nonce, plaid_environments)
             if session is None or not secrets.compare_digest(
                 request.headers.get("x-csrf-token", ""), session.csrf_token
             ):
-                return _secured(JSONResponse({"detail": "invalid CSRF token"}, status_code=403), nonce, plaid_environment)
-        return _secured(await call_next(request), nonce, plaid_environment)
+                return _secured(JSONResponse({"detail": "invalid CSRF token"}, status_code=403), nonce, plaid_environments)
+        return _secured(await call_next(request), nonce, plaid_environments)
 
     def database() -> Iterator[sqlite3.Connection]:
         connection = connect(path)
@@ -441,10 +553,14 @@ def create_app(
 
     Database = Annotated[sqlite3.Connection, Depends(database)]
 
-    def plaid_adapter(connection: sqlite3.Connection) -> PlaidAdapter:
+    def plaid_adapter(
+        connection: sqlite3.Connection,
+        profile: PlaidProfile,
+        environment: PlaidEnvironment | None = None,
+    ) -> PlaidAdapter:
         if plaid_adapter_factory is not None:
-            return plaid_adapter_factory(connection)
-        return build_plaid_adapter(connection, KeychainSecrets())
+            return plaid_adapter_factory(connection, profile, environment)
+        return build_plaid_adapter(connection, KeychainSecrets(), profile, environment)
 
     @app.get("/api/v1/health")
     def health() -> dict[str, str]:
@@ -508,15 +624,29 @@ def create_app(
         )
 
     @app.get("/api/v1/providers")
-    def providers(database: Database) -> list[dict[str, str | bool]]:
-        environment = _plaid_environment(database)
-        configured = database.execute(
-            "SELECT 1 FROM app_metadata WHERE key = ?",
-            (f"plaid.{environment}.secret_ref",),
-        ).fetchone() is not None
+    def providers(database: Database) -> list[dict[str, object]]:
+        profiles: list[dict[str, object]] = []
+        for profile in PLAID_PROFILES:
+            status: dict[str, object] = {
+                "id": profile,
+                "label": profile.title(),
+                "configured": False,
+            }
+            try:
+                adapter = plaid_adapter(database, profile)
+            except (PlaidNotConfigured, SecretStoreUnavailable):
+                pass
+            else:
+                status.update(configured=True, environment=adapter.environment)
+            profiles.append(status)
         return [
             {"id": "synthetic", "name": "Synthetic", "enabled": True},
-            {"id": "plaid", "name": "Plaid", "enabled": configured, "environment": environment},
+            {
+                "id": "plaid",
+                "name": "Plaid",
+                "enabled": any(profile["configured"] for profile in profiles),
+                "profiles": profiles,
+            },
         ]
 
     @app.get("/api/v1/connections")
@@ -525,7 +655,8 @@ def create_app(
             dict(row)
             for row in database.execute(
                 """
-                SELECT pc.id, pc.provider, pc.environment, pc.status, i.name institution_name,
+                SELECT pc.id, pc.provider, pc.environment, pc.credential_profile, pc.status,
+                       i.name institution_name,
                        pc.last_success_at, pc.last_error_code, pc.updated_at
                 FROM provider_connections pc
                 LEFT JOIN institutions i ON i.id = pc.institution_id
@@ -536,10 +667,9 @@ def create_app(
         ]
 
     @app.post("/api/v1/connections/plaid/sessions")
-    def create_plaid_session(payload: EmptyRequest, database: Database) -> dict[str, str]:
-        del payload
+    def create_plaid_session(payload: PlaidSessionRequest, database: Database) -> dict[str, str]:
         try:
-            adapter = plaid_adapter(database)
+            adapter = plaid_adapter(database, payload.profile)
             if adapter.environment == "production":
                 existing = database.execute(
                     "SELECT 1 FROM provider_connections WHERE provider = 'plaid' AND environment = 'production' LIMIT 1"
@@ -564,7 +694,12 @@ def create_app(
     @app.post("/api/v1/connections/plaid/complete", status_code=201)
     def complete_plaid(payload: PlaidCompleteRequest, database: Database) -> dict[str, str]:
         try:
-            return complete_plaid_connection(database, plaid_adapter(database), payload.public_token)
+            return complete_plaid_connection(
+                database,
+                plaid_adapter(database, payload.profile),
+                payload.public_token,
+                payload.profile,
+            )
         except (PlaidNotConfigured, SecretStoreUnavailable) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
@@ -572,7 +707,11 @@ def create_app(
     def repair_plaid(connection_id: str, payload: EmptyRequest, database: Database) -> dict[str, str]:
         del payload
         try:
-            session = repair_plaid_connection(database, plaid_adapter(database), connection_id)
+            session = repair_plaid_connection(
+                database,
+                lambda profile, environment: plaid_adapter(database, profile, environment),
+                connection_id,
+            )
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except (PlaidNotConfigured, SecretStoreUnavailable) as error:
@@ -586,7 +725,11 @@ def create_app(
     @app.delete("/api/v1/connections/{connection_id}", status_code=204)
     def disconnect_plaid(connection_id: str, database: Database) -> None:
         try:
-            revoke_plaid_connection(database, plaid_adapter(database), connection_id)
+            revoke_plaid_connection(
+                database,
+                lambda profile, environment: plaid_adapter(database, profile, environment),
+                connection_id,
+            )
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except (PlaidNotConfigured, SecretStoreUnavailable) as error:
@@ -601,7 +744,8 @@ def create_app(
                 f"""
                 SELECT a.id, a.name, a.nickname, a.type, a.subtype, a.nature, a.currency,
                        a.status, a.include_overview, a.include_budget, a.include_net,
-                       a.include_export, a.include_savings, a.spending_owner, a.hidden, a.updated_at,
+                       a.include_export, a.include_savings, a.spending_owner, a.savings_pool,
+                       a.hidden, a.updated_at,
                        (SELECT b.current_minor FROM account_balance_snapshots b WHERE b.account_id = a.id ORDER BY b.observed_at DESC, b.id DESC LIMIT 1) balance_minor
                 FROM accounts a {hidden_clause} ORDER BY a.nature, a.name, a.id
                 """
@@ -656,6 +800,7 @@ def create_app(
             if field == "spending_owner" and value is None:
                 raise HTTPException(status_code=422, detail="spending_owner cannot be null")
             values[field] = int(value) if field.startswith("include_") else value
+        savings_pool = values.pop("savings_pool", None) if "savings_pool" in supplied else None
         now = _now()
         with _write_transaction(database):
             current = database.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
@@ -665,15 +810,26 @@ def create_app(
                 raise HTTPException(status_code=409, detail="account changed; refresh and retry")
             if not supplied:
                 return dict(current)
-            assignments = ", ".join(f"{field} = ?" for field in values)
-            database.execute(
-                f"UPDATE accounts SET {assignments}, updated_at = ? WHERE id = ?",
-                (*values.values(), now, account_id),
-            )
-            database.execute(
-                "INSERT INTO audit_events (id, actor, action, entity_type, entity_id, occurred_at) VALUES (?, 'user', 'account_update', 'account', ?, ?)",
-                (new_id(), account_id, now),
-            )
+            if values:
+                assignments = ", ".join(f"{field} = ?" for field in values)
+                database.execute(
+                    f"UPDATE accounts SET {assignments}, updated_at = ? WHERE id = ?",
+                    (*values.values(), now, account_id),
+                )
+                database.execute(
+                    "INSERT INTO audit_events (id, actor, action, entity_type, entity_id, occurred_at) VALUES (?, 'user', 'account_update', 'account', ?, ?)",
+                    (new_id(), account_id, now),
+                )
+            if "savings_pool" in supplied:
+                try:
+                    assign_account_pool(
+                        database, account_id, savings_pool,
+                        now if values else payload.expected_updated_at,
+                    )
+                except SavingsGoalError as error:
+                    raise HTTPException(
+                        status_code=_savings_goal_status(error), detail=str(error)
+                    ) from error
         return dict(database.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone())
 
     @app.get("/api/v1/accounts/{account_id}/balances")
@@ -740,17 +896,22 @@ def create_app(
         parameters.append(limit + 1)
         rows = database.execute(
             f"""
-            SELECT t.id, t.account_id, t.local_date, t.amount_minor, t.currency,
+            SELECT t.id, t.account_id, a.name account_name, a.nickname account_nickname,
+                   a.type account_type, a.subtype account_subtype, a.mask account_mask,
+                   pc.provider, i.name institution_name, t.local_date, t.authorized_at,
+                   t.posted_at, t.amount_minor, t.currency,
                    t.provider_description description,
                    COALESCE(t.user_merchant, t.provider_merchant) merchant,
                    t.category_id, c.name category, t.category_source,
                    t.subcategory_id, s.name subcategory, t.subcategory_source,
+                   t.provider_category_primary, t.provider_category_detailed,
                    t.provider_category_confidence, t.spending_owner,
                    CASE WHEN c.category_type = 'expense' THEN COALESCE(t.spending_owner, a.spending_owner) END spending_owner_effective,
                    t.notes, t.pending, pc.provider = 'manual' manual_cash,
                    t.is_cash_withdrawal, t.user_archived archived, t.updated_at
             FROM transactions t JOIN accounts a ON a.id = t.account_id
             JOIN provider_connections pc ON pc.id = a.connection_id
+            LEFT JOIN institutions i ON i.id = pc.institution_id
             LEFT JOIN categories c ON c.id = t.category_id
             LEFT JOIN subcategories s ON s.id = t.subcategory_id
             WHERE {' AND '.join(clauses)}
@@ -800,6 +961,7 @@ def create_app(
                     payload.local_date or date.today().isoformat(),
                     payload.spending_owner,
                 )
+                _reconcile_savings_after_mutation(database, [transaction_id])
         except ManualCashError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return _transaction_response(database, transaction_id)
@@ -820,8 +982,13 @@ def create_app(
                     payload.local_date,
                     payload.spending_owner,
                 )
+                _reconcile_savings_after_mutation(database, [transaction_id])
         except ManualCashError as error:
             raise HTTPException(status_code=_manual_cash_status(error), detail=str(error)) from error
+        return _transaction_response(database, transaction_id)
+
+    @app.get("/api/v1/transactions/{transaction_id}", response_model=TransactionResponse)
+    def transaction_detail_route(transaction_id: str, database: Database) -> TransactionResponse:
         return _transaction_response(database, transaction_id)
 
     @app.delete("/api/v1/transactions/{transaction_id}", status_code=204)
@@ -831,6 +998,7 @@ def create_app(
         try:
             with _write_transaction(database):
                 delete_manual_cash(database, transaction_id, expected_updated_at)
+                _reconcile_savings_after_mutation(database, [transaction_id])
         except ManualCashError as error:
             raise HTTPException(status_code=_manual_cash_status(error), detail=str(error)) from error
 
@@ -850,6 +1018,7 @@ def create_app(
                 transaction_id,
                 **{field: getattr(payload, field) for field in supplied},
             )
+            _reconcile_savings_after_mutation(database, [transaction_id])
         row = _transaction(database, transaction_id)
         return TransactionResponse(**{**dict(row), "pending": bool(row["pending"])})
 
@@ -871,6 +1040,7 @@ def create_app(
                 result = categorize_transaction(
                     database, transaction_id, payload.category_id, payload.scope
                 )
+                _reconcile_savings_after_mutation(database, [transaction_id])
         except IntegrityError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         row = _transaction(database, transaction_id)
@@ -938,7 +1108,14 @@ def create_app(
         del payload
         try:
             with _write_transaction(database):
+                identifiers = [
+                    row[0] for row in database.execute(
+                        "SELECT transaction_id FROM categorization_undo_items WHERE batch_id = ?",
+                        (undo_id,),
+                    )
+                ]
                 restored = undo_categorization(database, undo_id)
+                _reconcile_savings_after_mutation(database, identifiers)
         except IntegrityError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         return {"restored_count": restored}
@@ -967,6 +1144,7 @@ def create_app(
                     item.id,
                     **{field: getattr(item, field) for field in supplied},
                 )
+            _reconcile_savings_after_mutation(database, identifiers)
         return [
             TransactionResponse(**{**dict(row), "pending": bool(row["pending"])})
             for row in (_transaction(database, identifier) for identifier in identifiers)
@@ -975,12 +1153,14 @@ def create_app(
     @app.post("/api/v1/transactions/{transaction_id}/split", response_model=TransactionResponse)
     def split_transaction(transaction_id: str, payload: SplitRequest, database: Database) -> TransactionResponse:
         try:
-            set_splits(
-                database,
-                transaction_id,
-                [(item.amount_minor, item.category_id, item.notes) for item in payload.splits],
-                expected_updated_at=payload.expected_updated_at,
-            )
+            with _write_transaction(database):
+                set_splits(
+                    database,
+                    transaction_id,
+                    [(item.amount_minor, item.category_id, item.notes) for item in payload.splits],
+                    expected_updated_at=payload.expected_updated_at,
+                )
+                _reconcile_savings_after_mutation(database, [transaction_id])
         except ConflictError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except IntegrityError as error:
@@ -1168,6 +1348,162 @@ def create_app(
         except PlanningError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
+    @app.get("/api/v1/savings/initialization-preview")
+    def savings_initialization_preview(
+        activation_month: str, database: Database
+    ) -> dict[str, object]:
+        try:
+            return asdict(initialization_preview(database, activation_month))
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post("/api/v1/savings/initialize", status_code=201)
+    def savings_initialize(payload: SavingsInitialize, database: Database) -> dict[str, object]:
+        try:
+            with _write_transaction(database):
+                initialize_goal_ledger(
+                    database, payload.activation_month, payload.expected_regular_balance_minor
+                )
+            return asdict(savings_goal_overview(database, payload.activation_month))
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.post("/api/v1/savings/allocation-preview")
+    def savings_allocation_preview(
+        payload: SavingsAllocationPreviewRequest, database: Database
+    ) -> dict[str, object]:
+        try:
+            return asdict(allocation_preview(
+                database, payload.pool, payload.month, payload.contribution_minor
+            ))
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post("/api/v1/savings/goals", status_code=201)
+    def savings_goal_create(payload: SavingsGoalCreate, database: Database) -> dict[str, object]:
+        try:
+            with _write_transaction(database):
+                goal_id = create_savings_goal(database, **payload.model_dump())
+            return asdict(savings_goal_detail(database, goal_id, payload.activation_month))
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.get("/api/v1/savings/goals/{goal_id}")
+    def savings_goal_get(goal_id: str, through_month: str, database: Database) -> dict[str, object]:
+        try:
+            return asdict(savings_goal_detail(database, goal_id, through_month))
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.patch("/api/v1/savings/goals/{goal_id}")
+    def savings_goal_patch(
+        goal_id: str, payload: SavingsGoalPatch, database: Database
+    ) -> dict[str, object]:
+        try:
+            if (payload.monthly_target_minor is None) != (payload.effective_month is None):
+                raise SavingsGoalError("monthly target and effective month must be supplied together")
+            with _write_transaction(database):
+                update_savings_goal(
+                    database, goal_id, payload.expected_updated_at,
+                    **payload.model_dump(exclude={"expected_updated_at"}),
+                )
+                _reconcile_savings_after_mutation(database)
+            month = payload.effective_month or database.execute(
+                "SELECT activation_month FROM savings_goals WHERE id = ?", (goal_id,)
+            ).fetchone()[0]
+            return asdict(savings_goal_detail(database, goal_id, month))
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.delete("/api/v1/savings/goals/{goal_id}", status_code=204)
+    def savings_goal_delete(goal_id: str, expected_updated_at: str, database: Database) -> None:
+        try:
+            with _write_transaction(database):
+                delete_unused_savings_goal(database, goal_id, expected_updated_at)
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.post("/api/v1/savings/goals/{goal_id}/archive", status_code=204)
+    def savings_goal_archive(
+        goal_id: str, payload: SavingsRevision, database: Database
+    ) -> None:
+        try:
+            with _write_transaction(database):
+                archive_savings_goal(database, goal_id, payload.expected_updated_at)
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.put("/api/v1/savings/allocation-plans/{pool}", status_code=204)
+    def savings_allocation_plan(
+        pool: Literal["regular", "retirement"], payload: SavingsAllocationPlan,
+        database: Database,
+    ) -> None:
+        try:
+            with _write_transaction(database):
+                set_allocation_plan(
+                    database, pool, payload.effective_month,
+                    [AllocationPlanRow(**row.model_dump()) for row in payload.rows],
+                    payload.expected_updated_at,
+                )
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.post("/api/v1/savings/withdrawals/{transaction_id}/assign", status_code=204)
+    def savings_withdrawal_assign(
+        transaction_id: str, payload: SavingsWithdrawalAssign, database: Database
+    ) -> None:
+        try:
+            with _write_transaction(database):
+                assign_savings_withdrawal(
+                    database, transaction_id, payload.destination, payload.goal_id,
+                    payload.expected_updated_at,
+                )
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.post("/api/v1/savings/reviews/{month}/accept", status_code=204)
+    def savings_review_accept(
+        month: str, payload: SavingsRevision, database: Database
+    ) -> None:
+        try:
+            with _write_transaction(database):
+                accept_month_review(database, month, payload.expected_updated_at)
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.post("/api/v1/savings/reviews/{month}/generate", status_code=201)
+    def savings_review_generate(
+        month: str, payload: EmptyRequest, database: Database
+    ) -> dict[str, object]:
+        del payload
+        try:
+            with _write_transaction(database):
+                review = generate_month_review(database, month)
+            return asdict(review)
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.post("/api/v1/savings/reviews/{month}/ignore", status_code=204)
+    def savings_review_ignore(
+        month: str, payload: SavingsRevision, database: Database
+    ) -> None:
+        try:
+            with _write_transaction(database):
+                ignore_month_review(database, month, payload.expected_updated_at)
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.post("/api/v1/savings/events/{event_id}/undo", status_code=201)
+    def savings_event_undo(
+        event_id: str, payload: SavingsUndo, database: Database
+    ) -> dict[str, str]:
+        try:
+            with _write_transaction(database):
+                reversal_id = undo_savings_event(database, event_id, payload.reason)
+            return {"event_id": reversal_id}
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
     @app.get("/api/v1/savings/{month}")
     def savings_route(
         month: str,
@@ -1175,8 +1511,24 @@ def create_app(
         owner: Literal["David", "Ariela", "Shared"] | None = None,
     ) -> dict[str, object]:
         try:
-            return asdict(savings_summary(database, month, owner))
-        except ManualAssetError as error:
+            result = asdict(savings_summary(database, month, owner))
+            if database.execute("SELECT 1 FROM savings_settings WHERE id = 1").fetchone():
+                result["goal_ledger"] = asdict(savings_goal_overview(database, month, owner))
+                review = database.execute(
+                    "SELECT * FROM savings_month_reviews WHERE month = ?", (month,)
+                ).fetchone()
+                result["review"] = dict(review) if review else None
+                result["review_history"] = [
+                    dict(row) for row in database.execute(
+                        "SELECT * FROM savings_month_reviews ORDER BY month DESC"
+                    )
+                ]
+            else:
+                result["goal_ledger"] = None
+                result["review"] = None
+                result["review_history"] = []
+            return result
+        except (ManualAssetError, SavingsGoalError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
     @app.post("/api/v1/savings/assets", status_code=201)
@@ -1193,8 +1545,17 @@ def create_app(
                     payload.current_value_minor,
                     payload.as_of_date,
                 )
-        except ManualAssetError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+                if "savings_pool" in payload.model_fields_set or "savings_goal_id" in payload.model_fields_set:
+                    revision = database.execute(
+                        "SELECT updated_at FROM manual_assets WHERE id = ?", (identifier,)
+                    ).fetchone()[0]
+                    assign_manual_asset_pool(
+                        database, identifier, payload.savings_pool, payload.savings_goal_id,
+                        revision,
+                    )
+        except (ManualAssetError, SavingsGoalError) as error:
+            status = _savings_goal_status(error) if isinstance(error, SavingsGoalError) else 422
+            raise HTTPException(status_code=status, detail=str(error)) from error
         return get_manual_asset(database, identifier)
 
     @app.patch("/api/v1/savings/assets/{asset_id}")
@@ -1213,8 +1574,17 @@ def create_app(
                     payload.current_value_minor,
                     payload.as_of_date,
                 )
-        except ManualAssetError as error:
-            raise HTTPException(status_code=_manual_asset_status(error), detail=str(error)) from error
+                if "savings_pool" in payload.model_fields_set or "savings_goal_id" in payload.model_fields_set:
+                    current = database.execute(
+                        "SELECT updated_at FROM manual_assets WHERE id = ?", (asset_id,)
+                    ).fetchone()
+                    assign_manual_asset_pool(
+                        database, asset_id, payload.savings_pool, payload.savings_goal_id,
+                        current["updated_at"],
+                    )
+        except (ManualAssetError, SavingsGoalError) as error:
+            status = _savings_goal_status(error) if isinstance(error, SavingsGoalError) else _manual_asset_status(error)
+            raise HTTPException(status_code=status, detail=str(error)) from error
         return get_manual_asset(database, asset_id)
 
     @app.delete("/api/v1/savings/assets/{asset_id}", status_code=204)
@@ -1257,7 +1627,8 @@ def create_app(
                 f"""
                 SELECT t.id, t.provider_description,
                        COALESCE(t.user_merchant, t.provider_merchant) merchant,
-                       t.notes, t.currency, t.subcategory_id, s.name subcategory
+                       t.notes, t.currency, t.subcategory_id, s.name subcategory,
+                       t.updated_at, t.is_cash_withdrawal
                 FROM transactions t LEFT JOIN subcategories s ON s.id = t.subcategory_id
                 WHERE t.id IN ({','.join('?' for _ in identifiers)})
                 """,
@@ -1274,8 +1645,11 @@ def create_app(
                 "notes": details[entry.transaction_id]["notes"],
                 "amount_minor": entry.amount_minor,
                 "currency": details[entry.transaction_id]["currency"],
+                "category_id": entry.category_id,
                 "subcategory_id": details[entry.transaction_id]["subcategory_id"],
                 "subcategory": details[entry.transaction_id]["subcategory"],
+                "updated_at": details[entry.transaction_id]["updated_at"],
+                "is_cash_withdrawal": bool(details[entry.transaction_id]["is_cash_withdrawal"]),
             }
             for index, entry in enumerate(entries)
         ]
@@ -1340,6 +1714,7 @@ def create_app(
                     database, "categories", category_id, payload.expected_updated_at, "planning target"
                 )
                 set_recurring_target(database, category_id, payload.amount_minor, payload.effective_month)
+                _reconcile_savings_after_mutation(database)
             return _planning_category(database, category_id, payload.effective_month)
         except PlanningError as error:
             raise HTTPException(status_code=422, detail=_planning_error_detail(error)) from error
@@ -1354,6 +1729,7 @@ def create_app(
                     database, "categories", category_id, payload.expected_updated_at, "planning target"
                 )
                 set_target_override(database, category_id, month, payload.amount_minor)
+                _reconcile_savings_after_mutation(database)
             return _planning_category(database, category_id, month)
         except PlanningError as error:
             raise HTTPException(status_code=422, detail=_planning_error_detail(error)) from error
@@ -1407,16 +1783,11 @@ def create_app(
 
         def work(connection: sqlite3.Connection) -> None:
             with ProcessLock(path.parent / "fintracka.lock"):
-                sync_plaid_connections(connection, plaid_adapter(connection))
+                sync_plaid_connections(
+                    connection,
+                    lambda profile, environment: plaid_adapter(connection, profile, environment),
+                )
 
-        try:
-            check = connect(path)
-            try:
-                plaid_adapter(check)
-            finally:
-                check.close()
-        except (PlaidNotConfigured, SecretStoreUnavailable) as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
         return {"job_id": jobs.submit("plaid_sync", work)}
 
     @app.get("/api/v1/sync-runs/{run_id}")
@@ -1578,17 +1949,22 @@ def create_app(
 def _transaction(connection: sqlite3.Connection, transaction_id: str) -> sqlite3.Row:
     row = connection.execute(
         """
-        SELECT t.id, t.account_id, t.local_date, t.amount_minor, t.currency,
+        SELECT t.id, t.account_id, a.name account_name, a.nickname account_nickname,
+               a.type account_type, a.subtype account_subtype, a.mask account_mask,
+               pc.provider, i.name institution_name, t.local_date, t.authorized_at,
+               t.posted_at, t.amount_minor, t.currency,
                t.provider_description description,
                COALESCE(t.user_merchant, t.provider_merchant) merchant,
                t.category_id, c.name category, t.category_source,
                t.subcategory_id, s.name subcategory, t.subcategory_source,
+               t.provider_category_primary, t.provider_category_detailed,
                t.provider_category_confidence, t.spending_owner,
                CASE WHEN c.category_type = 'expense' THEN COALESCE(t.spending_owner, a.spending_owner) END spending_owner_effective,
                t.notes, t.pending, pc.provider = 'manual' manual_cash,
                t.is_cash_withdrawal, t.user_archived archived, t.updated_at
         FROM transactions t JOIN accounts a ON a.id = t.account_id
         JOIN provider_connections pc ON pc.id = a.connection_id
+        LEFT JOIN institutions i ON i.id = pc.institution_id
         LEFT JOIN categories c ON c.id = t.category_id
         LEFT JOIN subcategories s ON s.id = t.subcategory_id
         WHERE t.id = ?
@@ -1659,6 +2035,31 @@ def _planning_category(
     raise HTTPException(status_code=404, detail="category not found")
 
 
+def _reconcile_savings_after_mutation(
+    connection: sqlite3.Connection, transaction_ids: list[str] | None = None
+) -> None:
+    settings = connection.execute(
+        "SELECT activation_month FROM savings_settings WHERE id = 1"
+    ).fetchone()
+    if settings is None:
+        return
+    through_month = connection.execute(
+        "SELECT COALESCE(MAX(substr(local_date, 1, 7)), ?) FROM transactions",
+        (settings["activation_month"],),
+    ).fetchone()[0]
+    reconcile_savings_draws(connection, max(settings["activation_month"], through_month))
+    if transaction_ids:
+        reconcile_savings_transactions(connection, transaction_ids)
+
+
+def _savings_goal_status(error: SavingsGoalError) -> int:
+    if isinstance(error, SavingsGoalConflict):
+        return 409
+    if "not found" in str(error):
+        return 404
+    return 422
+
+
 def _require_revision(
     connection: sqlite3.Connection,
     table: Literal[
@@ -1686,14 +2087,20 @@ def _write_transaction(connection: sqlite3.Connection) -> Iterator[None]:
         raise
 
 
-def _secured(response: Response, nonce: str, plaid_environment: str) -> Response:
-    plaid_api = "production" if plaid_environment == "production" else "sandbox"
+def _secured(
+    response: Response,
+    nonce: str,
+    plaid_environments: set[PlaidEnvironment],
+) -> Response:
+    plaid_apis = "".join(
+        f" https://{environment}.plaid.com/" for environment in sorted(plaid_environments)
+    )
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         f"script-src 'self' 'nonce-{nonce}' https://cdn.plaid.com/link/v2/stable/link-initialize.js; "
         f"style-src 'self' 'nonce-{nonce}'; style-src-attr 'unsafe-inline'; "
         "frame-src https://cdn.plaid.com/; "
-        f"connect-src 'self' https://{plaid_api}.plaid.com/; "
+        f"connect-src 'self'{plaid_apis}; "
         "frame-ancestors 'none'; form-action 'self'; base-uri 'none'; object-src 'none'"
     )
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -1706,11 +2113,29 @@ def _secured(response: Response, nonce: str, plaid_environment: str) -> Response
     return response
 
 
-def _plaid_environment(connection: sqlite3.Connection) -> str:
-    row = connection.execute(
-        "SELECT value FROM app_metadata WHERE key = 'plaid.environment'"
-    ).fetchone()
-    return row[0] if row is not None and row[0] in {"sandbox", "production"} else "sandbox"
+def _plaid_environments(connection: sqlite3.Connection) -> set[PlaidEnvironment]:
+    rows = dict(
+        connection.execute(
+            "SELECT key, value FROM app_metadata WHERE key LIKE 'plaid.profile.%'"
+        )
+    )
+    environments: set[PlaidEnvironment] = {
+        environment
+        for profile in PLAID_PROFILES
+        for environment in ("sandbox", "production")
+        if all(
+            rows.get(f"plaid.profile.{profile}.{environment}.{kind}_ref")
+            for kind in ("client_id", "secret")
+        )
+    }
+    environments.update(
+        row[0]
+        for row in connection.execute(
+            "SELECT DISTINCT environment FROM provider_connections WHERE provider = 'plaid' AND status IN ('active', 'repair')"
+        )
+        if row[0] in {"sandbox", "production"}
+    )
+    return environments
 
 
 def _startup_sync_due(connection: sqlite3.Connection) -> bool:

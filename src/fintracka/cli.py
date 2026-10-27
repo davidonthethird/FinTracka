@@ -66,13 +66,16 @@ def main(argv: list[str] | None = None) -> int:
                 configure_plaid(
                     connection,
                     KeychainSecrets(),
+                    args.profile,
                     args.environment,
                     args.client_id,
                     secret,
                 )
             finally:
                 connection.close()
-        print(f"Plaid {args.environment} credentials stored in macOS Keychain.")
+        print(
+            f"Plaid {args.profile.title()} {args.environment} credentials stored in macOS Keychain."
+        )
         return 0
     if args.command == "configure" and args.provider == "google":
         client_configuration = sys.stdin.read().strip()
@@ -92,8 +95,13 @@ def main(argv: list[str] | None = None) -> int:
             connection = connect(database_path)
             try:
                 migrate(connection)
-                adapter = build_plaid_adapter(connection, KeychainSecrets())
-                runs = sync_plaid_connections(connection, adapter)
+                keychain = KeychainSecrets()
+                runs = sync_plaid_connections(
+                    connection,
+                    lambda profile, environment: build_plaid_adapter(
+                        connection, keychain, profile, environment
+                    ),
+                )
             finally:
                 connection.close()
         print(f"Completed {len(runs)} Plaid connection sync(s).")
@@ -155,6 +163,7 @@ def _parser() -> argparse.ArgumentParser:
     configure_subparsers = configure.add_subparsers(dest="provider", required=True)
     plaid = configure_subparsers.add_parser("plaid")
     plaid.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    plaid.add_argument("--profile", choices=["david", "ariela"], default="david")
     plaid.add_argument("--environment", choices=["sandbox", "production"], required=True)
     plaid.add_argument("--client-id", required=True)
     plaid.add_argument("--secret-stdin", action="store_true", required=True)

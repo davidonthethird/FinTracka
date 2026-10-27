@@ -13,7 +13,9 @@ from fintracka.plaid_service import complete_plaid_connection, load_plaid_config
 from fintracka.providers import NormalizedAccount, NormalizedTransaction, SyncBatch
 
 
-def test_configure_plaid_reads_secret_from_stdin_and_sync_uses_provider(tmp_path, monkeypatch) -> None:
+def test_configure_plaid_profiles_and_sync_routes_every_connection(
+    tmp_path, monkeypatch, capsys
+) -> None:
     backend = FakeKeyring()
     secrets = KeychainSecrets(backend)
     monkeypatch.setattr(cli_module, "KeychainSecrets", lambda: secrets)
@@ -32,18 +34,58 @@ def test_configure_plaid_reads_secret_from_stdin_and_sync_uses_provider(tmp_path
             str(tmp_path),
         ]
     ) == 0
+    david_output = capsys.readouterr().out
+    assert "David" in david_output and "production" in david_output
+    assert "client-production" not in david_output and "secret-production" not in david_output
+
+    monkeypatch.setattr(cli_module.sys, "stdin", io.StringIO("secret-ariela\n"))
+    assert main(
+        [
+            "configure",
+            "plaid",
+            "--profile",
+            "ariela",
+            "--environment",
+            "sandbox",
+            "--client-id",
+            "client-ariela",
+            "--secret-stdin",
+            "--data-dir",
+            str(tmp_path),
+        ]
+    ) == 0
+    ariela_output = capsys.readouterr().out
+    assert "Ariela" in ariela_output and "sandbox" in ariela_output
+    assert "client-ariela" not in ariela_output and "secret-ariela" not in ariela_output
 
     connection = connect(tmp_path / "fintracka.sqlite3")
     migrate(connection)
-    assert load_plaid_configuration(connection, secrets).environment == "production"
-    adapter = FakeAdapter()
-    complete_plaid_connection(connection, adapter, "public-token")
+    assert load_plaid_configuration(connection, secrets, "david").environment == "production"
+    assert load_plaid_configuration(connection, secrets, "ariela").environment == "sandbox"
+    adapters = {
+        ("david", "production"): FakeAdapter("david", "production"),
+        ("ariela", "sandbox"): FakeAdapter("ariela", "sandbox"),
+    }
+    complete_plaid_connection(connection, adapters[("david", "production")], "public-token", "david")
+    complete_plaid_connection(connection, adapters[("ariela", "sandbox")], "public-token", "ariela")
     connection.close()
-    monkeypatch.setattr(cli_module, "build_plaid_adapter", lambda connection, secrets: adapter)
+    calls: list[tuple[str, str]] = []
+
+    def build(connection, secrets, profile, environment):  # type: ignore[no-untyped-def]
+        del connection, secrets
+        calls.append((profile, environment))
+        return adapters[(profile, environment)]
+
+    monkeypatch.setattr(
+        cli_module,
+        "build_plaid_adapter",
+        build,
+    )
 
     assert main(["sync", "--data-dir", str(tmp_path)]) == 0
     connection = connect(tmp_path / "fintracka.sqlite3")
-    assert connection.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
+    assert connection.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 2
+    assert calls == [("david", "production"), ("ariela", "sandbox")]
 
 
 def test_configure_google_reads_desktop_client_json_from_stdin(tmp_path, monkeypatch) -> None:
@@ -122,27 +164,27 @@ class FakeKeyring:
 
 
 class FakeAdapter:
-    environment = "production"
-
-    def __init__(self) -> None:
+    def __init__(self, profile: str, environment: str) -> None:
+        self.profile = profile
+        self.environment = environment
         self.references: list[str] = []
 
     def complete_link(self, public_token: str, secret_reference: str) -> ConnectedItem:
         self.references.append(secret_reference)
-        return ConnectedItem("item-cli", secret_reference)
+        return ConnectedItem(f"item-cli-{self.profile}", secret_reference)
 
     def connection_info(self, secret_reference: str) -> InstitutionInfo:
-        return InstitutionInfo("ins_cli", "CLI Bank")
+        return InstitutionInfo(f"ins-cli-{self.profile}", f"{self.profile.title()} CLI Bank")
 
     def revoke(self, secret_reference: str) -> None:
         pass
 
     def fetch_updates(self, secret_reference: str, checkpoint: str | None) -> SyncBatch:
         return SyncBatch(
-            accounts=(NormalizedAccount("checking-cli", "Checking", "depository", "checking", "asset"),),
+            accounts=(NormalizedAccount(f"checking-cli-{self.profile}", "Checking", "depository", "checking", "asset"),),
             added=(
                 NormalizedTransaction(
-                    "txn-cli", "checking-cli", "2026-10-12T12:00:00Z", -500, "USD", "CLI purchase"
+                    f"txn-cli-{self.profile}", f"checking-cli-{self.profile}", "2026-10-12T12:00:00Z", -500, "USD", "CLI purchase"
                 ),
             ),
             next_checkpoint="cursor-cli",
