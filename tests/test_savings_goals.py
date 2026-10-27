@@ -446,8 +446,8 @@ def test_modified_contribution_reverses_stale_allocation_and_reallocates(
     reconcile_savings_transactions(ledger, [transaction_id])
 
     ledger.execute(
-        "UPDATE transactions SET amount_minor = 90_000 WHERE id = ?",
-        (transaction_id,),
+        "UPDATE transactions SET amount_minor = ? WHERE id = ?",
+        (90_000, transaction_id),
     )
     reconcile_savings_transactions(ledger, [transaction_id])
 
@@ -586,7 +586,9 @@ def test_withdrawal_before_draw_does_not_settle_and_shrunk_draw_unsets_withdrawa
 
     later = _add_transaction(ledger, savings_account, -80_000, "2026-10-24")
     reconcile_savings_transactions(ledger, [later])
-    ledger.execute("UPDATE transactions SET amount_minor = -100_000 WHERE id = ?", (purchase_id,))
+    ledger.execute(
+        "UPDATE transactions SET amount_minor = ? WHERE id = ?", (-100_000, purchase_id)
+    )
     reconcile_savings_draws(ledger, "2026-10")
 
     assert ledger.execute(
