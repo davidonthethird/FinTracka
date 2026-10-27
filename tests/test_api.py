@@ -1697,6 +1697,61 @@ def test_savings_api_manages_assets_and_account_scope(tmp_path: Path) -> None:
         assert client.get("/api/v1/savings/2026-10").json()["investments_minor"] == 0
 
 
+def test_savings_goal_api_initializes_and_rejects_unknown_or_stale_mutations(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    apply_batch(connection, connection_id, synthetic_batches([connection_id])[connection_id])
+    account = connection.execute(
+        "SELECT id FROM accounts WHERE provider_account_id = 'checking-1'"
+    ).fetchone()
+    connection.execute(
+        "UPDATE accounts SET subtype = 'savings', include_savings = 1 WHERE id = ?", (account["id"],)
+    )
+    connection.commit()
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+        preview = client.get(
+            "/api/v1/savings/initialization-preview", params={"activation_month": "2026-10"}
+        )
+        assert preview.status_code == 200
+        balance = preview.json()["regular_balance_minor"]
+        assert client.post(
+            "/api/v1/savings/initialize",
+            json={"activation_month": "2026-10", "expected_regular_balance_minor": balance, "secret": "no"},
+            headers=headers,
+        ).status_code == 422
+        initialized = client.post(
+            "/api/v1/savings/initialize",
+            json={"activation_month": "2026-10", "expected_regular_balance_minor": balance},
+            headers=headers,
+        )
+        assert initialized.status_code == 201
+        assert initialized.json()["combined_minor"] == balance
+        emergency = next(goal for goal in initialized.json()["goals"] if goal["name"] == "Emergency")
+        stale = client.patch(
+            f"/api/v1/savings/goals/{emergency['goal_id']}",
+            json={
+                "expected_updated_at": "stale", "name": "Emergency", "owner": "Shared",
+                "icon_key": "shield", "color_key": "blue", "parent_id": None,
+                "linked_category_id": None,
+            },
+            headers=headers,
+        )
+        assert stale.status_code == 409
+        body = client.get("/api/v1/savings/2026-10").json()
+        assert body["goal_ledger"]["combined_minor"] == balance
+        assert "secret" not in json.dumps(body).lower()
+
+
 def _category_payload(name: str = "Test expense") -> dict[str, str | int]:
     return {
         "name": name,

@@ -77,7 +77,30 @@ from fintracka.savings import (
     savings_summary,
     update_manual_asset,
 )
-from fintracka.savings_goals import reconcile_savings_draws, reconcile_savings_transactions
+from fintracka.savings_goals import (
+    AllocationPlanRow,
+    SavingsGoalConflict,
+    SavingsGoalError,
+    accept_month_review,
+    allocation_preview,
+    archive_savings_goal,
+    assign_account_pool,
+    assign_manual_asset_pool,
+    assign_savings_withdrawal,
+    create_savings_goal,
+    delete_unused_savings_goal,
+    generate_month_review,
+    ignore_month_review,
+    initialization_preview,
+    initialize_goal_ledger,
+    reconcile_savings_draws,
+    reconcile_savings_transactions,
+    savings_goal_detail,
+    savings_goal_overview,
+    set_allocation_plan,
+    undo_savings_event,
+    update_savings_goal,
+)
 from fintracka.plaid_adapter import PlaidAdapter
 from fintracka.plaid_service import (
     PLAID_PROFILES,
@@ -138,6 +161,7 @@ class AccountPatch(StrictModel):
     include_export: bool | None = None
     include_savings: bool | None = None
     spending_owner: Literal["David", "Ariela", "Shared"] | None = None
+    savings_pool: Literal["regular", "retirement"] | None = None
 
 
 class TransactionPatch(StrictModel):
@@ -242,6 +266,69 @@ class ManualAssetCreate(StrictModel):
 
 class ManualAssetPatch(ManualAssetCreate):
     expected_updated_at: StrictStr
+    savings_pool: Literal["regular", "retirement"] | None = None
+    savings_goal_id: StrictStr | None = None
+
+
+class SavingsInitialize(StrictModel):
+    activation_month: StrictStr = Field(pattern=r"^\d{4}-\d{2}$")
+    expected_regular_balance_minor: StrictInt = Field(ge=0, le=10**15)
+
+
+class SavingsGoalCreate(StrictModel):
+    name: StrictStr = Field(min_length=1, max_length=120)
+    pool: Literal["regular", "retirement"]
+    owner: Literal["David", "Ariela", "Shared"]
+    icon_key: Literal["piggy_bank", "shield", "palm_tree", "shopping_bag", "gamepad", "house", "gift", "car", "chart", "wallet", "coins"]
+    color_key: Literal["blue", "green", "orange", "pink", "purple", "teal", "navy"]
+    activation_month: StrictStr = Field(pattern=r"^\d{4}-\d{2}$")
+    parent_id: StrictStr | None = None
+    linked_category_id: StrictStr | None = None
+    priority: StrictInt | None = Field(default=None, ge=0)
+    monthly_target_minor: StrictInt = Field(default=0, ge=0, le=10**15)
+
+
+class SavingsGoalPatch(StrictModel):
+    expected_updated_at: StrictStr
+    name: StrictStr = Field(min_length=1, max_length=120)
+    owner: Literal["David", "Ariela", "Shared"]
+    icon_key: Literal["piggy_bank", "shield", "palm_tree", "shopping_bag", "gamepad", "house", "gift", "car", "chart", "wallet", "coins"]
+    color_key: Literal["blue", "green", "orange", "pink", "purple", "teal", "navy"]
+    parent_id: StrictStr | None = None
+    linked_category_id: StrictStr | None = None
+
+
+class SavingsRevision(StrictModel):
+    expected_updated_at: StrictStr
+
+
+class SavingsAllocationRow(StrictModel):
+    goal_id: StrictStr
+    monthly_target_minor: StrictInt = Field(ge=0, le=10**15)
+    locked: StrictBool
+    priority: StrictInt = Field(ge=0)
+
+
+class SavingsAllocationPlan(StrictModel):
+    expected_updated_at: StrictStr
+    effective_month: StrictStr = Field(pattern=r"^\d{4}-\d{2}$")
+    rows: list[SavingsAllocationRow] = Field(min_length=1, max_length=100)
+
+
+class SavingsAllocationPreviewRequest(StrictModel):
+    pool: Literal["regular", "retirement"]
+    month: StrictStr = Field(pattern=r"^\d{4}-\d{2}$")
+    contribution_minor: StrictInt = Field(ge=0, le=10**15)
+
+
+class SavingsWithdrawalAssign(StrictModel):
+    expected_updated_at: StrictStr
+    destination: Literal["goal", "unallocated", "pending_transfer"]
+    goal_id: StrictStr | None = None
+
+
+class SavingsUndo(StrictModel):
+    reason: StrictStr = Field(min_length=1, max_length=300)
 
 
 class PlannedIncomeCreate(StrictModel):
@@ -655,7 +742,8 @@ def create_app(
                 f"""
                 SELECT a.id, a.name, a.nickname, a.type, a.subtype, a.nature, a.currency,
                        a.status, a.include_overview, a.include_budget, a.include_net,
-                       a.include_export, a.include_savings, a.spending_owner, a.hidden, a.updated_at,
+                       a.include_export, a.include_savings, a.spending_owner, a.savings_pool,
+                       a.hidden, a.updated_at,
                        (SELECT b.current_minor FROM account_balance_snapshots b WHERE b.account_id = a.id ORDER BY b.observed_at DESC, b.id DESC LIMIT 1) balance_minor
                 FROM accounts a {hidden_clause} ORDER BY a.nature, a.name, a.id
                 """
@@ -1237,6 +1325,147 @@ def create_app(
         except PlanningError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
+    @app.get("/api/v1/savings/initialization-preview")
+    def savings_initialization_preview(
+        activation_month: str, database: Database
+    ) -> dict[str, object]:
+        try:
+            return asdict(initialization_preview(database, activation_month))
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post("/api/v1/savings/initialize", status_code=201)
+    def savings_initialize(payload: SavingsInitialize, database: Database) -> dict[str, object]:
+        try:
+            with _write_transaction(database):
+                initialize_goal_ledger(
+                    database, payload.activation_month, payload.expected_regular_balance_minor
+                )
+            return asdict(savings_goal_overview(database, payload.activation_month))
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.post("/api/v1/savings/allocation-preview")
+    def savings_allocation_preview(
+        payload: SavingsAllocationPreviewRequest, database: Database
+    ) -> dict[str, object]:
+        try:
+            return asdict(allocation_preview(
+                database, payload.pool, payload.month, payload.contribution_minor
+            ))
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post("/api/v1/savings/goals", status_code=201)
+    def savings_goal_create(payload: SavingsGoalCreate, database: Database) -> dict[str, object]:
+        try:
+            with _write_transaction(database):
+                goal_id = create_savings_goal(database, **payload.model_dump())
+            return asdict(savings_goal_detail(database, goal_id, payload.activation_month))
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.get("/api/v1/savings/goals/{goal_id}")
+    def savings_goal_get(goal_id: str, through_month: str, database: Database) -> dict[str, object]:
+        try:
+            return asdict(savings_goal_detail(database, goal_id, through_month))
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.patch("/api/v1/savings/goals/{goal_id}")
+    def savings_goal_patch(
+        goal_id: str, payload: SavingsGoalPatch, database: Database
+    ) -> dict[str, object]:
+        try:
+            with _write_transaction(database):
+                update_savings_goal(
+                    database, goal_id, payload.expected_updated_at,
+                    **payload.model_dump(exclude={"expected_updated_at"}),
+                )
+            month = database.execute(
+                "SELECT activation_month FROM savings_goals WHERE id = ?", (goal_id,)
+            ).fetchone()[0]
+            return asdict(savings_goal_detail(database, goal_id, month))
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.delete("/api/v1/savings/goals/{goal_id}", status_code=204)
+    def savings_goal_delete(goal_id: str, expected_updated_at: str, database: Database) -> None:
+        try:
+            with _write_transaction(database):
+                delete_unused_savings_goal(database, goal_id, expected_updated_at)
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.post("/api/v1/savings/goals/{goal_id}/archive", status_code=204)
+    def savings_goal_archive(
+        goal_id: str, payload: SavingsRevision, database: Database
+    ) -> None:
+        try:
+            with _write_transaction(database):
+                archive_savings_goal(database, goal_id, payload.expected_updated_at)
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.put("/api/v1/savings/allocation-plans/{pool}", status_code=204)
+    def savings_allocation_plan(
+        pool: Literal["regular", "retirement"], payload: SavingsAllocationPlan,
+        database: Database,
+    ) -> None:
+        try:
+            with _write_transaction(database):
+                set_allocation_plan(
+                    database, pool, payload.effective_month,
+                    [AllocationPlanRow(**row.model_dump()) for row in payload.rows],
+                    payload.expected_updated_at,
+                )
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.post("/api/v1/savings/withdrawals/{transaction_id}/assign", status_code=204)
+    def savings_withdrawal_assign(
+        transaction_id: str, payload: SavingsWithdrawalAssign, database: Database
+    ) -> None:
+        try:
+            with _write_transaction(database):
+                assign_savings_withdrawal(
+                    database, transaction_id, payload.destination, payload.goal_id,
+                    payload.expected_updated_at,
+                )
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.post("/api/v1/savings/reviews/{month}/accept", status_code=204)
+    def savings_review_accept(
+        month: str, payload: SavingsRevision, database: Database
+    ) -> None:
+        try:
+            with _write_transaction(database):
+                accept_month_review(database, month, payload.expected_updated_at)
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.post("/api/v1/savings/reviews/{month}/ignore", status_code=204)
+    def savings_review_ignore(
+        month: str, payload: SavingsRevision, database: Database
+    ) -> None:
+        try:
+            with _write_transaction(database):
+                ignore_month_review(database, month, payload.expected_updated_at)
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
+    @app.post("/api/v1/savings/events/{event_id}/undo", status_code=201)
+    def savings_event_undo(
+        event_id: str, payload: SavingsUndo, database: Database
+    ) -> dict[str, str]:
+        try:
+            with _write_transaction(database):
+                reversal_id = undo_savings_event(database, event_id, payload.reason)
+            return {"event_id": reversal_id}
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
     @app.get("/api/v1/savings/{month}")
     def savings_route(
         month: str,
@@ -1244,8 +1473,18 @@ def create_app(
         owner: Literal["David", "Ariela", "Shared"] | None = None,
     ) -> dict[str, object]:
         try:
-            return asdict(savings_summary(database, month, owner))
-        except ManualAssetError as error:
+            result = asdict(savings_summary(database, month, owner))
+            if database.execute("SELECT 1 FROM savings_settings WHERE id = 1").fetchone():
+                result["goal_ledger"] = asdict(savings_goal_overview(database, month, owner))
+                review = database.execute(
+                    "SELECT * FROM savings_month_reviews WHERE month = ?", (month,)
+                ).fetchone()
+                result["review"] = dict(review) if review else None
+            else:
+                result["goal_ledger"] = None
+                result["review"] = None
+            return result
+        except (ManualAssetError, SavingsGoalError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
     @app.post("/api/v1/savings/assets", status_code=201)
@@ -1282,6 +1521,14 @@ def create_app(
                     payload.current_value_minor,
                     payload.as_of_date,
                 )
+                if "savings_pool" in payload.model_fields_set or "savings_goal_id" in payload.model_fields_set:
+                    current = database.execute(
+                        "SELECT updated_at FROM manual_assets WHERE id = ?", (asset_id,)
+                    ).fetchone()
+                    assign_manual_asset_pool(
+                        database, asset_id, payload.savings_pool, payload.savings_goal_id,
+                        current["updated_at"],
+                    )
         except ManualAssetError as error:
             raise HTTPException(status_code=_manual_asset_status(error), detail=str(error)) from error
         return get_manual_asset(database, asset_id)
@@ -1749,6 +1996,14 @@ def _reconcile_savings_after_mutation(
     reconcile_savings_draws(connection, max(settings["activation_month"], through_month))
     if transaction_ids:
         reconcile_savings_transactions(connection, transaction_ids)
+
+
+def _savings_goal_status(error: SavingsGoalError) -> int:
+    if isinstance(error, SavingsGoalConflict):
+        return 409
+    if "not found" in str(error):
+        return 404
+    return 422
 
 
 def _require_revision(
