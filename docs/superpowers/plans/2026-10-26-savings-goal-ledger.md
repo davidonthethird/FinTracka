@@ -402,6 +402,8 @@ git commit -m "feat: manage savings plans and reviews"
 
 ### Task 9: Recovery documentation and full verification
 
+Implementation note: Savings activation remains an explicit UI action after a read-only preview; verification never initializes the live user database.
+
 **Files:**
 - Modify: `README.md`
 - Modify: `RECOVERY_RUNBOOK.md`

@@ -79,7 +79,7 @@ The first browser visit exchanges a short-lived, one-use bootstrap token for an 
 6. Use **Connections → Details → Manage bank accounts** to add another account from an existing Plaid bank connection. This uses the existing Plaid Item rather than a new Trial Item.
 
 If the same joint account appears through two bank logins, open **Accounts → Edit → Remove from FinTracka** on the duplicate. Removed accounts and their transactions are hidden from normal views, calculations, savings, and exports but remain locally stored and can be restored with **Show removed accounts**.
-7. Use **Savings** for connected savings balances and manually tracked investments or other assets.
+7. Use **Savings** for connected savings balances, Regular Savings goals, Retirement goals, manually tracked investments, and monthly allocation reviews.
 8. Use **Settings** for readiness checks, Google authorization, exports, backups, scheduling, and theme.
 
 Data and corrections persist in the local SQLite ledger when the browser or application closes. Spreadsheets are exports only; edits made in them are not imported.
@@ -119,7 +119,15 @@ Start with one institution, compare account names and balances, sync transaction
 
 Every Plaid Item remains permanently bound to the David or Ariela developer profile that created it. Both profiles feed the same household ledger; the account's editable spending owner—not its Plaid profile—controls David, Ariela, or Shared reporting. A second Plaid developer team does not guarantee a separate Trial allowance or institution approval.
 
-Roth IRA holdings at Fidelity or Pershing are not imported by this Transactions-only integration. They require a separate Plaid Investments implementation and provider-coverage review.
+Roth IRA holdings are tracked as Retirement only when explicitly assigned or entered as a manual investment. Fidelity data already present in FinTracka can be assigned to Retirement; Pershing is intentionally unsupported until it is connected and reviewed. The Transactions-only Plaid integration does not guess that an account is retirement from its provider or account name.
+
+## Savings goals
+
+Savings goal tracking starts in the month you activate it; it never fabricates earlier goal history. Before activation, create and verify a local SQLite backup. The setup preview allocates up to **$25,000** of current Regular Savings to **Emergency**, assigns any remainder to **General Savings**, and shows Retirement separately. Review that preview in the UI before confirming it.
+
+Monthly dollar targets are authoritative. Percentage sliders redistribute the same exact cents across unlocked goals, while priority order controls which goals receive money first when a deposit is smaller than planned. Deposits above the monthly plan are divided by the saved percentages. Goals linked to Planning categories draw only category spending above that category's target.
+
+Money committed to cover overspending remains visible as **Pending transfer** until a unique matching savings withdrawal settles it. Unmatched withdrawals require an explicit goal, Unallocated, or Pending-transfer assignment. Corrections and undo operations append reversing ledger events; historical entries are not silently rewritten. Regular Savings and Retirement always remain separate, and reconciliation warnings are visible instead of being auto-balanced.
 
 Plaid's history window cannot be expanded after Transactions has already been initialized on an Item. Do not disconnect and reconnect an existing Trial Item merely to request more history: removing it does not restore the lifetime Trial slot. Use **History import** for older records instead.
 
