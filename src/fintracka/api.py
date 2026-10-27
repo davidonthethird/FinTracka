@@ -286,6 +286,8 @@ class SavingsGoalCreate(StrictModel):
     linked_category_id: StrictStr | None = None
     priority: StrictInt | None = Field(default=None, ge=0)
     monthly_target_minor: StrictInt = Field(default=0, ge=0, le=10**15)
+    overall_target_minor: StrictInt | None = Field(default=None, gt=0, le=10**15)
+    overflow_goal_ids: list[StrictStr] = Field(default_factory=list, max_length=100)
 
 
 class SavingsGoalPatch(StrictModel):
@@ -298,6 +300,10 @@ class SavingsGoalPatch(StrictModel):
     linked_category_id: StrictStr | None = None
     monthly_target_minor: StrictInt | None = Field(default=None, ge=0, le=10**15)
     effective_month: StrictStr | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
+    overall_target_minor: StrictInt | None = Field(default=None, gt=0, le=10**15)
+    overflow_goal_ids: list[StrictStr] | None = Field(default=None, max_length=100)
+    refill_sources: dict[StrictStr, StrictInt] | None = None
+    allow_partial_refill: StrictBool = False
 
 
 class SavingsRevision(StrictModel):
@@ -1402,10 +1408,14 @@ def create_app(
         try:
             if (payload.monthly_target_minor is None) != (payload.effective_month is None):
                 raise SavingsGoalError("monthly target and effective month must be supplied together")
+            if payload.refill_sources is not None and "overall_target_minor" not in payload.model_fields_set:
+                raise SavingsGoalError("refill sources require an overall target update")
             with _write_transaction(database):
+                values = payload.model_dump(exclude={"expected_updated_at"})
+                values["overall_target_supplied"] = "overall_target_minor" in payload.model_fields_set
                 update_savings_goal(
                     database, goal_id, payload.expected_updated_at,
-                    **payload.model_dump(exclude={"expected_updated_at"}),
+                    **values,
                 )
                 _reconcile_savings_after_mutation(database)
             month = payload.effective_month or database.execute(

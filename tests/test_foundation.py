@@ -76,7 +76,7 @@ def test_migrations_are_idempotent_and_install_core_constraints(tmp_path: Path) 
         } <= tables
         assert [
             row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ] == list(range(1, 15))
+        ] == list(range(1, 16))
         starter_categories = {
             row[0]
             for row in connection.execute("SELECT name FROM categories WHERE archived = 0")
@@ -385,7 +385,7 @@ def test_migrations_009_and_010_add_and_backfill_subcategories(tmp_path: Path) -
             for row in connection.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
-        ] == list(range(1, 15))
+        ] == list(range(1, 16))
         assert connection.execute(
             "SELECT history_available_from FROM provider_connections WHERE id = ?",
             (connection_id,),
@@ -497,11 +497,12 @@ def test_migration_014_preserves_existing_savings_data_and_adds_goal_constraints
 
         assert connection.execute("SELECT name FROM accounts WHERE id = ?", (account_id,)).fetchone()[0] == "Joint savings"
         assert connection.execute("SELECT title FROM manual_assets WHERE id = ?", (asset_id,)).fetchone()[0] == "David Roth IRA"
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 14
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 15
         assert {
             "savings_settings",
             "savings_goals",
             "savings_goal_target_versions",
+            "savings_goal_overflow_rules",
             "savings_ledger_entries",
             "savings_month_reviews",
         } <= {
@@ -511,6 +512,9 @@ def test_migration_014_preserves_existing_savings_data_and_adds_goal_constraints
         assert {row[1] for row in connection.execute("PRAGMA table_info(accounts)")} >= {"savings_pool"}
         assert {row[1] for row in connection.execute("PRAGMA table_info(manual_assets)")} >= {
             "savings_pool", "savings_goal_id"
+        }
+        assert "overall_target_minor" in {
+            row[1] for row in connection.execute("PRAGMA table_info(savings_goals)")
         }
 
         for table in ("accounts", "manual_assets"):
@@ -528,6 +532,11 @@ def test_migration_014_preserves_existing_savings_data_and_adds_goal_constraints
             """,
             (valid_goal, now, now),
         )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE savings_goals SET overall_target_minor = 0 WHERE id = ?",
+                (valid_goal,),
+            )
         invalid_rows = (
             ("Nobody", "shield", "blue", "USD"),
             ("Shared", "unknown", "blue", "USD"),

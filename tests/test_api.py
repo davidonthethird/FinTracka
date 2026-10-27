@@ -1761,6 +1761,21 @@ def test_savings_goal_api_initializes_and_rejects_unknown_or_stale_mutations(
         )
         assert changed_goal.status_code == 200
         assert changed_goal.json()["monthly_target_minor"] == 50_000
+        general = next(goal for goal in initialized.json()["goals"] if goal["name"] == "General Savings")
+        changed_goal = client.patch(
+            f"/api/v1/savings/goals/{emergency['goal_id']}",
+            json={
+                "expected_updated_at": changed_goal.json()["updated_at"],
+                "name": "Emergency", "owner": "Shared", "icon_key": "shield",
+                "color_key": "blue", "parent_id": None, "linked_category_id": None,
+                "overall_target_minor": 2_500_000,
+                "overflow_goal_ids": [general["goal_id"]],
+            },
+            headers=headers,
+        )
+        assert changed_goal.status_code == 200
+        assert changed_goal.json()["overall_target_minor"] == 2_500_000
+        assert changed_goal.json()["overflow_goal_ids"] == [general["goal_id"]]
         body = client.get("/api/v1/savings/2026-10").json()
         assert body["goal_ledger"]["combined_minor"] == balance
         assert "secret" not in json.dumps(body).lower()

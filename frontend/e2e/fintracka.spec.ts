@@ -41,9 +41,12 @@ test("synthetic finance workflow with Plaid profiles edits categories from plann
   await page.getByLabel("Savings owner").selectOption("");
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Preview and start goal tracking" }).click();
-  await expect(page.getByText("Your savings goals", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "This month’s plan" })).toBeVisible();
   await expect(page.getByText("Emergency", { exact: true }).first()).toBeVisible();
   await expect(page.locator(".goal-card").filter({ hasText: "Emergency" })).toContainText("$5,000.00");
+  await page.getByRole("button", { name: "Overall", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Long-term progress" })).toBeVisible();
+  await page.getByRole("button", { name: "Monthly", exact: true }).click();
   await page.getByRole("button", { name: /Emergency/ }).first().click();
   await expect(page.getByRole("complementary", { name: /Emergency savings details/ })).toContainText("Month-to-month savings");
   await expect(page.locator(".goal-focus-donut")).toBeVisible();

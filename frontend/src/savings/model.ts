@@ -30,6 +30,9 @@ export type SavingsGoal = {
   goal_id: string; name: string; pool: "regular" | "retirement";
   owner: SavingsOwner; parent_id: string | null; linked_category_id: string | null; icon_key: string; color_key: string;
   priority: number; locked: boolean; active: boolean; monthly_target_minor: number;
+  monthly_saved_minor: number; monthly_funded_basis_points: number | null;
+  overall_target_minor: number | null; overall_funded_basis_points: number | null;
+  overall_remaining_minor: number | null; overflow_goal_ids: string[];
   balance_minor: number; expected_to_date_minor: number;
   funded_basis_points: number | null; ahead_minor: number;
   months: SavingsMonthPoint[]; updated_at: string;
@@ -41,7 +44,7 @@ export type SavingsGoalOverview = {
   regular_reconciliation_minor: number; retirement_reconciliation_minor: number;
   goals: SavingsGoal[];
 };
-export type SavingsGoalDetail = Pick<SavingsGoal, "goal_id" | "name" | "pool" | "owner" | "balance_minor" | "monthly_target_minor" | "months">;
+export type SavingsGoalDetail = Pick<SavingsGoal, "goal_id" | "name" | "pool" | "owner" | "balance_minor" | "monthly_target_minor" | "overall_target_minor" | "overflow_goal_ids" | "months" | "updated_at">;
 export type SavingsActivity = {
   transaction_id: string;
   account_id: string;
@@ -75,20 +78,26 @@ export type SavingsSummary = {
 
 export type SavingsArc = { goal: SavingsGoal; allocationBasisPoints: number; fundedBasisPoints: number };
 
-export function buildSavingsArcs(goals: SavingsGoal[]): SavingsArc[] {
-  const eligible = goals.filter((goal) => Number.isFinite(goal.monthly_target_minor) && goal.monthly_target_minor > 0);
-  const total = eligible.reduce((sum, goal) => sum + goal.monthly_target_minor, 0);
+export type SavingsGoalViewMode = "monthly" | "overall";
+
+export function buildSavingsArcs(goals: SavingsGoal[], mode: SavingsGoalViewMode = "monthly"): SavingsArc[] {
+  const amount = (goal: SavingsGoal) => mode === "monthly"
+    ? goal.monthly_target_minor
+    : goal.overall_target_minor ?? (goal.balance_minor > 0 ? goal.balance_minor : 0);
+  const eligible = goals.filter((goal) => Number.isFinite(amount(goal)) && amount(goal) > 0);
+  const total = eligible.reduce((sum, goal) => sum + amount(goal), 0);
   if (!Number.isFinite(total) || total <= 0) return [];
-  const bases = eligible.map((goal) => Math.floor(goal.monthly_target_minor * 10_000 / total));
+  const bases = eligible.map((goal) => Math.floor(amount(goal) * 10_000 / total));
   let remainder = 10_000 - bases.reduce((sum, value) => sum + value, 0);
-  const order = eligible.map((goal, index) => ({ index, fraction: goal.monthly_target_minor * 10_000 % total }))
+  const order = eligible.map((goal, index) => ({ index, fraction: amount(goal) * 10_000 % total }))
     .sort((a, b) => b.fraction - a.fraction || eligible[a.index].priority - eligible[b.index].priority || a.index - b.index);
   for (let index = 0; index < remainder; index += 1) bases[order[index].index] += 1;
   return eligible.map((goal, index) => ({
     goal,
     allocationBasisPoints: bases[index],
-    fundedBasisPoints: Number.isFinite(goal.funded_basis_points)
-      ? Math.max(0, Math.min(10_000, goal.funded_basis_points ?? 0)) : 0,
+    fundedBasisPoints: mode === "monthly"
+      ? Math.max(0, Math.min(10_000, goal.monthly_funded_basis_points ?? 0))
+      : Math.max(0, Math.min(10_000, goal.overall_funded_basis_points ?? (goal.balance_minor > 0 ? 10_000 : 0))),
   }));
 }
 
