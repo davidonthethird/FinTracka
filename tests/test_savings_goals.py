@@ -21,11 +21,14 @@ from fintracka.savings_goals import (
     allocate_contribution,
     allocation_preview,
     rebalance_allocation,
+    reconcile_savings_draws,
+    reconcile_savings_transactions,
     reverse_source_events,
     reorder_savings_goals,
     set_allocation_plan,
     update_savings_goal,
 )
+from fintracka.planning import set_recurring_target
 
 
 @pytest.fixture
@@ -285,6 +288,59 @@ def test_allocation_rounding_and_locked_rebalance_are_exact(ledger: sqlite3.Conn
     assert rows == tuple(rows)
 
 
+def test_spending_draw_caps_at_goal_balance_and_exact_withdrawal_settles(
+    ledger: sqlite3.Connection,
+) -> None:
+    savings_account = _add_savings_account(ledger, 80_000)
+    checking_account = _add_savings_account(ledger, 0)
+    ledger.execute(
+        "UPDATE accounts SET include_savings = 0, subtype = 'checking', savings_pool = NULL WHERE id = ?",
+        (checking_account,),
+    )
+    initialize_goal_ledger(ledger, "2026-10", 80_000)
+    shopping_id = ledger.execute("SELECT id FROM categories WHERE name = 'Shopping'").fetchone()[0]
+    emergency = ledger.execute("SELECT * FROM savings_goals WHERE name = 'Emergency'").fetchone()
+    update_savings_goal(
+        ledger, emergency["id"], emergency["updated_at"], name="Shopping reserve",
+        owner="Shared", icon_key="shopping_bag", color_key="pink", parent_id=None,
+        linked_category_id=shopping_id,
+    )
+    set_recurring_target(ledger, shopping_id, 50_000, "2026-10")
+    _add_transaction(ledger, checking_account, -150_000, "2026-10-20", shopping_id)
+
+    reconcile_savings_draws(ledger, "2026-10")
+    reconcile_savings_draws(ledger, "2026-10")
+
+    assert ledger.execute(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE goal_id = ?",
+        (emergency["id"],),
+    ).fetchone()[0] == 0
+    assert ledger.execute(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE bucket_type = 'pending_transfer'"
+    ).fetchone()[0] == 80_000
+
+    withdrawal_id = _add_transaction(ledger, savings_account, -80_000, "2026-10-24")
+    reconcile_savings_transactions(ledger, [withdrawal_id])
+    reconcile_savings_transactions(ledger, [withdrawal_id])
+    assert ledger.execute(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE bucket_type = 'pending_transfer'"
+    ).fetchone()[0] == 0
+
+
+def test_non_savings_withdrawal_never_changes_goal_balances(ledger: sqlite3.Connection) -> None:
+    account_id = _add_savings_account(ledger, 10_000)
+    initialize_goal_ledger(ledger, "2026-10", 10_000)
+    ledger.execute(
+        "UPDATE accounts SET savings_pool = NULL, include_savings = 0 WHERE id = ?", (account_id,)
+    )
+    withdrawal_id = _add_transaction(ledger, account_id, -5_000, "2026-10-26")
+    before = ledger.execute("SELECT COUNT(*) FROM savings_ledger_entries").fetchone()[0]
+
+    reconcile_savings_transactions(ledger, [withdrawal_id])
+
+    assert ledger.execute("SELECT COUNT(*) FROM savings_ledger_entries").fetchone()[0] == before
+
+
 def _add_savings_account(connection: sqlite3.Connection, balance_minor: int) -> str:
     now = "2026-10-26T12:00:00Z"
     institution_id, provider_id, account_id = new_id(), new_id(), new_id()
@@ -334,6 +390,30 @@ def _add_savings_transaction(
         VALUES (?, ?, '2026-10-26', ?, 'USD', 'Savings transfer', 0, 0, ?, ?)
         """,
         (transaction_id, account_id, amount_minor, now, now),
+    )
+    return transaction_id
+
+
+def _add_transaction(
+    connection: sqlite3.Connection,
+    account_id: str,
+    amount_minor: int,
+    local_date: str,
+    category_id: str | None = None,
+) -> str:
+    transaction_id = new_id()
+    now = "2026-10-26T12:00:00Z"
+    connection.execute(
+        """
+        INSERT INTO transactions
+        (id, account_id, local_date, amount_minor, currency, provider_description,
+         pending, tombstoned, category_id, category_source, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'USD', 'Test transaction', 0, 0, ?, ?, ?, ?)
+        """,
+        (
+            transaction_id, account_id, local_date, amount_minor, category_id,
+            "manual" if category_id else None, now, now,
+        ),
     )
     return transaction_id
 

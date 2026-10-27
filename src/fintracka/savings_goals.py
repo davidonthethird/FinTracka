@@ -4,7 +4,7 @@ import sqlite3
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fintracka.ids import new_id
 
@@ -545,6 +545,111 @@ def reverse_source_events(
         )
 
 
+def reconcile_savings_draws(connection: sqlite3.Connection, through_month: str) -> None:
+    _validate_month(through_month)
+    settings = connection.execute("SELECT activation_month FROM savings_settings WHERE id = 1").fetchone()
+    if settings is None:
+        return
+    from fintracka.planning import planning_snapshot
+
+    month = settings["activation_month"]
+    while month <= through_month:
+        snapshot = planning_snapshot(connection, month, 12)
+        planning_categories = {row.category_id: row for row in snapshot.categories}
+        goals = connection.execute(
+            """
+            SELECT * FROM savings_goals
+            WHERE active = 1 AND pool = 'regular' AND linked_category_id IS NOT NULL
+            ORDER BY priority, id
+            """
+        ).fetchall()
+        for goal in goals:
+            category = planning_categories.get(goal["linked_category_id"])
+            if category is None:
+                continue
+            desired = max(category.actual_minor - category.target_minor, 0)
+            current_draw = -connection.execute(
+                """
+                SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries
+                WHERE goal_id = ? AND month = ? AND event_type = 'spending_draw'
+                """,
+                (goal["id"], month),
+            ).fetchone()[0]
+            current_balance = connection.execute(
+                "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE goal_id = ?",
+                (goal["id"],),
+            ).fetchone()[0]
+            capped = min(desired, max(current_balance + current_draw, 0))
+            change = capped - current_draw
+            if change:
+                effective_date = _latest_transaction_date(
+                    connection, category.transaction_ids, month
+                )
+                _append_draw(connection, goal["id"], month, effective_date, change)
+        month = _next_month(month)
+
+
+def reconcile_savings_transactions(
+    connection: sqlite3.Connection, transaction_ids: Sequence[str]
+) -> None:
+    for transaction_id in transaction_ids:
+        transaction = connection.execute(
+            """
+            SELECT t.*, a.savings_pool FROM transactions t
+            JOIN accounts a ON a.id = t.account_id WHERE t.id = ?
+            """,
+            (transaction_id,),
+        ).fetchone()
+        if transaction is None:
+            continue
+        prefix = f"transaction:{transaction_id}"
+        if transaction["tombstoned"] or transaction["user_archived"]:
+            reverse_source_events(connection, prefix, "transaction removed from savings")
+            continue
+        if transaction["savings_pool"] not in POOLS or transaction["pending"]:
+            continue
+        if transaction["amount_minor"] > 0:
+            allocate_contribution(connection, transaction_id)
+        elif transaction["amount_minor"] < 0:
+            _settle_exact_withdrawal(connection, transaction)
+
+
+def assign_savings_withdrawal(
+    connection: sqlite3.Connection,
+    transaction_id: str,
+    destination: str,
+    goal_id: str | None,
+    expected_updated_at: str,
+) -> None:
+    transaction = connection.execute(
+        """
+        SELECT t.*, a.savings_pool FROM transactions t
+        JOIN accounts a ON a.id = t.account_id WHERE t.id = ?
+        """,
+        (transaction_id,),
+    ).fetchone()
+    if transaction is None:
+        raise SavingsGoalError("transaction not found")
+    _require_current(transaction, expected_updated_at, "transaction")
+    if transaction["savings_pool"] not in POOLS or transaction["amount_minor"] >= 0:
+        raise SavingsGoalError("transaction is not a savings withdrawal")
+    if destination not in {"goal", "unallocated", "pending_transfer"}:
+        raise SavingsGoalError("invalid savings withdrawal destination")
+    if destination == "goal":
+        goal = _goal(connection, goal_id or "")
+        if goal["pool"] != transaction["savings_pool"]:
+            raise SavingsGoalError("withdrawal goal belongs to another savings pool")
+    elif goal_id is not None:
+        raise SavingsGoalError("system bucket withdrawals cannot include a goal")
+    prefix = f"transaction:{transaction_id}"
+    if connection.execute(
+        "SELECT 1 FROM savings_ledger_entries WHERE source_key = ? OR instr(source_key, ? || ':') = 1",
+        (prefix, prefix),
+    ).fetchone():
+        raise SavingsGoalConflict("withdrawal is already assigned")
+    _withdrawal_entry(connection, transaction, destination, goal_id, prefix)
+
+
 def rebalance_allocation(
     rows: Sequence[AllocationPlanRow], edited_goal_id: str, desired_basis_points: int
 ) -> tuple[AllocationPlanRow, ...]:
@@ -663,6 +768,126 @@ def _allocation_entry(
             source_key, transaction["id"], now,
         ),
     )
+
+
+def _append_draw(
+    connection: sqlite3.Connection,
+    goal_id: str,
+    month: str,
+    effective_date: str,
+    amount_minor: int,
+) -> None:
+    movement_id = new_id()
+    now = _now()
+    suffix = new_id()
+    for bucket_type, linked_goal_id, amount in (
+        ("goal", goal_id, -amount_minor),
+        ("pending_transfer", None, amount_minor),
+    ):
+        connection.execute(
+            """
+            INSERT INTO savings_ledger_entries
+            (id, movement_id, pool, bucket_type, goal_id, amount_minor, currency,
+             event_type, effective_date, month, source_key, actor, explanation, created_at)
+            VALUES (?, ?, 'regular', ?, ?, ?, 'USD', 'spending_draw', ?, ?, ?,
+                    'system', 'Planning category overspend draw', ?)
+            """,
+            (
+                new_id(), movement_id, bucket_type, linked_goal_id, amount,
+                effective_date, month, f"draw:{month}:{goal_id}:{bucket_type}:{suffix}", now,
+            ),
+        )
+
+
+def _settle_exact_withdrawal(connection: sqlite3.Connection, transaction: sqlite3.Row) -> None:
+    prefix = f"transaction:{transaction['id']}"
+    if connection.execute(
+        "SELECT 1 FROM savings_ledger_entries WHERE source_key = ? OR instr(source_key, ? || ':') = 1",
+        (prefix, prefix),
+    ).fetchone():
+        return
+    amount = -transaction["amount_minor"]
+    transaction_date = date.fromisoformat(transaction["local_date"])
+    candidates = [
+        row
+        for row in connection.execute(
+            """
+            SELECT e.* FROM savings_ledger_entries e
+            WHERE e.pool = ? AND e.bucket_type = 'pending_transfer'
+              AND e.event_type = 'spending_draw' AND e.amount_minor = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM savings_ledger_entries s
+                  WHERE s.event_type = 'settlement' AND s.explanation = e.movement_id
+              )
+            """,
+            (transaction["savings_pool"], amount),
+        )
+        if abs((transaction_date - date.fromisoformat(row["effective_date"])).days) <= 7
+    ]
+    if len(candidates) != 1:
+        return
+    pending = candidates[0]
+    now = _now()
+    connection.execute(
+        """
+        INSERT INTO savings_ledger_entries
+        (id, movement_id, pool, bucket_type, amount_minor, currency, event_type,
+         effective_date, month, source_key, source_transaction_id, actor,
+         explanation, created_at)
+        VALUES (?, ?, ?, 'pending_transfer', ?, 'USD', 'settlement', ?, ?, ?, ?,
+                'system', ?, ?)
+        """,
+        (
+            new_id(), new_id(), transaction["savings_pool"], -amount,
+            transaction["local_date"], transaction["local_date"][:7],
+            f"{prefix}:settlement", transaction["id"], pending["movement_id"], now,
+        ),
+    )
+
+
+def _withdrawal_entry(
+    connection: sqlite3.Connection,
+    transaction: sqlite3.Row,
+    bucket_type: str,
+    goal_id: str | None,
+    source_key: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO savings_ledger_entries
+        (id, movement_id, pool, bucket_type, goal_id, amount_minor, currency,
+         event_type, effective_date, month, source_key, source_transaction_id,
+         actor, explanation, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'USD', 'withdrawal', ?, ?, ?, ?, 'user',
+                'Assigned savings withdrawal', ?)
+        """,
+        (
+            new_id(), new_id(), transaction["savings_pool"], bucket_type, goal_id,
+            transaction["amount_minor"], transaction["local_date"],
+            transaction["local_date"][:7], source_key, transaction["id"], _now(),
+        ),
+    )
+
+
+def _latest_transaction_date(
+    connection: sqlite3.Connection, transaction_ids: Sequence[str], month: str
+) -> str:
+    if transaction_ids:
+        row = connection.execute(
+            f"SELECT MAX(local_date) FROM transactions WHERE id IN ({','.join('?' for _ in transaction_ids)})",
+            tuple(transaction_ids),
+        ).fetchone()
+        if row and row[0]:
+            return row[0]
+    next_month = date.fromisoformat(_next_month(month) + "-01")
+    return (next_month - timedelta(days=1)).isoformat()
+
+
+def _next_month(month: str) -> str:
+    value = date.fromisoformat(month + "-01")
+    if value.month == 12:
+        return f"{value.year + 1:04d}-01"
+    return f"{value.year:04d}-{value.month + 1:02d}"
 
 
 def _insert_goal(

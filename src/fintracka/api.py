@@ -77,6 +77,7 @@ from fintracka.savings import (
     savings_summary,
     update_manual_asset,
 )
+from fintracka.savings_goals import reconcile_savings_draws, reconcile_savings_transactions
 from fintracka.plaid_adapter import PlaidAdapter
 from fintracka.plaid_service import (
     PLAID_PROFILES,
@@ -858,6 +859,7 @@ def create_app(
                     payload.local_date or date.today().isoformat(),
                     payload.spending_owner,
                 )
+                _reconcile_savings_after_mutation(database, [transaction_id])
         except ManualCashError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return _transaction_response(database, transaction_id)
@@ -878,6 +880,7 @@ def create_app(
                     payload.local_date,
                     payload.spending_owner,
                 )
+                _reconcile_savings_after_mutation(database, [transaction_id])
         except ManualCashError as error:
             raise HTTPException(status_code=_manual_cash_status(error), detail=str(error)) from error
         return _transaction_response(database, transaction_id)
@@ -893,6 +896,7 @@ def create_app(
         try:
             with _write_transaction(database):
                 delete_manual_cash(database, transaction_id, expected_updated_at)
+                _reconcile_savings_after_mutation(database, [transaction_id])
         except ManualCashError as error:
             raise HTTPException(status_code=_manual_cash_status(error), detail=str(error)) from error
 
@@ -912,6 +916,7 @@ def create_app(
                 transaction_id,
                 **{field: getattr(payload, field) for field in supplied},
             )
+            _reconcile_savings_after_mutation(database, [transaction_id])
         row = _transaction(database, transaction_id)
         return TransactionResponse(**{**dict(row), "pending": bool(row["pending"])})
 
@@ -933,6 +938,7 @@ def create_app(
                 result = categorize_transaction(
                     database, transaction_id, payload.category_id, payload.scope
                 )
+                _reconcile_savings_after_mutation(database, [transaction_id])
         except IntegrityError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         row = _transaction(database, transaction_id)
@@ -1029,6 +1035,7 @@ def create_app(
                     item.id,
                     **{field: getattr(item, field) for field in supplied},
                 )
+            _reconcile_savings_after_mutation(database, identifiers)
         return [
             TransactionResponse(**{**dict(row), "pending": bool(row["pending"])})
             for row in (_transaction(database, identifier) for identifier in identifiers)
@@ -1406,6 +1413,7 @@ def create_app(
                     database, "categories", category_id, payload.expected_updated_at, "planning target"
                 )
                 set_recurring_target(database, category_id, payload.amount_minor, payload.effective_month)
+                _reconcile_savings_after_mutation(database)
             return _planning_category(database, category_id, payload.effective_month)
         except PlanningError as error:
             raise HTTPException(status_code=422, detail=_planning_error_detail(error)) from error
@@ -1420,6 +1428,7 @@ def create_app(
                     database, "categories", category_id, payload.expected_updated_at, "planning target"
                 )
                 set_target_override(database, category_id, month, payload.amount_minor)
+                _reconcile_savings_after_mutation(database)
             return _planning_category(database, category_id, month)
         except PlanningError as error:
             raise HTTPException(status_code=422, detail=_planning_error_detail(error)) from error
@@ -1723,6 +1732,23 @@ def _planning_category(
         if category.category_id == category_id:
             return asdict(category)
     raise HTTPException(status_code=404, detail="category not found")
+
+
+def _reconcile_savings_after_mutation(
+    connection: sqlite3.Connection, transaction_ids: list[str] | None = None
+) -> None:
+    settings = connection.execute(
+        "SELECT activation_month FROM savings_settings WHERE id = 1"
+    ).fetchone()
+    if settings is None:
+        return
+    through_month = connection.execute(
+        "SELECT COALESCE(MAX(substr(local_date, 1, 7)), ?) FROM transactions",
+        (settings["activation_month"],),
+    ).fetchone()[0]
+    reconcile_savings_draws(connection, max(settings["activation_month"], through_month))
+    if transaction_ids:
+        reconcile_savings_transactions(connection, transaction_ids)
 
 
 def _require_revision(

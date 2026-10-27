@@ -51,6 +51,31 @@ def apply_batch(
         _reclassify_provider_transfers(connection, connection_id, now)
         apply_rules(connection)
         confirm_learned_transfers(connection)
+        if connection.execute("SELECT 1 FROM savings_settings WHERE id = 1").fetchone():
+            from fintracka.savings_goals import (
+                reconcile_savings_draws,
+                reconcile_savings_transactions,
+            )
+
+            external_ids = [
+                transaction.external_id for transaction in (*batch.added, *batch.modified)
+            ] + list(batch.removed)
+            transaction_ids = [
+                row[0]
+                for row in connection.execute(
+                    f"""
+                    SELECT transaction_id FROM transaction_external_ids
+                    WHERE provider = ? AND connection_id = ?
+                      AND external_id IN ({','.join('?' for _ in external_ids)})
+                    """,
+                    (provider, connection_id, *external_ids),
+                )
+            ] if external_ids else []
+            through_month = connection.execute(
+                "SELECT COALESCE(MAX(substr(local_date, 1, 7)), strftime('%Y-%m', 'now')) FROM transactions"
+            ).fetchone()[0]
+            reconcile_savings_draws(connection, through_month)
+            reconcile_savings_transactions(connection, transaction_ids)
         connection.execute(
             """
             INSERT INTO provider_checkpoints (connection_id, cursor, updated_at)
