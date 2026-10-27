@@ -23,6 +23,10 @@ from fintracka.savings_goals import (
     rebalance_allocation,
     reconcile_savings_draws,
     reconcile_savings_transactions,
+    record_retirement_valuation,
+    savings_goal_detail,
+    savings_goal_overview,
+    undo_savings_event,
     reverse_source_events,
     reorder_savings_goals,
     set_allocation_plan,
@@ -339,6 +343,28 @@ def test_non_savings_withdrawal_never_changes_goal_balances(ledger: sqlite3.Conn
     reconcile_savings_transactions(ledger, [withdrawal_id])
 
     assert ledger.execute("SELECT COUNT(*) FROM savings_ledger_entries").fetchone()[0] == before
+
+
+def test_month_history_retirement_valuation_and_undo(ledger: sqlite3.Connection) -> None:
+    _add_savings_account(ledger, 300_000)
+    asset_id = _add_manual_investment(ledger, 100_000)
+    initialize_goal_ledger(ledger, "2026-10", 300_000)
+    asset = ledger.execute("SELECT * FROM manual_assets WHERE id = ?", (asset_id,)).fetchone()
+
+    valuation_id = record_retirement_valuation(
+        ledger, asset_id, 112_345, "2026-10-26", asset["updated_at"]
+    )
+    overview = savings_goal_overview(ledger, "2026-10")
+    retirement = next(goal for goal in overview.goals if goal.pool == "retirement")
+
+    assert overview.regular_minor == 300_000
+    assert overview.retirement_minor == 112_345
+    assert overview.combined_minor == 412_345
+    assert retirement.months[-1].valuation_minor == 12_345
+    assert savings_goal_detail(ledger, retirement.goal_id, "2026-10").balance_minor == 112_345
+
+    undo_savings_event(ledger, valuation_id, "correct valuation")
+    assert savings_goal_detail(ledger, retirement.goal_id, "2026-10").balance_minor == 100_000
 
 
 def _add_savings_account(connection: sqlite3.Connection, balance_minor: int) -> str:

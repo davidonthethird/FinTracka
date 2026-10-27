@@ -61,6 +61,80 @@ class AllocationPreview:
     rows: tuple[AllocationPreviewRow, ...]
 
 
+@dataclass(frozen=True)
+class SavingsMonthPoint:
+    month: str
+    opening_minor: int
+    additions_minor: int
+    spending_draw_minor: int
+    withdrawals_minor: int
+    earnings_minor: int
+    valuation_minor: int
+    adjustments_minor: int
+    closing_minor: int
+
+
+@dataclass(frozen=True)
+class SavingsGoalView:
+    goal_id: str
+    name: str
+    pool: str
+    owner: str
+    parent_id: str | None
+    icon_key: str
+    color_key: str
+    priority: int
+    locked: bool
+    active: bool
+    monthly_target_minor: int
+    balance_minor: int
+    expected_to_date_minor: int
+    funded_basis_points: int | None
+    ahead_minor: int
+    months: tuple[SavingsMonthPoint, ...]
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class SavingsGoalOverview:
+    activation_month: str
+    through_month: str
+    owner: str | None
+    regular_minor: int
+    retirement_minor: int
+    combined_minor: int
+    unallocated_minor: int
+    pending_transfer_minor: int
+    regular_reconciliation_minor: int
+    retirement_reconciliation_minor: int
+    goals: tuple[SavingsGoalView, ...]
+
+
+@dataclass(frozen=True)
+class SavingsGoalDetail:
+    goal_id: str
+    name: str
+    pool: str
+    owner: str
+    balance_minor: int
+    monthly_target_minor: int
+    months: tuple[SavingsMonthPoint, ...]
+
+
+@dataclass(frozen=True)
+class SavingsMonthReview:
+    month: str
+    target_spending_minor: int
+    actual_spending_minor: int
+    cash_surplus_minor: int
+    suggested_minor: int
+    matched_minor: int
+    status: str
+    matched_transaction_id: str | None
+    created_at: str
+    updated_at: str
+
+
 def initialization_preview(
     connection: sqlite3.Connection, activation_month: str
 ) -> SavingsInitializationPreview:
@@ -650,6 +724,249 @@ def assign_savings_withdrawal(
     _withdrawal_entry(connection, transaction, destination, goal_id, prefix)
 
 
+def savings_goal_overview(
+    connection: sqlite3.Connection, month: str, owner: str | None = None
+) -> SavingsGoalOverview:
+    _validate_month(month)
+    if owner not in {None, *OWNERS}:
+        raise SavingsGoalError("invalid savings goal owner")
+    settings = connection.execute("SELECT * FROM savings_settings WHERE id = 1").fetchone()
+    if settings is None:
+        raise SavingsGoalError("savings goal ledger is not initialized")
+    goal_rows = connection.execute(
+        "SELECT * FROM savings_goals WHERE activation_month <= ? ORDER BY pool, priority, id",
+        (month,),
+    ).fetchall()
+    if owner:
+        goal_rows = [row for row in goal_rows if row["owner"] == owner]
+    goals = tuple(_goal_view(connection, row, settings["activation_month"], month) for row in goal_rows)
+    regular = sum(goal.balance_minor for goal in goals if goal.pool == "regular")
+    retirement = sum(goal.balance_minor for goal in goals if goal.pool == "retirement")
+    system = {
+        row["bucket_type"]: row["amount_minor"]
+        for row in connection.execute(
+            """
+            SELECT bucket_type, COALESCE(SUM(amount_minor), 0) amount_minor
+            FROM savings_ledger_entries
+            WHERE month <= ? AND bucket_type != 'goal'
+            GROUP BY bucket_type
+            """,
+            (month,),
+        )
+    }
+    connected_regular = connection.execute(
+        """
+        SELECT COALESCE(SUM(COALESCE((
+            SELECT current_minor FROM account_balance_snapshots b
+            WHERE b.account_id = a.id ORDER BY observed_at DESC, b.id DESC LIMIT 1
+        ), 0)), 0) FROM accounts a
+        WHERE a.savings_pool = 'regular' AND a.status = 'active' AND a.hidden = 0
+        """
+    ).fetchone()[0]
+    actual_retirement = connection.execute(
+        "SELECT COALESCE(SUM(current_value_minor), 0) FROM manual_assets WHERE active = 1 AND savings_pool = 'retirement'"
+    ).fetchone()[0]
+    unallocated = system.get("unallocated", 0)
+    pending = system.get("pending_transfer", 0)
+    return SavingsGoalOverview(
+        settings["activation_month"], month, owner, regular, retirement,
+        regular + retirement, unallocated, pending,
+        connected_regular - regular - unallocated - pending,
+        actual_retirement - retirement,
+        goals,
+    )
+
+
+def savings_goal_detail(
+    connection: sqlite3.Connection, goal_id: str, through_month: str
+) -> SavingsGoalDetail:
+    _validate_month(through_month)
+    goal = _goal(connection, goal_id)
+    view = _goal_view(connection, goal, goal["activation_month"], through_month)
+    return SavingsGoalDetail(
+        view.goal_id, view.name, view.pool, view.owner, view.balance_minor,
+        view.monthly_target_minor, view.months,
+    )
+
+
+def record_retirement_valuation(
+    connection: sqlite3.Connection,
+    asset_id: str,
+    current_value_minor: int,
+    as_of_date: str,
+    expected_updated_at: str,
+) -> str:
+    if isinstance(current_value_minor, bool) or not isinstance(current_value_minor, int) or current_value_minor < 0:
+        raise SavingsGoalError("valuation must be a nonnegative integer")
+    try:
+        date.fromisoformat(as_of_date)
+    except (TypeError, ValueError) as error:
+        raise SavingsGoalError("date must use YYYY-MM-DD") from error
+    asset = connection.execute("SELECT * FROM manual_assets WHERE id = ?", (asset_id,)).fetchone()
+    if asset is None:
+        raise SavingsGoalError("manual asset not found")
+    _require_current(asset, expected_updated_at, "manual asset")
+    if asset["savings_pool"] != "retirement" or asset["savings_goal_id"] is None:
+        raise SavingsGoalError("asset is not assigned to a retirement goal")
+    delta = current_value_minor - asset["current_value_minor"]
+    now = _now()
+    connection.execute(
+        "UPDATE manual_assets SET current_value_minor = ?, as_of_date = ?, updated_at = ? WHERE id = ?",
+        (current_value_minor, as_of_date, now, asset_id),
+    )
+    if delta == 0:
+        return ""
+    event_id = new_id()
+    connection.execute(
+        """
+        INSERT INTO savings_ledger_entries
+        (id, movement_id, pool, bucket_type, goal_id, amount_minor, currency,
+         event_type, effective_date, month, source_key, manual_asset_id, actor,
+         explanation, created_at)
+        VALUES (?, ?, 'retirement', 'goal', ?, ?, 'USD', 'valuation', ?, ?, ?, ?,
+                'user', 'Retirement valuation update', ?)
+        """,
+        (
+            event_id, new_id(), asset["savings_goal_id"], delta, as_of_date,
+            as_of_date[:7], f"valuation:{asset_id}:{as_of_date}:{event_id}", asset_id, now,
+        ),
+    )
+    return event_id
+
+
+def undo_savings_event(connection: sqlite3.Connection, event_id: str, reason: str) -> str:
+    event = connection.execute(
+        "SELECT * FROM savings_ledger_entries WHERE id = ?", (event_id,)
+    ).fetchone()
+    if event is None:
+        raise SavingsGoalError("savings event not found")
+    if event["event_type"] == "reversal" or connection.execute(
+        "SELECT 1 FROM savings_ledger_entries WHERE reverses_entry_id = ?", (event_id,)
+    ).fetchone():
+        raise SavingsGoalConflict("savings event is already reversed")
+    reversal_id = new_id()
+    connection.execute(
+        """
+        INSERT INTO savings_ledger_entries
+        (id, movement_id, pool, bucket_type, goal_id, amount_minor, currency,
+         event_type, effective_date, month, source_key, source_transaction_id,
+         source_review_month, manual_asset_id, reverses_entry_id, actor,
+         explanation, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'USD', 'reversal', ?, ?, ?, ?, ?, ?, ?, 'user', ?, ?)
+        """,
+        (
+            reversal_id, new_id(), event["pool"], event["bucket_type"], event["goal_id"],
+            -event["amount_minor"], event["effective_date"], event["month"],
+            f"reversal:{event_id}", event["source_transaction_id"],
+            event["source_review_month"], event["manual_asset_id"], event_id,
+            reason.strip() or "Undo savings event", _now(),
+        ),
+    )
+    return reversal_id
+
+
+def generate_month_review(connection: sqlite3.Connection, month: str) -> SavingsMonthReview:
+    _validate_month(month)
+    existing = connection.execute(
+        "SELECT * FROM savings_month_reviews WHERE month = ?", (month,)
+    ).fetchone()
+    if existing:
+        return SavingsMonthReview(**dict(existing))
+    from fintracka.planning import planning_snapshot
+
+    snapshot = planning_snapshot(connection, month, 12)
+    suggested = max(snapshot.target_total_minor - snapshot.actual_total_minor, 0)
+    unallocated = connection.execute(
+        """
+        SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries
+        WHERE pool = 'regular' AND bucket_type = 'unallocated'
+        """
+    ).fetchone()[0]
+    cash_surplus = max(unallocated, 0)
+    status = "pending" if min(suggested, cash_surplus) > 0 else "waiting"
+    now = _now()
+    connection.execute(
+        """
+        INSERT INTO savings_month_reviews
+        (month, target_spending_minor, actual_spending_minor, cash_surplus_minor,
+         suggested_minor, matched_minor, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+        """,
+        (
+            month, snapshot.target_total_minor, snapshot.actual_total_minor,
+            cash_surplus, min(suggested, cash_surplus), status, now, now,
+        ),
+    )
+    return SavingsMonthReview(**dict(connection.execute(
+        "SELECT * FROM savings_month_reviews WHERE month = ?", (month,)
+    ).fetchone()))
+
+
+def accept_month_review(
+    connection: sqlite3.Connection, month: str, expected_updated_at: str
+) -> None:
+    review = connection.execute("SELECT * FROM savings_month_reviews WHERE month = ?", (month,)).fetchone()
+    if review is None:
+        raise SavingsGoalError("savings month review not found")
+    _require_current(review, expected_updated_at, "savings month review")
+    if review["status"] == "added":
+        return
+    amount = review["suggested_minor"]
+    if amount <= 0:
+        raise SavingsGoalError("no savings are available to add")
+    allocation_month = _next_month(month)
+    preview = allocation_preview(connection, "regular", allocation_month, amount)
+    movement = new_id()
+    now = _now()
+    source = f"review:{month}"
+    connection.execute(
+        """
+        INSERT INTO savings_ledger_entries
+        (id, movement_id, pool, bucket_type, amount_minor, currency, event_type,
+         effective_date, month, source_key, source_review_month, actor, explanation, created_at)
+        VALUES (?, ?, 'regular', 'unallocated', ?, 'USD', 'review', ?, ?, ?, ?,
+                'user', 'Allocate prior month savings', ?)
+        """,
+        (new_id(), movement, -amount, allocation_month + "-01", allocation_month, source + ":source", month, now),
+    )
+    for row in preview.rows:
+        if row.allocated_minor:
+            connection.execute(
+                """
+                INSERT INTO savings_ledger_entries
+                (id, movement_id, pool, bucket_type, goal_id, amount_minor, currency,
+                 event_type, effective_date, month, source_key, source_review_month,
+                 actor, explanation, created_at)
+                VALUES (?, ?, 'regular', 'goal', ?, ?, 'USD', 'review', ?, ?, ?, ?,
+                        'user', 'Allocate prior month savings', ?)
+                """,
+                (
+                    new_id(), movement, row.goal_id, row.allocated_minor,
+                    allocation_month + "-01", allocation_month,
+                    f"{source}:goal:{row.goal_id}", month, now,
+                ),
+            )
+    connection.execute(
+        "UPDATE savings_month_reviews SET matched_minor = ?, status = 'added', updated_at = ? WHERE month = ?",
+        (amount, now, month),
+    )
+
+
+def ignore_month_review(
+    connection: sqlite3.Connection, month: str, expected_updated_at: str
+) -> None:
+    review = connection.execute("SELECT * FROM savings_month_reviews WHERE month = ?", (month,)).fetchone()
+    if review is None:
+        raise SavingsGoalError("savings month review not found")
+    _require_current(review, expected_updated_at, "savings month review")
+    if review["status"] == "added":
+        raise SavingsGoalConflict("an added review cannot be ignored")
+    connection.execute(
+        "UPDATE savings_month_reviews SET status = 'ignored', updated_at = ? WHERE month = ?",
+        (_now(), month),
+    )
+
+
 def rebalance_allocation(
     rows: Sequence[AllocationPlanRow], edited_goal_id: str, desired_basis_points: int
 ) -> tuple[AllocationPlanRow, ...]:
@@ -721,6 +1038,69 @@ def _allocation_rows(
             (month, pool),
         )
         if row["monthly_target_minor"] > 0
+    )
+
+
+def _goal_view(
+    connection: sqlite3.Connection,
+    goal: sqlite3.Row,
+    activation_month: str,
+    through_month: str,
+) -> SavingsGoalView:
+    entries = connection.execute(
+        "SELECT * FROM savings_ledger_entries WHERE goal_id = ? AND month <= ? ORDER BY effective_date, created_at, id",
+        (goal["id"], through_month),
+    ).fetchall()
+    points: list[SavingsMonthPoint] = []
+    running = 0
+    month = max(activation_month, goal["activation_month"])
+    expected = 0
+    latest_target = 0
+    while month <= through_month:
+        target_row = connection.execute(
+            """
+            SELECT monthly_target_minor FROM savings_goal_target_versions
+            WHERE goal_id = ? AND effective_month <= ?
+            ORDER BY effective_month DESC LIMIT 1
+            """,
+            (goal["id"], month),
+        ).fetchone()
+        latest_target = target_row[0] if target_row else 0
+        expected += latest_target
+        month_entries = [entry for entry in entries if entry["month"] == month]
+        opening = running
+        additions = sum(
+            entry["amount_minor"] for entry in month_entries
+            if entry["event_type"] in {"opening", "deposit", "allocation", "review"}
+            and entry["amount_minor"] > 0
+        )
+        spending = -sum(
+            entry["amount_minor"] for entry in month_entries
+            if entry["event_type"] == "spending_draw" and entry["amount_minor"] < 0
+        )
+        withdrawals = -sum(
+            entry["amount_minor"] for entry in month_entries
+            if entry["event_type"] in {"withdrawal", "settlement"} and entry["amount_minor"] < 0
+        )
+        earnings = sum(entry["amount_minor"] for entry in month_entries if entry["event_type"] == "earnings")
+        valuation = sum(entry["amount_minor"] for entry in month_entries if entry["event_type"] == "valuation")
+        accounted = additions - spending - withdrawals + earnings + valuation
+        total = sum(entry["amount_minor"] for entry in month_entries)
+        adjustments = total - accounted
+        running += total
+        points.append(
+            SavingsMonthPoint(
+                month, opening, additions, spending, withdrawals, earnings,
+                valuation, adjustments, running,
+            )
+        )
+        month = _next_month(month)
+    progress = min(running * 10_000 // expected, 10_000) if expected > 0 else None
+    return SavingsGoalView(
+        goal["id"], goal["name"], goal["pool"], goal["owner"], goal["parent_id"],
+        goal["icon_key"], goal["color_key"], goal["priority"], bool(goal["locked"]),
+        bool(goal["active"]), latest_target, running, expected, progress,
+        max(running - expected, 0), tuple(points), goal["updated_at"],
     )
 
 

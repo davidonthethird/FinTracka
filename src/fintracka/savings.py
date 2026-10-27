@@ -239,6 +239,17 @@ def update_manual_asset(
     _require_current(before, expected_updated_at)
     if not before["active"]:
         raise ManualAssetError("manual asset is inactive")
+    if (
+        before["savings_pool"] == "retirement"
+        and before["savings_goal_id"] is not None
+        and before["current_value_minor"] != current_value_minor
+    ):
+        from fintracka.savings_goals import record_retirement_valuation
+
+        record_retirement_valuation(
+            connection, identifier, current_value_minor, as_of_date, before["updated_at"]
+        )
+        before = _asset(connection, identifier)
     now = _now()
     connection.execute(
         """
