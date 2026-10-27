@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { buildSavingsArcs, ownerColor, type SavingsGoal } from "../src/savings/model";
 
 const goal = (id: string, target: number, funded: number): SavingsGoal => ({
-  goal_id: id, name: id, pool: "regular", owner: "Shared", parent_id: null,
+  goal_id: id, name: id, pool: "regular", owner: "Shared", parent_id: null, linked_category_id: null,
   icon_key: "piggy_bank", color_key: "blue", priority: 1, locked: false,
   active: true, monthly_target_minor: target, balance_minor: funded,
   expected_to_date_minor: target, funded_basis_points: target ? Math.min(10_000, funded * 10_000 / target) : null,

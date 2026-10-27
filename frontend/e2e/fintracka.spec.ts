@@ -39,6 +39,18 @@ test("synthetic finance workflow with Plaid profiles edits categories from plann
   await expect(page.getByText("Household brokerage", { exact: true })).toBeVisible();
   await expect(page.getByText("Other reserve", { exact: true })).toHaveCount(0);
   await page.getByLabel("Savings owner").selectOption("");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Preview and start goal tracking" }).click();
+  await expect(page.getByText("Your savings goals", { exact: true })).toBeVisible();
+  await expect(page.getByText("Emergency", { exact: true }).first()).toBeVisible();
+  await page.getByRole("button", { name: /Emergency/ }).first().click();
+  await expect(page.getByRole("complementary", { name: /Emergency savings details/ })).toContainText("Month-to-month savings");
+  await page.getByRole("button", { name: "Close goal details" }).click();
+  await page.getByRole("button", { name: "Manage goals" }).click();
+  await expect(page.getByRole("heading", { name: "Categories and subcategories" })).toBeVisible();
+  await page.getByRole("button", { name: "Allocation & review" }).click();
+  await expect(page.getByRole("heading", { name: "Split future savings" })).toBeVisible();
+  await page.getByRole("button", { name: "Overview" }).click();
   await page.getByRole("button", { name: "Add manual asset" }).click();
   let assetDialog = page.getByRole("dialog", { name: "Add manual asset" });
   await assetDialog.getByLabel("Title").fill("Family investment");

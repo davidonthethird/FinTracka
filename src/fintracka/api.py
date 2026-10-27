@@ -1445,6 +1445,18 @@ def create_app(
         except SavingsGoalError as error:
             raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
 
+    @app.post("/api/v1/savings/reviews/{month}/generate", status_code=201)
+    def savings_review_generate(
+        month: str, payload: EmptyRequest, database: Database
+    ) -> dict[str, object]:
+        del payload
+        try:
+            with _write_transaction(database):
+                review = generate_month_review(database, month)
+            return asdict(review)
+        except SavingsGoalError as error:
+            raise HTTPException(status_code=_savings_goal_status(error), detail=str(error)) from error
+
     @app.post("/api/v1/savings/reviews/{month}/ignore", status_code=204)
     def savings_review_ignore(
         month: str, payload: SavingsRevision, database: Database

@@ -28,14 +28,14 @@ export type SavingsMonthPoint = {
 };
 export type SavingsGoal = {
   goal_id: string; name: string; pool: "regular" | "retirement";
-  owner: SavingsOwner; parent_id: string | null; icon_key: string; color_key: string;
+  owner: SavingsOwner; parent_id: string | null; linked_category_id: string | null; icon_key: string; color_key: string;
   priority: number; locked: boolean; active: boolean; monthly_target_minor: number;
   balance_minor: number; expected_to_date_minor: number;
   funded_basis_points: number | null; ahead_minor: number;
   months: SavingsMonthPoint[]; updated_at: string;
 };
 export type SavingsGoalOverview = {
-  activation_month: string; through_month: string; owner: SavingsOwner | null;
+  activation_month: string; through_month: string; plan_updated_at: string; owner: SavingsOwner | null;
   regular_minor: number; retirement_minor: number; combined_minor: number;
   unallocated_minor: number; pending_transfer_minor: number;
   regular_reconciliation_minor: number; retirement_reconciliation_minor: number;

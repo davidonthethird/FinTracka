@@ -142,3 +142,28 @@ a { color: inherit; }
   min-width: 11rem;
   max-width: 100%;
 }
+.savings-section-tabs { display: flex; gap: 7px; margin: 10px 0 18px; }
+.savings-section-tabs button[aria-current="page"] { border-color: var(--teal); background: var(--teal-soft); color: var(--teal); }
+.goal-manager, .allocation-rules, .monthly-review { margin-bottom: 18px; padding: 18px; }
+.goal-manager-list { display: grid; margin-top: 12px; border: 1px solid var(--line); }
+.goal-manager-list > div { display: grid; grid-template-columns: auto minmax(180px, 1fr) auto auto auto; align-items: center; gap: 9px; padding: 10px; border-bottom: 1px solid var(--line); }
+.goal-manager-list small { display: block; color: var(--muted); }
+.goal-manager-list .archived { opacity: .58; }
+.goal-form { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; margin-top: 15px; padding: 16px; background: var(--paper); border: 1px solid var(--line); }
+.goal-form h3, .goal-form fieldset, .goal-form .form-error, .goal-form .form-actions { grid-column: 1 / -1; }
+.goal-form label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
+.goal-form fieldset { display: flex; flex-wrap: wrap; gap: 7px; border: 0; padding: 0; }
+.goal-form fieldset button { display: grid; place-items: center; min-width: 38px; min-height: 38px; padding: 6px; }
+.goal-form fieldset button.selected { outline: 3px solid var(--teal); }
+.goal-form .form-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.allocation-actions { display: flex; justify-content: flex-end; gap: 7px; margin-bottom: 8px; }
+.allocation-row { display: grid; grid-template-columns: minmax(145px, 1fr) minmax(180px, 2fr) 64px 100px auto auto; align-items: center; gap: 9px; padding: 10px 0; border-top: 1px solid var(--line); }
+.allocation-row > span:first-child { display: flex; gap: 9px; }
+.allocation-row input[type="range"] { accent-color: var(--teal); }
+.move-controls, .review-actions { display: flex; gap: 7px; }
+.monthly-review { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+.monthly-review p { color: var(--muted); }
+.review-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; }
+.review-metrics span { display: grid; color: var(--muted); font-size: 11px; }
+.review-metrics b { color: var(--ink); font-size: 16px; }
+@media (max-width: 900px) { .allocation-row { grid-template-columns: 1fr 2fr 64px; }.allocation-row > input:not([type="range"]), .allocation-row > button, .allocation-row > .move-controls { grid-row: 2; }.monthly-review { display: grid; }.goal-manager-list > div { grid-template-columns: auto 1fr; }.goal-manager-list > div > button { grid-row: 2; } }

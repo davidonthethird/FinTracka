@@ -7,6 +7,9 @@ import { ManualAssetDialog } from "./ManualAssetDialog";
 import { GoalDrawer } from "./GoalDrawer";
 import { SavingsDonut } from "./SavingsDonut";
 import { SavingsIcon } from "./icons";
+import { AllocationRules } from "./AllocationRules";
+import { GoalManager } from "./GoalManager";
+import { MonthlySavingsReview } from "./MonthlySavingsReview";
 import { activityLabel, savingsPath, type ManualAsset, type SavingsGoal, type SavingsSummary } from "./model";
 
 const OWNER_KEY = "fintracka.savings.ownerSplit";
@@ -19,6 +22,7 @@ export function SavingsPage() {
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<ManualAsset | "new">();
   const [selectedGoal, setSelectedGoal] = useState<SavingsGoal>();
+  const [section, setSection] = useState<"overview" | "goals" | "allocation">("overview");
   useEffect(() => {
     const controller = new AbortController(); setData(undefined); setError("");
     api<SavingsSummary>(savingsPath(month, owner), { signal: controller.signal })
@@ -40,10 +44,20 @@ export function SavingsPage() {
     if (value) localStorage.setItem(OWNER_KEY, value); else localStorage.removeItem(OWNER_KEY);
   }
 
+  async function initializeGoals() {
+    try {
+      const preview = await api<{regular_balance_minor: number; emergency_minor: number; general_minor: number}>(`/savings/initialization-preview?activation_month=${month}`);
+      if (!window.confirm(`Start this month with ${formatMoney(preview.emergency_minor)} in Emergency and ${formatMoney(preview.general_minor)} in General Savings? No earlier months will be created.`)) return;
+      await api("/savings/initialize", { method: "POST", body: JSON.stringify({ activation_month: month, expected_regular_balance_minor: preview.regular_balance_minor }) });
+      setRevision((value) => value + 1);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to initialize savings goals"); }
+  }
+
   const history = data?.accounts.flatMap((account) => account.history.map((point) => ({ date: point.observed_at.slice(0, 10), value: point.current_minor, account: account.name }))) || [];
   return <div className="page savings-page">
     <header className="page-title"><div><p className="eyebrow">FinTracka</p><h1>Savings</h1></div><p>Connected savings and manually tracked assets</p></header>
     <section className="savings-toolbar instrument-panel" aria-label="Savings controls"><label>Month<input type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label><label>View<select aria-label="Savings owner" value={owner} onChange={(event) => changeOwner(event.target.value)}><option value="">Combined</option><option>David</option><option>Ariela</option><option>Shared</option></select></label><button onClick={() => setEditing("new")}>Add manual asset</button></section>
+    <nav className="savings-section-tabs" aria-label="Savings sections"><button aria-current={section === "overview" ? "page" : undefined} onClick={() => setSection("overview")}>Overview</button><button aria-current={section === "goals" ? "page" : undefined} onClick={() => setSection("goals")}>Manage goals</button><button aria-current={section === "allocation" ? "page" : undefined} onClick={() => setSection("allocation")}>Allocation & review</button></nav>
     {error && <div className="notice error" role="alert">{error}</div>}
     {!data ? !error && <div className="page-state">Reading savings…</div> : <>
       <section className="savings-total" data-testid="savings-combined"><span>Combined savings and assets</span><strong>{formatMoney(data.combined_total_minor)}</strong><small>{owner || "Household"} · USD</small></section>
@@ -51,8 +65,10 @@ export function SavingsPage() {
       {data.goal_ledger ? <>
         <section className="metric-line savings-pool-metrics"><div className="metric teal"><span>Regular savings</span><strong>{formatMoney(data.goal_ledger.regular_minor)}</strong></div><div className="metric"><span>Retirement</span><strong>{formatMoney(data.goal_ledger.retirement_minor)}</strong></div><div className="metric"><span>Unallocated</span><strong>{formatMoney(data.goal_ledger.unallocated_minor)}</strong></div><div className="metric amber"><span>Pending transfer</span><strong>{formatMoney(data.goal_ledger.pending_transfer_minor)}</strong></div></section>
         {(data.goal_ledger.regular_reconciliation_minor !== 0 || data.goal_ledger.retirement_reconciliation_minor !== 0) && <div className="notice warning">Savings reconciliation needs review: regular {formatMoney(data.goal_ledger.regular_reconciliation_minor)}, retirement {formatMoney(data.goal_ledger.retirement_reconciliation_minor)}.</div>}
-        <section className="instrument-panel savings-goals-panel"><div className="section-heading"><div><p className="eyebrow">Monthly allocation</p><h2>Your savings goals</h2></div><span>Solid color is funded · pale color is still planned</span></div><SavingsDonut goals={data.goal_ledger.goals} total={data.goal_ledger.combined_minor} onSelect={setSelectedGoal}/><div className="savings-goal-cards">{data.goal_ledger.goals.map((goal) => <button key={goal.goal_id} className={`goal-card owner-${goal.owner.toLowerCase()}`} onClick={() => setSelectedGoal(goal)}><span className={`goal-icon goal-${goal.color_key}`}><SavingsIcon name={goal.icon_key}/></span><span><strong>{goal.name}</strong><small>{goal.owner} · {formatMoney(goal.monthly_target_minor)}/month</small></span><b>{formatMoney(goal.balance_minor)}</b><progress max={10000} value={goal.funded_basis_points ?? 0}/></button>)}</div></section>
-      </> : <section className="instrument-panel savings-setup"><h2>Organize this month’s savings</h2><p>Set up goal tracking to reserve the first $25,000 for Emergency, place the rest in General Savings, and keep Retirement separate. Existing history will not be backfilled.</p></section>}
+        {section === "overview" && <section className="instrument-panel savings-goals-panel"><div className="section-heading"><div><p className="eyebrow">Monthly allocation</p><h2>Your savings goals</h2></div><span>Solid color is funded · pale color is still planned</span></div><SavingsDonut goals={data.goal_ledger.goals} total={data.goal_ledger.combined_minor} onSelect={setSelectedGoal}/><div className="savings-goal-cards">{data.goal_ledger.goals.map((goal) => <button key={goal.goal_id} className={`goal-card owner-${goal.owner.toLowerCase()}`} onClick={() => setSelectedGoal(goal)}><span className={`goal-icon goal-${goal.color_key}`}><SavingsIcon name={goal.icon_key}/></span><span><strong>{goal.name}</strong><small>{goal.owner} · {formatMoney(goal.monthly_target_minor)}/month</small></span><b>{formatMoney(goal.balance_minor)}</b><progress max={10000} value={goal.funded_basis_points ?? 0}/></button>)}</div></section>}
+        {section === "goals" && <GoalManager overview={data.goal_ledger} month={month} onSaved={() => setRevision((value) => value + 1)}/>}
+        {section === "allocation" && <><AllocationRules key={data.goal_ledger.plan_updated_at} overview={data.goal_ledger} month={month} onSaved={() => setRevision((value) => value + 1)}/><MonthlySavingsReview month={month} review={data.review} onSaved={() => setRevision((value) => value + 1)}/></>}
+      </> : <section className="instrument-panel savings-setup"><h2>Organize this month’s savings</h2><p>Set up goal tracking to reserve the first $25,000 for Emergency, place the rest in General Savings, and keep Retirement separate. Existing history will not be backfilled.</p><button className="primary" onClick={initializeGoals}>Preview and start goal tracking</button></section>}
       <div className="two-column savings-columns">
         <section className="instrument-panel"><div className="section-heading"><div><p className="eyebrow">Bank data</p><h2>Connected accounts</h2></div><span>{data.accounts.length} included</span></div>{data.accounts.length ? <div className="savings-list">{data.accounts.map((account) => <div key={account.account_id}><span><strong>{account.name}</strong><small>{account.owner} · {account.history.length} balance observation{account.history.length === 1 ? "" : "s"}</small></span><b>{formatMoney(account.balance_minor, account.currency)}</b></div>)}</div> : <div className="empty"><strong>No connected savings accounts</strong><p>Mark an account for Savings from its account settings.</p></div>}</section>
         <section className="instrument-panel"><div className="section-heading"><div><p className="eyebrow">Your valuations</p><h2>Manually tracked assets</h2></div><span>{data.manual_assets.length} active</span></div>{data.manual_assets.length ? <div className="savings-list manual-assets">{data.manual_assets.map((asset) => <div key={asset.id}><span><strong>{asset.title}</strong><small>{asset.kind.replace("_", " ")} · {asset.owner} · valued {asset.as_of_date}</small></span><b>{formatMoney(asset.current_value_minor, asset.currency)}</b><span className="row-actions"><button className="text-button" aria-label={`Edit ${asset.title}`} onClick={() => setEditing(asset)}>Edit</button><button className="text-button destructive" aria-label={`Remove ${asset.title}`} onClick={() => remove(asset)}>Remove</button></span></div>)}</div> : <div className="empty"><strong>No manually tracked assets</strong><p>Add cash savings, investments, or other assets that are not connected to a bank.</p></div>}</section>

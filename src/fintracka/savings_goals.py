@@ -81,6 +81,7 @@ class SavingsGoalView:
     pool: str
     owner: str
     parent_id: str | None
+    linked_category_id: str | None
     icon_key: str
     color_key: str
     priority: int
@@ -99,6 +100,7 @@ class SavingsGoalView:
 class SavingsGoalOverview:
     activation_month: str
     through_month: str
+    plan_updated_at: str
     owner: str | None
     regular_minor: int
     retirement_minor: int
@@ -769,7 +771,7 @@ def savings_goal_overview(
     unallocated = system.get("unallocated", 0)
     pending = system.get("pending_transfer", 0)
     return SavingsGoalOverview(
-        settings["activation_month"], month, owner, regular, retirement,
+        settings["activation_month"], month, settings["updated_at"], owner, regular, retirement,
         regular + retirement, unallocated, pending,
         connected_regular - regular - unallocated - pending,
         actual_retirement - retirement,
@@ -1097,7 +1099,7 @@ def _goal_view(
         month = _next_month(month)
     progress = min(running * 10_000 // expected, 10_000) if expected > 0 else None
     return SavingsGoalView(
-        goal["id"], goal["name"], goal["pool"], goal["owner"], goal["parent_id"],
+        goal["id"], goal["name"], goal["pool"], goal["owner"], goal["parent_id"], goal["linked_category_id"],
         goal["icon_key"], goal["color_key"], goal["priority"], bool(goal["locked"]),
         bool(goal["active"]), latest_target, running, expected, progress,
         max(running - expected, 0), tuple(points), goal["updated_at"],
