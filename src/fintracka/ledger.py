@@ -109,8 +109,10 @@ def set_splits(
     if any(amount == 0 for amount, _, _ in splits):
         raise IntegrityError("split amounts cannot be zero")
     now = _now()
+    owns_transaction = not connection.in_transaction
     try:
-        connection.execute("BEGIN IMMEDIATE")
+        if owns_transaction:
+            connection.execute("BEGIN IMMEDIATE")
         parent = connection.execute(
             "SELECT amount_minor, updated_at FROM transactions WHERE id = ?", (transaction_id,)
         ).fetchone()
@@ -129,9 +131,11 @@ def set_splits(
             "UPDATE transactions SET has_splits = 1, updated_at = ? WHERE id = ?", (now, transaction_id)
         )
         _audit(connection, "user", "transaction_split", "transaction", transaction_id, now)
-        connection.commit()
+        if owns_transaction:
+            connection.commit()
     except Exception:
-        connection.rollback()
+        if owns_transaction:
+            connection.rollback()
         raise
 
 

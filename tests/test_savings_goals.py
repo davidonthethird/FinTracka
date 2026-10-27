@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,8 @@ from fintracka.savings_goals import (
     assign_manual_asset_pool,
     create_savings_goal,
     delete_unused_savings_goal,
+    accept_month_review,
+    generate_month_review,
     initialization_preview,
     initialize_goal_ledger,
     allocate_contribution,
@@ -33,6 +36,7 @@ from fintracka.savings_goals import (
     update_savings_goal,
 )
 from fintracka.planning import set_recurring_target
+from fintracka.savings import create_manual_asset, update_manual_asset
 
 
 @pytest.fixture
@@ -59,6 +63,8 @@ def test_initialization_allocates_25000_to_emergency_then_general(
 ) -> None:
     account_id = _add_savings_account(ledger, balance_minor)
     asset_id = _add_manual_investment(ledger, 123_400)
+    asset = ledger.execute("SELECT * FROM manual_assets WHERE id = ?", (asset_id,)).fetchone()
+    assign_manual_asset_pool(ledger, asset_id, "retirement", None, asset["updated_at"])
 
     preview = initialization_preview(ledger, "2026-10")
     assert preview.regular_balance_minor == balance_minor
@@ -104,6 +110,150 @@ def test_initialization_rejects_changed_regular_balance(ledger: sqlite3.Connecti
 
     assert ledger.execute("SELECT COUNT(*) FROM savings_settings").fetchone()[0] == 0
     assert ledger.execute("SELECT COUNT(*) FROM savings_goals").fetchone()[0] == 0
+
+
+def test_retirement_assets_require_explicit_assignment_and_open_exactly_once(
+    ledger: sqlite3.Connection,
+) -> None:
+    _add_savings_account(ledger, 0)
+    asset_id = _add_manual_investment(ledger, 123_400)
+    assert initialization_preview(ledger, "2026-10").retirement_balance_minor == 0
+    asset = ledger.execute("SELECT * FROM manual_assets WHERE id = ?", (asset_id,)).fetchone()
+    assign_manual_asset_pool(ledger, asset_id, "retirement", None, asset["updated_at"])
+    assert initialization_preview(ledger, "2026-10").retirement_balance_minor == 123_400
+
+    initialize_goal_ledger(ledger, "2026-10", 0)
+    overview = savings_goal_overview(ledger, "2026-10")
+
+    assert overview.retirement_minor == 123_400
+    assert overview.retirement_reconciliation_minor == 0
+    assert ledger.execute(
+        "SELECT COUNT(*) FROM savings_ledger_entries WHERE manual_asset_id = ? AND event_type = 'opening'",
+        (asset_id,),
+    ).fetchone()[0] == 1
+
+
+def test_connected_retirement_account_gets_opening_goal(
+    ledger: sqlite3.Connection,
+) -> None:
+    _add_savings_account(ledger, 0)
+    account_id = _add_savings_account(ledger, 123_400)
+    ledger.execute(
+        "UPDATE accounts SET name = 'Fidelity Roth IRA', subtype = 'investment', savings_pool = 'retirement', spending_owner = 'David' WHERE id = ?",
+        (account_id,),
+    )
+
+    preview = initialization_preview(ledger, "2026-10")
+    assert preview.retirement_balance_minor == 123_400
+    initialize_goal_ledger(ledger, "2026-10", 0)
+    overview = savings_goal_overview(ledger, "2026-10")
+
+    assert overview.retirement_minor == 123_400
+    assert overview.retirement_reconciliation_minor == 0
+    assert any(
+        goal.name == "Fidelity Roth IRA" and goal.owner == "David"
+        for goal in overview.goals
+    )
+
+
+def test_post_initialization_connected_retirement_assignment_opens_goal(
+    ledger: sqlite3.Connection,
+) -> None:
+    _add_savings_account(ledger, 0)
+    initialize_goal_ledger(ledger, "2026-10", 0)
+    account_id = _add_savings_account(ledger, 123_400)
+    ledger.execute(
+        "UPDATE accounts SET name = 'Fidelity Roth IRA', subtype = 'investment', spending_owner = 'David' WHERE id = ?",
+        (account_id,),
+    )
+    account = ledger.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+
+    assign_account_pool(ledger, account_id, "retirement", account["updated_at"])
+
+    overview = savings_goal_overview(ledger, "2026-10")
+    assert overview.retirement_minor == 123_400
+    assert overview.retirement_reconciliation_minor == 0
+
+
+def test_post_initialization_retirement_assignment_records_opening_value(
+    ledger: sqlite3.Connection,
+) -> None:
+    _add_savings_account(ledger, 0)
+    initialize_goal_ledger(ledger, "2026-10", 0)
+    asset_id = _add_manual_investment(ledger, 200_000)
+    goal_id = create_savings_goal(
+        ledger, name="David Roth IRA", pool="retirement", owner="David",
+        icon_key="chart", color_key="purple", activation_month="2026-10",
+    )
+    asset = ledger.execute("SELECT * FROM manual_assets WHERE id = ?", (asset_id,)).fetchone()
+
+    assign_manual_asset_pool(ledger, asset_id, "retirement", goal_id, asset["updated_at"])
+
+    assert savings_goal_detail(ledger, goal_id, "2026-10").balance_minor == 200_000
+    assert savings_goal_overview(ledger, "2026-10").retirement_reconciliation_minor == 0
+
+
+def test_assigned_manual_cash_is_included_in_regular_reconciliation(
+    ledger: sqlite3.Connection,
+) -> None:
+    _add_savings_account(ledger, 0)
+    initialize_goal_ledger(ledger, "2026-10", 0)
+    goal_id = create_savings_goal(
+        ledger, name="Cash reserve", pool="regular", owner="Shared",
+        icon_key="piggy_bank", color_key="blue", activation_month="2026-10",
+    )
+    asset_id = create_manual_asset(
+        ledger, "Home safe", "savings", "Shared", 75_000, "2026-10-26"
+    )
+    asset = ledger.execute("SELECT * FROM manual_assets WHERE id = ?", (asset_id,)).fetchone()
+
+    assign_manual_asset_pool(ledger, asset_id, "regular", goal_id, asset["updated_at"])
+
+    overview = savings_goal_overview(ledger, "2026-10")
+    assert overview.regular_minor == 75_000
+    assert overview.regular_reconciliation_minor == 0
+
+    asset = ledger.execute("SELECT * FROM manual_assets WHERE id = ?", (asset_id,)).fetchone()
+    update_manual_asset(
+        ledger, asset_id, asset["updated_at"], "Home safe", "savings", "Shared",
+        80_000, "2026-10-27",
+    )
+    assert savings_goal_overview(ledger, "2026-10").regular_reconciliation_minor == 0
+
+
+def test_unassigned_manual_asset_opens_in_its_pool_unallocated_bucket(
+    ledger: sqlite3.Connection,
+) -> None:
+    _add_savings_account(ledger, 0)
+    initialize_goal_ledger(ledger, "2026-10", 0)
+    regular_id = create_manual_asset(
+        ledger, "Cash reserve", "savings", "Shared", 75_000, "2026-10-26"
+    )
+    retirement_id = create_manual_asset(
+        ledger, "Unassigned IRA", "investment", "Ariela", 125_000, "2026-10-26"
+    )
+    for asset_id, pool in ((regular_id, "regular"), (retirement_id, "retirement")):
+        asset = ledger.execute(
+            "SELECT * FROM manual_assets WHERE id = ?", (asset_id,)
+        ).fetchone()
+        assign_manual_asset_pool(ledger, asset_id, pool, None, asset["updated_at"])
+
+    overview = savings_goal_overview(ledger, "2026-10")
+
+    assert overview.unallocated_minor == 200_000
+    assert overview.regular_reconciliation_minor == 0
+    assert overview.retirement_reconciliation_minor == 0
+
+    asset = ledger.execute(
+        "SELECT * FROM manual_assets WHERE id = ?", (retirement_id,)
+    ).fetchone()
+    update_manual_asset(
+        ledger, retirement_id, asset["updated_at"], "Unassigned IRA", "investment",
+        "Ariela", 130_000, "2026-10-27",
+    )
+    overview = savings_goal_overview(ledger, "2026-10")
+    assert overview.unallocated_minor == 205_000
+    assert overview.retirement_reconciliation_minor == 0
 
 
 def test_goal_lifecycle_validates_hierarchy_fields_and_unique_category_link(
@@ -263,6 +413,81 @@ def test_allocation_priority_excess_replay_and_reversal(ledger: sqlite3.Connecti
     ).fetchone()[0] == 0
 
 
+def test_modified_contribution_reverses_stale_allocation_and_reallocates(
+    ledger: sqlite3.Connection,
+) -> None:
+    account_id = _add_savings_account(ledger, 0)
+    initialize_goal_ledger(ledger, "2026-10", 0)
+    emergency = ledger.execute(
+        "SELECT id FROM savings_goals WHERE name = 'Emergency'"
+    ).fetchone()[0]
+    general = ledger.execute(
+        "SELECT id FROM savings_goals WHERE name = 'General Savings'"
+    ).fetchone()[0]
+    fun_id = create_savings_goal(
+        ledger, name="Fun", pool="regular", owner="Shared", icon_key="gamepad",
+        color_key="purple", activation_month="2026-10",
+    )
+    revision = ledger.execute(
+        "SELECT updated_at FROM savings_settings WHERE id = 1"
+    ).fetchone()[0]
+    set_allocation_plan(
+        ledger,
+        "regular",
+        "2026-10",
+        [
+            AllocationPlanRow(emergency, 50_000, False, 1),
+            AllocationPlanRow(general, 40_000, False, 2),
+            AllocationPlanRow(fun_id, 10_000, False, 3),
+        ],
+        revision,
+    )
+    transaction_id = _add_savings_transaction(ledger, account_id, 80_000)
+    reconcile_savings_transactions(ledger, [transaction_id])
+
+    ledger.execute(
+        "UPDATE transactions SET amount_minor = 90_000 WHERE id = ?",
+        (transaction_id,),
+    )
+    reconcile_savings_transactions(ledger, [transaction_id])
+
+    assert ledger.execute(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE source_transaction_id = ?",
+        (transaction_id,),
+    ).fetchone()[0] == 90_000
+    assert [row[0] for row in ledger.execute(
+        """
+        SELECT COALESCE(SUM(e.amount_minor), 0) FROM savings_goals g
+        LEFT JOIN savings_ledger_entries e ON e.goal_id = g.id
+        WHERE g.id IN (?, ?, ?) GROUP BY g.id ORDER BY g.priority
+        """,
+        (emergency, general, fun_id),
+    )] == [50_000, 40_000, 0]
+    assert ledger.execute(
+        "SELECT COUNT(*) FROM savings_ledger_entries WHERE source_transaction_id = ? AND event_type = 'reversal'",
+        (transaction_id,),
+    ).fetchone()[0] > 0
+
+
+def test_non_transfer_credit_is_earnings_not_monthly_contribution(
+    ledger: sqlite3.Connection,
+) -> None:
+    account_id = _add_savings_account(ledger, 0)
+    initialize_goal_ledger(ledger, "2026-10", 0)
+    transaction_id = _add_savings_transaction(ledger, account_id, 1_234, transfer=False)
+
+    reconcile_savings_transactions(ledger, [transaction_id])
+
+    row = ledger.execute(
+        "SELECT event_type, bucket_type, amount_minor FROM savings_ledger_entries WHERE source_transaction_id = ?",
+        (transaction_id,),
+    ).fetchone()
+    assert tuple(row) == ("earnings", "unallocated", 1_234)
+    assert ledger.execute(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE bucket_type = 'goal' AND event_type IN ('deposit', 'allocation', 'review')"
+    ).fetchone()[0] == 0
+
+
 def test_allocation_without_targets_stays_unallocated(ledger: sqlite3.Connection) -> None:
     _add_savings_account(ledger, 0)
     initialize_goal_ledger(ledger, "2026-10", 0)
@@ -331,6 +556,177 @@ def test_spending_draw_caps_at_goal_balance_and_exact_withdrawal_settles(
     ).fetchone()[0] == 0
 
 
+def test_withdrawal_before_draw_does_not_settle_and_shrunk_draw_unsets_withdrawal(
+    ledger: sqlite3.Connection,
+) -> None:
+    savings_account = _add_savings_account(ledger, 80_000)
+    checking_account = _add_savings_account(ledger, 0)
+    ledger.execute(
+        "UPDATE accounts SET include_savings = 0, subtype = 'checking', savings_pool = NULL WHERE id = ?",
+        (checking_account,),
+    )
+    initialize_goal_ledger(ledger, "2026-10", 80_000)
+    shopping_id = ledger.execute("SELECT id FROM categories WHERE name = 'Shopping'").fetchone()[0]
+    goal = ledger.execute("SELECT * FROM savings_goals WHERE name = 'Emergency'").fetchone()
+    update_savings_goal(
+        ledger, goal["id"], goal["updated_at"], name="Shopping reserve", owner="Shared",
+        icon_key="shopping_bag", color_key="pink", parent_id=None,
+        linked_category_id=shopping_id,
+    )
+    set_recurring_target(ledger, shopping_id, 50_000, "2026-10")
+    purchase_id = _add_transaction(ledger, checking_account, -130_000, "2026-10-20", shopping_id)
+    reconcile_savings_draws(ledger, "2026-10")
+
+    early = _add_transaction(ledger, savings_account, -80_000, "2026-10-19")
+    reconcile_savings_transactions(ledger, [early])
+    assert ledger.execute(
+        "SELECT COUNT(*) FROM savings_ledger_entries WHERE source_transaction_id = ?",
+        (early,),
+    ).fetchone()[0] == 0
+
+    later = _add_transaction(ledger, savings_account, -80_000, "2026-10-24")
+    reconcile_savings_transactions(ledger, [later])
+    ledger.execute("UPDATE transactions SET amount_minor = -100_000 WHERE id = ?", (purchase_id,))
+    reconcile_savings_draws(ledger, "2026-10")
+
+    assert ledger.execute(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE bucket_type = 'pending_transfer'"
+    ).fetchone()[0] == 50_000
+    assert ledger.execute(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE source_transaction_id = ?",
+        (later,),
+    ).fetchone()[0] == 0
+    reconcile_savings_transactions(ledger, [later])
+    assert ledger.execute(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE bucket_type = 'pending_transfer'"
+    ).fetchone()[0] == 50_000
+
+
+def test_archiving_linked_goal_restores_draw_and_pending_transfer(
+    ledger: sqlite3.Connection,
+) -> None:
+    savings_account = _add_savings_account(ledger, 10_000)
+    checking_account = _add_savings_account(ledger, 0)
+    ledger.execute(
+        "UPDATE accounts SET include_savings = 0, subtype = 'checking', savings_pool = NULL WHERE id = ?",
+        (checking_account,),
+    )
+    initialize_goal_ledger(ledger, "2026-10", 10_000)
+    shopping_id = ledger.execute("SELECT id FROM categories WHERE name = 'Shopping'").fetchone()[0]
+    goal = ledger.execute("SELECT * FROM savings_goals WHERE name = 'Emergency'").fetchone()
+    update_savings_goal(
+        ledger, goal["id"], goal["updated_at"], name="Shopping reserve", owner="Shared",
+        icon_key="shopping_bag", color_key="pink", parent_id=None,
+        linked_category_id=shopping_id,
+    )
+    set_recurring_target(ledger, shopping_id, 0, "2026-10")
+    _add_transaction(ledger, checking_account, -5_000, "2026-10-20", shopping_id)
+    reconcile_savings_draws(ledger, "2026-10")
+    goal = ledger.execute("SELECT * FROM savings_goals WHERE id = ?", (goal["id"],)).fetchone()
+
+    archive_savings_goal(ledger, goal["id"], goal["updated_at"])
+
+    assert ledger.execute(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE goal_id = ?",
+        (goal["id"],),
+    ).fetchone()[0] == 10_000
+    assert ledger.execute(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE bucket_type = 'pending_transfer'"
+    ).fetchone()[0] == 0
+
+
+def test_unlinking_goal_restores_prior_spending_draw(
+    ledger: sqlite3.Connection,
+) -> None:
+    checking_account = _add_savings_account(ledger, 0)
+    ledger.execute(
+        "UPDATE accounts SET include_savings = 0, subtype = 'checking', savings_pool = NULL WHERE id = ?",
+        (checking_account,),
+    )
+    _add_savings_account(ledger, 10_000)
+    initialize_goal_ledger(ledger, "2026-10", 10_000)
+    shopping_id = ledger.execute("SELECT id FROM categories WHERE name = 'Shopping'").fetchone()[0]
+    goal = ledger.execute("SELECT * FROM savings_goals WHERE name = 'Emergency'").fetchone()
+    update_savings_goal(
+        ledger, goal["id"], goal["updated_at"], name="Shopping reserve", owner="Shared",
+        icon_key="shopping_bag", color_key="pink", parent_id=None,
+        linked_category_id=shopping_id,
+    )
+    _add_transaction(ledger, checking_account, -5_000, "2026-10-20", shopping_id)
+    reconcile_savings_draws(ledger, "2026-10")
+    goal = ledger.execute("SELECT * FROM savings_goals WHERE id = ?", (goal["id"],)).fetchone()
+
+    update_savings_goal(
+        ledger, goal["id"], goal["updated_at"], name="Shopping reserve", owner="Shared",
+        icon_key="shopping_bag", color_key="pink", parent_id=None,
+        linked_category_id=None,
+    )
+
+    assert ledger.execute(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE goal_id = ?",
+        (goal["id"],),
+    ).fetchone()[0] == 10_000
+    assert ledger.execute(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE bucket_type = 'pending_transfer'"
+    ).fetchone()[0] == 0
+
+
+def test_month_review_refreshes_when_later_deposit_arrives_without_double_allocation(
+    ledger: sqlite3.Connection,
+) -> None:
+    savings_account = _add_savings_account(ledger, 0)
+    checking_account = _add_savings_account(ledger, 0)
+    ledger.execute(
+        "UPDATE accounts SET include_savings = 0, subtype = 'checking', savings_pool = NULL WHERE id = ?",
+        (checking_account,),
+    )
+    initialize_goal_ledger(ledger, "2026-09", 0)
+    shopping_id = ledger.execute("SELECT id FROM categories WHERE name = 'Shopping'").fetchone()[0]
+    set_recurring_target(ledger, shopping_id, 300_000, "2026-09")
+    _add_transaction(ledger, checking_account, -258_000, "2026-09-20", shopping_id)
+
+    waiting = generate_month_review(ledger, "2026-09")
+    assert waiting.status == "waiting"
+    assert waiting.suggested_minor == 42_000
+
+    deposit_id = _add_savings_transaction(
+        ledger, savings_account, 42_000, local_date="2026-10-02"
+    )
+    reconcile_savings_transactions(ledger, [deposit_id])
+    allocated_before = ledger.execute(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE source_transaction_id = ?",
+        (deposit_id,),
+    ).fetchone()[0]
+    assert ledger.execute(
+        "SELECT status FROM savings_month_reviews WHERE month = '2026-09'"
+    ).fetchone()[0] == "pending"
+    pending = generate_month_review(ledger, "2026-09")
+    assert pending.status == "pending"
+    assert pending.matched_transaction_id == deposit_id
+
+    accept_month_review(ledger, "2026-09", pending.updated_at)
+
+    assert ledger.execute(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE source_transaction_id = ?",
+        (deposit_id,),
+    ).fetchone()[0] == allocated_before
+    assert tuple(ledger.execute(
+        "SELECT status, matched_minor FROM savings_month_reviews WHERE month = '2026-09'"
+    ).fetchone()) == ("added", 42_000)
+    assert ledger.execute(
+        "SELECT COUNT(*) FROM audit_events WHERE entity_type = 'savings_month_review'"
+    ).fetchone()[0] >= 2
+
+
+def test_month_review_rejects_open_month(ledger: sqlite3.Connection) -> None:
+    month = date.today().strftime("%Y-%m")
+    _add_savings_account(ledger, 0)
+    initialize_goal_ledger(ledger, month, 0)
+
+    with pytest.raises(SavingsGoalError, match="closed"):
+        generate_month_review(ledger, month)
+
+
 def test_non_savings_withdrawal_never_changes_goal_balances(ledger: sqlite3.Connection) -> None:
     account_id = _add_savings_account(ledger, 10_000)
     initialize_goal_ledger(ledger, "2026-10", 10_000)
@@ -345,9 +741,28 @@ def test_non_savings_withdrawal_never_changes_goal_balances(ledger: sqlite3.Conn
     assert ledger.execute("SELECT COUNT(*) FROM savings_ledger_entries").fetchone()[0] == before
 
 
+def test_pre_activation_transactions_never_enter_savings_ledger(
+    ledger: sqlite3.Connection,
+) -> None:
+    account_id = _add_savings_account(ledger, 0)
+    initialize_goal_ledger(ledger, "2026-10", 0)
+    transaction_id = _add_savings_transaction(
+        ledger, account_id, 10_000, local_date="2026-09-30"
+    )
+
+    reconcile_savings_transactions(ledger, [transaction_id])
+
+    assert ledger.execute(
+        "SELECT COUNT(*) FROM savings_ledger_entries WHERE source_transaction_id = ?",
+        (transaction_id,),
+    ).fetchone()[0] == 0
+
+
 def test_month_history_retirement_valuation_and_undo(ledger: sqlite3.Connection) -> None:
     _add_savings_account(ledger, 300_000)
     asset_id = _add_manual_investment(ledger, 100_000)
+    asset = ledger.execute("SELECT * FROM manual_assets WHERE id = ?", (asset_id,)).fetchone()
+    assign_manual_asset_pool(ledger, asset_id, "retirement", None, asset["updated_at"])
     initialize_goal_ledger(ledger, "2026-10", 300_000)
     asset = ledger.execute("SELECT * FROM manual_assets WHERE id = ?", (asset_id,)).fetchone()
 
@@ -404,7 +819,12 @@ def _add_savings_account(connection: sqlite3.Connection, balance_minor: int) -> 
 
 
 def _add_savings_transaction(
-    connection: sqlite3.Connection, account_id: str, amount_minor: int
+    connection: sqlite3.Connection,
+    account_id: str,
+    amount_minor: int,
+    *,
+    local_date: str = "2026-10-26",
+    transfer: bool = True,
 ) -> str:
     transaction_id = new_id()
     now = "2026-10-26T12:00:00Z"
@@ -412,10 +832,18 @@ def _add_savings_transaction(
         """
         INSERT INTO transactions
         (id, account_id, local_date, amount_minor, currency, provider_description,
-         pending, tombstoned, created_at, updated_at)
-        VALUES (?, ?, '2026-10-26', ?, 'USD', 'Savings transfer', 0, 0, ?, ?)
+         provider_category_primary, pending, tombstoned, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'USD', 'Savings transfer', ?, 0, 0, ?, ?)
         """,
-        (transaction_id, account_id, amount_minor, now, now),
+        (
+            transaction_id,
+            account_id,
+            local_date,
+            amount_minor,
+            "TRANSFER_IN" if transfer else "INCOME_INTEREST_EARNED",
+            now,
+            now,
+        ),
     )
     return transaction_id
 

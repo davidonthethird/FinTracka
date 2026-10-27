@@ -22,6 +22,8 @@ export function SavingsPage() {
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<ManualAsset | "new">();
   const [selectedGoal, setSelectedGoal] = useState<SavingsGoal>();
+  const [assigningWithdrawal, setAssigningWithdrawal] = useState<string>();
+  const [withdrawalDestination, setWithdrawalDestination] = useState("unallocated");
   const [section, setSection] = useState<"overview" | "goals" | "allocation">("overview");
   useEffect(() => {
     const controller = new AbortController(); setData(undefined); setError("");
@@ -53,7 +55,20 @@ export function SavingsPage() {
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to initialize savings goals"); }
   }
 
+  async function assignWithdrawal() {
+    const entry = data?.activity.find((item) => item.transaction_id === assigningWithdrawal);
+    if (!entry) return;
+    const goal = withdrawalDestination.startsWith("goal:") ? withdrawalDestination.slice(5) : null;
+    try {
+      await api(`/savings/withdrawals/${entry.transaction_id}/assign`, { method: "POST", body: JSON.stringify({ expected_updated_at: entry.updated_at, destination: goal ? "goal" : withdrawalDestination, goal_id: goal }) });
+      setAssigningWithdrawal(undefined); setRevision((value) => value + 1);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to assign withdrawal"); }
+  }
+
   const history = data?.accounts.flatMap((account) => account.history.map((point) => ({ date: point.observed_at.slice(0, 10), value: point.current_minor, account: account.name }))) || [];
+  const currentMonth = new Date().toLocaleDateString("en-CA").slice(0, 7);
+  const reviewMonth = month < currentMonth ? month : previousMonth(month);
+  const selectedReview = data?.review_history.find((item) => item.month === reviewMonth) || null;
   return <div className="page savings-page">
     <header className="page-title"><div><p className="eyebrow">FinTracka</p><h1>Savings</h1></div><p>Connected savings and manually tracked assets</p></header>
     <section className="savings-toolbar instrument-panel" aria-label="Savings controls"><label>Month<input type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label><label>View<select aria-label="Savings owner" value={owner} onChange={(event) => changeOwner(event.target.value)}><option value="">Combined</option><option>David</option><option>Ariela</option><option>Shared</option></select></label><button onClick={() => setEditing("new")}>Add manual asset</button></section>
@@ -67,7 +82,7 @@ export function SavingsPage() {
         {(data.goal_ledger.regular_reconciliation_minor !== 0 || data.goal_ledger.retirement_reconciliation_minor !== 0) && <div className="notice warning">Savings reconciliation needs review: regular {formatMoney(data.goal_ledger.regular_reconciliation_minor)}, retirement {formatMoney(data.goal_ledger.retirement_reconciliation_minor)}.</div>}
         {section === "overview" && <section className="instrument-panel savings-goals-panel"><div className="section-heading"><div><p className="eyebrow">Monthly allocation</p><h2>Your savings goals</h2></div><span>Solid color is funded · pale color is still planned</span></div><SavingsDonut goals={data.goal_ledger.goals} total={data.goal_ledger.combined_minor} onSelect={setSelectedGoal}/><div className="savings-goal-cards">{data.goal_ledger.goals.map((goal) => <button key={goal.goal_id} className={`goal-card owner-${goal.owner.toLowerCase()}`} onClick={() => setSelectedGoal(goal)}><span className={`goal-icon goal-${goal.color_key}`}><SavingsIcon name={goal.icon_key}/></span><span><strong>{goal.name}</strong><small>{goal.owner} · {formatMoney(goal.monthly_target_minor)}/month</small></span><b>{formatMoney(goal.balance_minor)}</b><progress max={10000} value={goal.funded_basis_points ?? 0}/></button>)}</div></section>}
         {section === "goals" && <GoalManager overview={data.goal_ledger} month={month} onSaved={() => setRevision((value) => value + 1)}/>}
-        {section === "allocation" && <><AllocationRules key={data.goal_ledger.plan_updated_at} overview={data.goal_ledger} month={month} onSaved={() => setRevision((value) => value + 1)}/><MonthlySavingsReview month={month} review={data.review} onSaved={() => setRevision((value) => value + 1)}/></>}
+        {section === "allocation" && <><AllocationRules key={data.goal_ledger.plan_updated_at} overview={data.goal_ledger} month={month} onSaved={() => setRevision((value) => value + 1)}/>{reviewMonth >= data.goal_ledger.activation_month ? <MonthlySavingsReview month={reviewMonth} review={selectedReview} history={data.review_history} onSaved={() => setRevision((value) => value + 1)}/> : <section className="instrument-panel monthly-review"><div><p className="eyebrow">Monthly review</p><h2>Your first review appears after this month closes</h2><p>Savings tracking begins in {data.goal_ledger.activation_month}; partial months are never counted as completed savings.</p></div></section>}</>}
       </> : <section className="instrument-panel savings-setup"><h2>Organize this month’s savings</h2><p>Set up goal tracking to reserve the first $25,000 for Emergency, place the rest in General Savings, and keep Retirement separate. Existing history will not be backfilled.</p><button className="primary" onClick={initializeGoals}>Preview and start goal tracking</button></section>}
       <div className="two-column savings-columns">
         <section className="instrument-panel"><div className="section-heading"><div><p className="eyebrow">Bank data</p><h2>Connected accounts</h2></div><span>{data.accounts.length} included</span></div>{data.accounts.length ? <div className="savings-list">{data.accounts.map((account) => <div key={account.account_id}><span><strong>{account.name}</strong><small>{account.owner} · {account.history.length} balance observation{account.history.length === 1 ? "" : "s"}</small></span><b>{formatMoney(account.balance_minor, account.currency)}</b></div>)}</div> : <div className="empty"><strong>No connected savings accounts</strong><p>Mark an account for Savings from its account settings.</p></div>}</section>
@@ -76,10 +91,16 @@ export function SavingsPage() {
       <section className="metric-line compact savings-activity-metrics"><div className="metric teal"><span>Contributions this month</span><strong>{formatMoney(data.contributions_minor)}</strong></div><div className="metric amber"><span>Withdrawals this month</span><strong>{formatMoney(data.withdrawals_minor)}</strong></div><div className="metric"><span>Earnings this month</span><strong>{formatMoney(data.earnings_minor)}</strong></div></section>
       <div className="two-column savings-columns">
         <section className="instrument-panel"><div className="section-heading"><h2>Balance history</h2><span>Locally retained observations</span></div>{history.length ? <div className="chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={history}><CartesianGrid vertical={false} stroke="var(--line)"/><XAxis dataKey="date" tickLine={false}/><YAxis hide/><Tooltip formatter={(value) => formatMoney(Number(value))}/><Area type="monotone" dataKey="value" stroke="var(--teal)" fill="var(--teal-soft)"/></AreaChart></ResponsiveContainer></div> : <div className="empty"><strong>No balance history yet</strong><p>Each sync adds local observations; they are not discarded when Plaid history ages.</p></div>}</section>
-        <section className="instrument-panel"><div className="section-heading"><h2>Monthly activity</h2><span>Planning remains separate</span></div>{data.activity.length ? <div className="savings-list">{data.activity.map((entry) => <div key={entry.transaction_id}><span><strong>{entry.title}</strong><small>{entry.local_date} · {entry.owner}</small></span><i className={`activity-kind ${entry.kind}`}>{activityLabel(entry.kind)}</i><b>{formatMoney(entry.amount_minor)}</b></div>)}</div> : <div className="empty"><strong>No savings activity this month</strong><p>Contributions, withdrawals, and earnings will appear after sync.</p></div>}</section>
+        <section className="instrument-panel"><div className="section-heading"><h2>Monthly activity</h2><span>Planning remains separate</span></div>{data.activity.length ? <div className="savings-list">{data.activity.map((entry) => <div key={entry.transaction_id}><span><strong>{entry.title}</strong><small>{entry.local_date} · {entry.owner}</small></span><i className={`activity-kind ${entry.kind}`}>{entry.needs_allocation ? "Needs allocation" : activityLabel(entry.kind)}</i><b>{formatMoney(entry.amount_minor)}</b>{entry.needs_allocation && (assigningWithdrawal === entry.transaction_id ? <span className="withdrawal-assignment"><select aria-label={`Assign ${entry.title}`} value={withdrawalDestination} onChange={(event) => setWithdrawalDestination(event.target.value)}><option value="unallocated">Unallocated</option>{entry.pool === "regular" && <option value="pending_transfer">Pending transfer</option>}{data.goal_ledger?.goals.filter((goal) => goal.active && goal.pool === entry.pool).map((goal) => <option key={goal.goal_id} value={`goal:${goal.goal_id}`}>{goal.name}</option>)}</select><button onClick={assignWithdrawal}>Save</button><button onClick={() => setAssigningWithdrawal(undefined)}>Cancel</button></span> : <button onClick={() => { setAssigningWithdrawal(entry.transaction_id); setWithdrawalDestination("unallocated"); }}>Assign</button>)}</div>)}</div> : <div className="empty"><strong>No savings activity this month</strong><p>Contributions, withdrawals, and earnings will appear after sync.</p></div>}</section>
       </div>
     </>}
-    {editing && <ManualAssetDialog asset={editing === "new" ? undefined : editing} onClose={() => setEditing(undefined)} onSaved={() => { setEditing(undefined); setRevision((value) => value + 1); }} />}
+    {editing && <ManualAssetDialog asset={editing === "new" ? undefined : editing} goals={data?.goal_ledger?.goals} onClose={() => setEditing(undefined)} onSaved={() => { setEditing(undefined); setRevision((value) => value + 1); }} />}
     {selectedGoal && <GoalDrawer goal={selectedGoal} onClose={() => setSelectedGoal(undefined)} />}
   </div>;
+}
+
+function previousMonth(month: string): string {
+  const [year, value] = month.split("-").map(Number);
+  const previous = new Date(Date.UTC(year, value - 2, 1));
+  return `${previous.getUTCFullYear()}-${String(previous.getUTCMonth() + 1).padStart(2, "0")}`;
 }

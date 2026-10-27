@@ -22,7 +22,9 @@ from fintracka.google_sheets import configure_google
 from fintracka.keychain import KeychainSecrets
 from fintracka.plaid_adapter import ConnectedItem, InstitutionInfo, LinkSession, ProviderActionRequired
 from fintracka.plaid_service import complete_plaid_connection, configure_plaid
+from fintracka.planning import set_recurring_target
 from fintracka.providers import NormalizedAccount, NormalizedBalance, NormalizedTransaction, SyncBatch
+from fintracka.savings_goals import initialize_goal_ledger, update_savings_goal
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
 from fintracka.sync import apply_batch
 
@@ -1747,9 +1749,154 @@ def test_savings_goal_api_initializes_and_rejects_unknown_or_stale_mutations(
             headers=headers,
         )
         assert stale.status_code == 409
+        changed_goal = client.patch(
+            f"/api/v1/savings/goals/{emergency['goal_id']}",
+            json={
+                "expected_updated_at": emergency["updated_at"], "name": "Emergency",
+                "owner": "Shared", "icon_key": "shield", "color_key": "blue",
+                "parent_id": None, "linked_category_id": None,
+                "monthly_target_minor": 50_000, "effective_month": "2026-10",
+            },
+            headers=headers,
+        )
+        assert changed_goal.status_code == 200
+        assert changed_goal.json()["monthly_target_minor"] == 50_000
         body = client.get("/api/v1/savings/2026-10").json()
         assert body["goal_ledger"]["combined_minor"] == balance
         assert "secret" not in json.dumps(body).lower()
+
+        initialized_account = client.get("/api/v1/accounts").json()[0]
+        reassigned = client.patch(
+            f"/api/v1/accounts/{initialized_account['id']}",
+            json={
+                "expected_updated_at": initialized_account["updated_at"],
+                "savings_pool": "retirement",
+            },
+            headers=headers,
+        )
+        assert reassigned.status_code == 409
+        assert client.get("/api/v1/savings/2026-10").json()["goal_ledger"]["combined_minor"] == balance
+
+        retirement = client.post(
+            "/api/v1/savings/goals",
+            json={
+                "name": "David Roth IRA", "pool": "retirement", "owner": "David",
+                "icon_key": "chart", "color_key": "purple",
+                "activation_month": "2026-10", "monthly_target_minor": 50_000,
+            },
+            headers=headers,
+        ).json()
+        asset = client.post(
+            "/api/v1/savings/assets",
+            json={
+                "title": "Fidelity Roth IRA", "kind": "investment", "owner": "David",
+                "current_value_minor": 200_000, "as_of_date": "2026-10-26",
+                "savings_pool": "retirement", "savings_goal_id": retirement["goal_id"],
+            },
+            headers=headers,
+        )
+        assert asset.status_code == 201
+        changed = client.patch(
+            f"/api/v1/savings/assets/{asset.json()['id']}",
+            json={
+                "title": "Fidelity Roth IRA", "kind": "investment", "owner": "David",
+                "current_value_minor": 210_000, "as_of_date": "2026-10-27",
+                "expected_updated_at": asset.json()["updated_at"],
+                "savings_pool": "retirement", "savings_goal_id": retirement["goal_id"],
+            },
+            headers=headers,
+        )
+        assert changed.status_code == 200
+        goal = client.get(
+            f"/api/v1/savings/goals/{retirement['goal_id']}",
+            params={"through_month": "2026-10"},
+        ).json()
+        assert goal["balance_minor"] == 210_000
+        assert goal["months"][-1]["valuation_minor"] == 10_000
+
+
+def test_savings_draw_reconciles_after_category_undo_and_split(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    apply_batch(connection, connection_id, synthetic_batches([connection_id])[connection_id])
+    connection.execute("UPDATE accounts SET include_savings = 0")
+    savings_account = new_id()
+    now = "2026-10-26T12:00:00Z"
+    connection.execute(
+        """
+        INSERT INTO accounts
+        (id, connection_id, provider_account_id, name, type, subtype, nature,
+         currency, include_savings, savings_pool, created_at, updated_at)
+        VALUES (?, ?, 'savings-reconcile', 'Joint savings', 'depository', 'savings',
+                'asset', 'USD', 1, 'regular', ?, ?)
+        """,
+        (savings_account, connection_id, now, now),
+    )
+    connection.execute(
+        """
+        INSERT INTO account_balance_snapshots
+        (id, account_id, observed_at, current_minor, currency, source)
+        VALUES (?, ?, ?, 10000, 'USD', 'synthetic')
+        """,
+        (new_id(), savings_account, now),
+    )
+    initialize_goal_ledger(connection, "2026-10", 10_000)
+    shopping = connection.execute("SELECT id FROM categories WHERE name = 'Shopping'").fetchone()[0]
+    groceries = connection.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()[0]
+    goal = connection.execute("SELECT * FROM savings_goals WHERE name = 'Emergency'").fetchone()
+    update_savings_goal(
+        connection, goal["id"], goal["updated_at"], name="Shopping reserve",
+        owner="Shared", icon_key="shopping_bag", color_key="pink",
+        parent_id=None, linked_category_id=shopping,
+    )
+    set_recurring_target(connection, shopping, 0, "2026-10")
+    transaction_id = connection.execute(
+        "SELECT transaction_id FROM transaction_external_ids WHERE external_id = 'groceries-1'"
+    ).fetchone()[0]
+    connection.close()
+    app = create_app(path, bootstrap_token="bootstrap")
+
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+        transaction = client.get(f"/api/v1/transactions/{transaction_id}").json()
+        categorized = client.post(
+            f"/api/v1/transactions/{transaction_id}/categorize",
+            json={
+                "expected_updated_at": transaction["updated_at"],
+                "category_id": shopping,
+                "scope": "one_time",
+            },
+            headers=headers,
+        )
+        assert categorized.status_code == 200
+        assert client.get("/api/v1/savings/2026-10").json()["goal_ledger"]["pending_transfer_minor"] == 8_742
+
+        undo = client.post(
+            f"/api/v1/categorizations/{categorized.json()['undo_id']}/undo",
+            json={},
+            headers=headers,
+        )
+        assert undo.status_code == 200
+        assert client.get("/api/v1/savings/2026-10").json()["goal_ledger"]["pending_transfer_minor"] == 0
+
+        transaction = client.get(f"/api/v1/transactions/{transaction_id}").json()
+        split = client.post(
+            f"/api/v1/transactions/{transaction_id}/split",
+            json={
+                "expected_updated_at": transaction["updated_at"],
+                "splits": [
+                    {"amount_minor": -4_000, "category_id": shopping, "notes": None},
+                    {"amount_minor": -4_742, "category_id": groceries, "notes": None},
+                ],
+            },
+            headers=headers,
+        )
+        assert split.status_code == 200
+        assert client.get("/api/v1/savings/2026-10").json()["goal_ledger"]["pending_transfer_minor"] == 4_000
 
 
 def _category_payload(name: str = "Test expense") -> dict[str, str | int]:

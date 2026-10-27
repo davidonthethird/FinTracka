@@ -50,6 +50,9 @@ export type SavingsActivity = {
   kind: "contribution" | "withdrawal" | "earnings" | "expense";
   amount_minor: number;
   owner: SavingsOwner;
+  pool: "regular" | "retirement" | null;
+  needs_allocation: boolean;
+  updated_at: string;
 };
 export type SavingsSummary = {
   month: string;
@@ -67,6 +70,7 @@ export type SavingsSummary = {
   activity: SavingsActivity[];
   goal_ledger: SavingsGoalOverview | null;
   review: Record<string, unknown> | null;
+  review_history: Record<string, unknown>[];
 };
 
 export type SavingsArc = { goal: SavingsGoal; allocationBasisPoints: number; fundedBasisPoints: number };

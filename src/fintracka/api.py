@@ -262,12 +262,12 @@ class ManualAssetCreate(StrictModel):
     owner: Literal["David", "Ariela", "Shared"]
     current_value_minor: StrictInt = Field(ge=0, le=10**15)
     as_of_date: StrictStr = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    savings_pool: Literal["regular", "retirement"] | None = None
+    savings_goal_id: StrictStr | None = None
 
 
 class ManualAssetPatch(ManualAssetCreate):
     expected_updated_at: StrictStr
-    savings_pool: Literal["regular", "retirement"] | None = None
-    savings_goal_id: StrictStr | None = None
 
 
 class SavingsInitialize(StrictModel):
@@ -296,6 +296,8 @@ class SavingsGoalPatch(StrictModel):
     color_key: Literal["blue", "green", "orange", "pink", "purple", "teal", "navy"]
     parent_id: StrictStr | None = None
     linked_category_id: StrictStr | None = None
+    monthly_target_minor: StrictInt | None = Field(default=None, ge=0, le=10**15)
+    effective_month: StrictStr | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
 
 
 class SavingsRevision(StrictModel):
@@ -798,6 +800,7 @@ def create_app(
             if field == "spending_owner" and value is None:
                 raise HTTPException(status_code=422, detail="spending_owner cannot be null")
             values[field] = int(value) if field.startswith("include_") else value
+        savings_pool = values.pop("savings_pool", None) if "savings_pool" in supplied else None
         now = _now()
         with _write_transaction(database):
             current = database.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
@@ -807,15 +810,26 @@ def create_app(
                 raise HTTPException(status_code=409, detail="account changed; refresh and retry")
             if not supplied:
                 return dict(current)
-            assignments = ", ".join(f"{field} = ?" for field in values)
-            database.execute(
-                f"UPDATE accounts SET {assignments}, updated_at = ? WHERE id = ?",
-                (*values.values(), now, account_id),
-            )
-            database.execute(
-                "INSERT INTO audit_events (id, actor, action, entity_type, entity_id, occurred_at) VALUES (?, 'user', 'account_update', 'account', ?, ?)",
-                (new_id(), account_id, now),
-            )
+            if values:
+                assignments = ", ".join(f"{field} = ?" for field in values)
+                database.execute(
+                    f"UPDATE accounts SET {assignments}, updated_at = ? WHERE id = ?",
+                    (*values.values(), now, account_id),
+                )
+                database.execute(
+                    "INSERT INTO audit_events (id, actor, action, entity_type, entity_id, occurred_at) VALUES (?, 'user', 'account_update', 'account', ?, ?)",
+                    (new_id(), account_id, now),
+                )
+            if "savings_pool" in supplied:
+                try:
+                    assign_account_pool(
+                        database, account_id, savings_pool,
+                        now if values else payload.expected_updated_at,
+                    )
+                except SavingsGoalError as error:
+                    raise HTTPException(
+                        status_code=_savings_goal_status(error), detail=str(error)
+                    ) from error
         return dict(database.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone())
 
     @app.get("/api/v1/accounts/{account_id}/balances")
@@ -1094,7 +1108,14 @@ def create_app(
         del payload
         try:
             with _write_transaction(database):
+                identifiers = [
+                    row[0] for row in database.execute(
+                        "SELECT transaction_id FROM categorization_undo_items WHERE batch_id = ?",
+                        (undo_id,),
+                    )
+                ]
                 restored = undo_categorization(database, undo_id)
+                _reconcile_savings_after_mutation(database, identifiers)
         except IntegrityError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         return {"restored_count": restored}
@@ -1132,12 +1153,14 @@ def create_app(
     @app.post("/api/v1/transactions/{transaction_id}/split", response_model=TransactionResponse)
     def split_transaction(transaction_id: str, payload: SplitRequest, database: Database) -> TransactionResponse:
         try:
-            set_splits(
-                database,
-                transaction_id,
-                [(item.amount_minor, item.category_id, item.notes) for item in payload.splits],
-                expected_updated_at=payload.expected_updated_at,
-            )
+            with _write_transaction(database):
+                set_splits(
+                    database,
+                    transaction_id,
+                    [(item.amount_minor, item.category_id, item.notes) for item in payload.splits],
+                    expected_updated_at=payload.expected_updated_at,
+                )
+                _reconcile_savings_after_mutation(database, [transaction_id])
         except ConflictError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except IntegrityError as error:
@@ -1377,12 +1400,15 @@ def create_app(
         goal_id: str, payload: SavingsGoalPatch, database: Database
     ) -> dict[str, object]:
         try:
+            if (payload.monthly_target_minor is None) != (payload.effective_month is None):
+                raise SavingsGoalError("monthly target and effective month must be supplied together")
             with _write_transaction(database):
                 update_savings_goal(
                     database, goal_id, payload.expected_updated_at,
                     **payload.model_dump(exclude={"expected_updated_at"}),
                 )
-            month = database.execute(
+                _reconcile_savings_after_mutation(database)
+            month = payload.effective_month or database.execute(
                 "SELECT activation_month FROM savings_goals WHERE id = ?", (goal_id,)
             ).fetchone()[0]
             return asdict(savings_goal_detail(database, goal_id, month))
@@ -1492,9 +1518,15 @@ def create_app(
                     "SELECT * FROM savings_month_reviews WHERE month = ?", (month,)
                 ).fetchone()
                 result["review"] = dict(review) if review else None
+                result["review_history"] = [
+                    dict(row) for row in database.execute(
+                        "SELECT * FROM savings_month_reviews ORDER BY month DESC"
+                    )
+                ]
             else:
                 result["goal_ledger"] = None
                 result["review"] = None
+                result["review_history"] = []
             return result
         except (ManualAssetError, SavingsGoalError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
@@ -1513,8 +1545,17 @@ def create_app(
                     payload.current_value_minor,
                     payload.as_of_date,
                 )
-        except ManualAssetError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+                if "savings_pool" in payload.model_fields_set or "savings_goal_id" in payload.model_fields_set:
+                    revision = database.execute(
+                        "SELECT updated_at FROM manual_assets WHERE id = ?", (identifier,)
+                    ).fetchone()[0]
+                    assign_manual_asset_pool(
+                        database, identifier, payload.savings_pool, payload.savings_goal_id,
+                        revision,
+                    )
+        except (ManualAssetError, SavingsGoalError) as error:
+            status = _savings_goal_status(error) if isinstance(error, SavingsGoalError) else 422
+            raise HTTPException(status_code=status, detail=str(error)) from error
         return get_manual_asset(database, identifier)
 
     @app.patch("/api/v1/savings/assets/{asset_id}")
@@ -1541,8 +1582,9 @@ def create_app(
                         database, asset_id, payload.savings_pool, payload.savings_goal_id,
                         current["updated_at"],
                     )
-        except ManualAssetError as error:
-            raise HTTPException(status_code=_manual_asset_status(error), detail=str(error)) from error
+        except (ManualAssetError, SavingsGoalError) as error:
+            status = _savings_goal_status(error) if isinstance(error, SavingsGoalError) else _manual_asset_status(error)
+            raise HTTPException(status_code=status, detail=str(error)) from error
         return get_manual_asset(database, asset_id)
 
     @app.delete("/api/v1/savings/assets/{asset_id}", status_code=204)

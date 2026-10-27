@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
-import type { ManualAsset } from "./model";
+import type { ManualAsset, SavingsGoal } from "./model";
 
-export function ManualAssetDialog({ asset, onClose, onSaved }: {
+export function ManualAssetDialog({ asset, goals, onClose, onSaved }: {
   asset?: ManualAsset;
+  goals?: SavingsGoal[];
   onClose: () => void;
   onSaved: () => void;
 }) {
   const [error, setError] = useState("");
+  const [pool, setPool] = useState(asset?.savings_pool || "");
   const titleRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     titleRef.current?.focus();
@@ -26,6 +28,8 @@ export function ManualAssetDialog({ asset, onClose, onSaved }: {
       owner: form.get("owner"),
       current_value_minor: Math.round(Number(form.get("value")) * 100),
       as_of_date: form.get("date"),
+      savings_pool: pool || null,
+      savings_goal_id: form.get("goal") || null,
       ...(asset ? { expected_updated_at: asset.updated_at } : {}),
     };
     try {
@@ -43,6 +47,8 @@ export function ManualAssetDialog({ asset, onClose, onSaved }: {
         <label>Title<input ref={titleRef} required maxLength={120} name="title" defaultValue={asset?.title || ""} /></label>
         <label>Type<select name="kind" defaultValue={asset?.kind || "savings"}><option value="savings">Cash savings</option><option value="investment">Investment</option><option value="other">Other asset</option></select></label>
         <label>Owner<select name="owner" defaultValue={asset?.owner || "Shared"}><option>Shared</option><option>David</option><option>Ariela</option></select></label>
+        <label>Goal pool<select name="pool" value={pool} onChange={(event) => setPool(event.target.value)}><option value="">Not assigned</option><option value="regular">Regular savings</option><option value="retirement">Retirement</option></select></label>
+        {pool && <label>Goal<select name="goal" defaultValue={asset?.savings_goal_id || ""}><option value="">Unallocated</option>{goals?.filter((goal) => goal.pool === pool && goal.active).map((goal) => <option key={goal.goal_id} value={goal.goal_id}>{goal.name}</option>)}</select></label>}
         <label>Current value<input required min="0" step="0.01" type="number" name="value" defaultValue={asset ? (asset.current_value_minor / 100).toFixed(2) : ""} /></label>
         <label>Valuation date<input required type="date" name="date" defaultValue={asset?.as_of_date || new Date().toLocaleDateString("en-CA")} /></label>
         {error && <p className="form-error" role="alert">{error}</p>}

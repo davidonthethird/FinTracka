@@ -52,6 +52,9 @@ class SavingsActivity:
     kind: str
     amount_minor: int
     owner: str
+    pool: str | None
+    needs_allocation: bool
+    updated_at: str
 
 
 @dataclass(frozen=True)
@@ -138,6 +141,7 @@ def savings_summary(
                    COALESCE(NULLIF(t.user_merchant, ''), NULLIF(t.provider_merchant, ''),
                             t.provider_description) title,
                    t.amount_minor, COALESCE(t.spending_owner, a.spending_owner) owner,
+                   a.savings_pool pool, t.updated_at,
                    c.category_type, t.provider_category_primary,
                    EXISTS (
                        SELECT 1 FROM transfer_links l
@@ -149,6 +153,13 @@ def savings_summary(
                          AND (l.transaction_a_id = t.id OR l.transaction_b_id = t.id)
                          AND other_account.include_savings = 1 AND other_account.hidden = 0
                    ) internal_savings_transfer
+                   ,NOT EXISTS (
+                       SELECT 1 FROM savings_ledger_entries e
+                       WHERE e.source_transaction_id = t.id AND e.event_type != 'reversal'
+                         AND NOT EXISTS (
+                             SELECT 1 FROM savings_ledger_entries r WHERE r.reverses_entry_id = e.id
+                         )
+                   ) needs_allocation
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
             LEFT JOIN categories c ON c.id = t.category_id
@@ -171,7 +182,9 @@ def savings_summary(
             activity.append(
                 SavingsActivity(
                     row["id"], row["account_id"], row["local_date"], row["title"],
-                    kind, abs(row["amount_minor"]), row["owner"]
+                    kind, abs(row["amount_minor"]), row["owner"], row["pool"],
+                    bool(row["needs_allocation"] and row["amount_minor"] < 0),
+                    row["updated_at"],
                 )
             )
 
@@ -240,8 +253,7 @@ def update_manual_asset(
     if not before["active"]:
         raise ManualAssetError("manual asset is inactive")
     if (
-        before["savings_pool"] == "retirement"
-        and before["savings_goal_id"] is not None
+        before["savings_pool"] is not None
         and before["current_value_minor"] != current_value_minor
     ):
         from fintracka.savings_goals import record_retirement_valuation
