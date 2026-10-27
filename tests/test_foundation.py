@@ -76,7 +76,7 @@ def test_migrations_are_idempotent_and_install_core_constraints(tmp_path: Path) 
         } <= tables
         assert [
             row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ] == list(range(1, 16))
+        ] == list(range(1, 17))
         starter_categories = {
             row[0]
             for row in connection.execute("SELECT name FROM categories WHERE archived = 0")
@@ -385,7 +385,7 @@ def test_migrations_009_and_010_add_and_backfill_subcategories(tmp_path: Path) -
             for row in connection.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
-        ] == list(range(1, 16))
+        ] == list(range(1, 17))
         assert connection.execute(
             "SELECT history_available_from FROM provider_connections WHERE id = ?",
             (connection_id,),
@@ -497,7 +497,7 @@ def test_migration_014_preserves_existing_savings_data_and_adds_goal_constraints
 
         assert connection.execute("SELECT name FROM accounts WHERE id = ?", (account_id,)).fetchone()[0] == "Joint savings"
         assert connection.execute("SELECT title FROM manual_assets WHERE id = ?", (asset_id,)).fetchone()[0] == "David Roth IRA"
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 15
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 16
         assert {
             "savings_settings",
             "savings_goals",
@@ -576,6 +576,33 @@ def test_migration_014_preserves_existing_savings_data_and_adds_goal_constraints
                 """,
                 (new_id(), new_id(), now),
             )
+    finally:
+        connection.close()
+
+
+def test_migration_016_backfills_existing_emergency_overall_target(tmp_path: Path) -> None:
+    connection = connect(tmp_path / "legacy-goals.sqlite3")
+    try:
+        _migrate_through(connection, 15)
+        now = "2026-10-27T12:00:00Z"
+        emergency_id = new_id()
+        connection.execute(
+            """
+            INSERT INTO savings_goals
+            (id, name, pool, owner, icon_key, color_key, priority, active,
+             activation_month, created_at, updated_at)
+            VALUES (?, 'Emergency', 'regular', 'Shared', 'shield', 'blue', 1, 1,
+                    '2026-10', ?, ?)
+            """,
+            (emergency_id, now, now),
+        )
+
+        _apply_migration(connection, 16)
+
+        assert connection.execute(
+            "SELECT overall_target_minor FROM savings_goals WHERE id = ?",
+            (emergency_id,),
+        ).fetchone()[0] == 2_500_000
     finally:
         connection.close()
 

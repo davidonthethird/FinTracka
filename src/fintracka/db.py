@@ -43,7 +43,7 @@ def migrate(connection: sqlite3.Connection) -> None:
         version = int(resource.name.split("_", 1)[0])
         if version in applied:
             continue
-        if version in {13, 14, 15}:
+        if version in {13, 14, 15, 16}:
             database_file = connection.execute("PRAGMA database_list").fetchone()[2]
             if database_file:
                 database_path = Path(database_file)
