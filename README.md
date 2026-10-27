@@ -129,6 +129,8 @@ Monthly dollar goals control what to add each month and apply from the selected 
 
 Money committed to cover overspending remains visible as **Pending transfer** until a unique matching savings withdrawal settles it. Unmatched withdrawals require an explicit goal, Unallocated, or Pending-transfer assignment. Corrections and undo operations append reversing ledger events; historical entries are not silently rewritten. Regular Savings and Retirement always remain separate, and reconciliation warnings are visible instead of being auto-balanced.
 
+An exact confirmed transfer from a non-savings account into a tracked Regular Savings or Retirement account counts once as **Savings** in Planning, Overview, and Reports. Its incoming side is not counted as income. Transfers between tracked savings accounts and credit-card payments remain excluded.
+
 Plaid's history window cannot be expanded after Transactions has already been initialized on an Item. Do not disconnect and reconnect an existing Trial Item merely to request more history: removing it does not restore the lifetime Trial slot. Use **History import** for older records instead.
 
 ## Verification

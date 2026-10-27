@@ -330,6 +330,18 @@ def ledger_entries(
                   SELECT 1 FROM transfer_links l
                   WHERE l.status = 'confirmed'
                     AND (l.transaction_a_id = t.id OR l.transaction_b_id = t.id)
+                    AND NOT (
+                        t.amount_minor < 0 AND a.savings_pool IS NULL AND EXISTS (
+                            SELECT 1
+                            FROM transactions incoming
+                            JOIN accounts destination ON destination.id = incoming.account_id
+                            WHERE incoming.id = CASE
+                                WHEN l.transaction_a_id = t.id THEN l.transaction_b_id
+                                ELSE l.transaction_a_id END
+                              AND incoming.amount_minor = -t.amount_minor
+                              AND destination.savings_pool IN ('regular', 'retirement')
+                        )
+                    )
               )
             UNION ALL
             SELECT t.id, t.local_date, s.amount_minor, COALESCE(s.category_id, t.category_id),
@@ -346,6 +358,18 @@ def ledger_entries(
                   SELECT 1 FROM transfer_links l
                   WHERE l.status = 'confirmed'
                     AND (l.transaction_a_id = t.id OR l.transaction_b_id = t.id)
+                    AND NOT (
+                        t.amount_minor < 0 AND a.savings_pool IS NULL AND EXISTS (
+                            SELECT 1
+                            FROM transactions incoming
+                            JOIN accounts destination ON destination.id = incoming.account_id
+                            WHERE incoming.id = CASE
+                                WHEN l.transaction_a_id = t.id THEN l.transaction_b_id
+                                ELSE l.transaction_a_id END
+                              AND incoming.amount_minor = -t.amount_minor
+                              AND destination.savings_pool IN ('regular', 'retirement')
+                        )
+                    )
               )
         )
         SELECT r.transaction_id, r.local_date, r.amount_minor, r.category_id,

@@ -1394,7 +1394,7 @@ def test_transaction_api_hides_confirmed_transfers_and_credit_card_payments_by_d
     migrate(connection)
     connection_id = create_synthetic_ledger(connection, count=1, demo=True)[0]
     connection.execute(
-        "INSERT INTO accounts (id, connection_id, provider_account_id, name, type, subtype, nature, currency, created_at, updated_at) VALUES (?, ?, 'savings-api', 'Savings API', 'depository', 'savings', 'asset', 'USD', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')",
+        "INSERT INTO accounts (id, connection_id, provider_account_id, name, type, subtype, nature, currency, savings_pool, created_at, updated_at) VALUES (?, ?, 'savings-api', 'Savings API', 'depository', 'savings', 'asset', 'USD', 'regular', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')",
         (new_id(), connection_id),
     )
     rows = (
@@ -1431,7 +1431,10 @@ def test_transaction_api_hides_confirmed_transfers_and_credit_card_payments_by_d
     with TestClient(app) as client:
         client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
         ordinary = client.get("/api/v1/transactions").json()["items"]
-        assert [row["description"] for row in ordinary] == ["BOOK STORE", "SAVINGS TRANSFER"]
+        assert [row["description"] for row in ordinary] == [
+            "BOOK STORE", "SAVINGS TRANSFER", "OWN TRANSFER OUT",
+        ]
+        assert ordinary[-1]["category"] == "Savings"
         assert client.get(
             "/api/v1/transactions", params={"search": "PAYMENT"}
         ).json()["items"] == []

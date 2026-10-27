@@ -71,6 +71,72 @@ def test_reports_exclude_transfers_and_non_usd_and_net_refunds(
     assert all(entry["description"] != "Transfer" and entry["currency"] == "USD" for entry in paths["entries"])
 
 
+def test_transfer_to_tracked_savings_counts_once_as_savings(
+    ledger: sqlite3.Connection,
+) -> None:
+    before = cash_flow(ledger, "2026-10")
+    ledger.execute(
+        "UPDATE accounts SET savings_pool = 'regular' WHERE provider_account_id = 'savings-1'"
+    )
+    connection_id = ledger.execute(
+        "SELECT id FROM provider_connections WHERE provider = 'synthetic'"
+    ).fetchone()[0]
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(
+            added=(
+                NormalizedTransaction("save-out", "checking-1", "2026-10-14T12:00:00Z", -20_000, "USD", "SAVE MONEY"),
+                NormalizedTransaction("save-in", "savings-1", "2026-10-14T13:00:00Z", 20_000, "USD", "SAVE MONEY"),
+            ),
+            next_checkpoint="savings-planning",
+        ),
+    )
+    outgoing = _transaction_id(ledger, "save-out")
+    confirm_transfer(ledger, outgoing, _transaction_id(ledger, "save-in"))
+
+    assert ledger.execute(
+        "SELECT c.name FROM transactions t JOIN categories c ON c.id = t.category_id WHERE t.id = ?",
+        (outgoing,),
+    ).fetchone()[0] == "Savings"
+    after = cash_flow(ledger, "2026-10")
+    assert after.income_minor == before.income_minor
+    assert after.spending_minor == before.spending_minor + 20_000
+    assert next(
+        row for row in spending_by_category(ledger, "2026-10")
+        if row["category"] == "Savings"
+    )["amount_minor"] == 20_000
+    savings_node = next(
+        node for node in cash_flow_paths(ledger, "2026-10")["nodes"]
+        if node["label"] == "Savings"
+    )
+    assert savings_node["amount_minor"] == 20_000
+
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(
+            accounts=(
+                NormalizedAccount("savings-2", "Other savings", "depository", "savings", "asset", "USD"),
+            ),
+            added=(
+                NormalizedTransaction("move-out", "savings-1", "2026-10-15T12:00:00Z", -5_000, "USD", "MOVE SAVINGS"),
+                NormalizedTransaction("move-in", "savings-2", "2026-10-15T13:00:00Z", 5_000, "USD", "MOVE SAVINGS"),
+            ),
+            next_checkpoint="savings-to-savings",
+        ),
+    )
+    ledger.execute(
+        "UPDATE accounts SET savings_pool = 'regular' WHERE provider_account_id = 'savings-2'"
+    )
+    confirm_transfer(
+        ledger,
+        _transaction_id(ledger, "move-out"),
+        _transaction_id(ledger, "move-in"),
+    )
+    assert cash_flow(ledger, "2026-10") == after
+
+
 def test_spending_owner_inherits_from_account_and_allows_transaction_override(
     ledger: sqlite3.Connection,
 ) -> None:

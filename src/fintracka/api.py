@@ -867,7 +867,24 @@ def create_app(
             clauses.append("t.user_archived = 0")
         parameters: list[object] = []
         if not include_transfers:
-            clauses.append("NOT EXISTS (SELECT 1 FROM transfer_links l WHERE l.status = 'confirmed' AND (l.transaction_a_id = t.id OR l.transaction_b_id = t.id))")
+            clauses.append("""
+                NOT EXISTS (
+                    SELECT 1 FROM transfer_links l
+                    WHERE l.status = 'confirmed'
+                      AND (l.transaction_a_id = t.id OR l.transaction_b_id = t.id)
+                      AND NOT (
+                          t.amount_minor < 0 AND a.savings_pool IS NULL AND EXISTS (
+                              SELECT 1 FROM transactions incoming
+                              JOIN accounts destination ON destination.id = incoming.account_id
+                              WHERE incoming.id = CASE
+                                  WHEN l.transaction_a_id = t.id THEN l.transaction_b_id
+                                  ELSE l.transaction_a_id END
+                                AND incoming.amount_minor = -t.amount_minor
+                                AND destination.savings_pool IN ('regular', 'retirement')
+                          )
+                      )
+                )
+            """)
         if cursor:
             cursor_date, cursor_id = _decode_cursor(cursor)
             clauses.append("(t.local_date < ? OR (t.local_date = ? AND t.id < ?))")

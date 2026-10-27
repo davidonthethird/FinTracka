@@ -702,6 +702,10 @@ def assign_account_pool(
             connection, goal_id, pool, balance[0], settings["activation_month"], now,
             source_key=f"opening:account:{account_id}",
         )
+    if changed:
+        from fintracka.ledger import classify_savings_transfers
+
+        classify_savings_transfers(connection)
     _audit(connection, "savings_account_pool_set", "account", account_id, now, dict(row), None)
 
 
