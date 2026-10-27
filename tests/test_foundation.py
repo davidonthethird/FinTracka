@@ -76,7 +76,7 @@ def test_migrations_are_idempotent_and_install_core_constraints(tmp_path: Path) 
         } <= tables
         assert [
             row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ] == list(range(1, 18))
+        ] == list(range(1, 19))
         starter_categories = {
             row[0]
             for row in connection.execute("SELECT name FROM categories WHERE archived = 0")
@@ -385,7 +385,7 @@ def test_migrations_009_and_010_add_and_backfill_subcategories(tmp_path: Path) -
             for row in connection.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
-        ] == list(range(1, 18))
+        ] == list(range(1, 19))
         assert connection.execute(
             "SELECT history_available_from FROM provider_connections WHERE id = ?",
             (connection_id,),
@@ -499,7 +499,7 @@ def test_migration_014_preserves_existing_savings_data_and_adds_goal_constraints
 
         assert connection.execute("SELECT name FROM accounts WHERE id = ?", (account_id,)).fetchone()[0] == "Joint savings"
         assert connection.execute("SELECT title FROM manual_assets WHERE id = ?", (asset_id,)).fetchone()[0] == "David Roth IRA"
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 17
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 18
         assert {
             "savings_settings",
             "savings_goals",
