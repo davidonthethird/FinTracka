@@ -25,6 +25,7 @@ class SavingsAccount:
     owner: str
     balance_minor: int
     currency: str
+    pool: str | None
     history: tuple[BalancePoint, ...]
 
 
@@ -38,6 +39,8 @@ class ManualAsset:
     currency: str
     as_of_date: str
     updated_at: str
+    savings_pool: str | None
+    savings_goal_id: str | None
 
 
 @dataclass(frozen=True)
@@ -78,7 +81,7 @@ def savings_summary(
     account_rows = connection.execute(
         f"""
         SELECT a.id, COALESCE(NULLIF(a.nickname, ''), a.name) name,
-               a.spending_owner owner, a.currency,
+               a.spending_owner owner, a.currency, a.savings_pool pool,
                COALESCE((
                    SELECT b.current_minor FROM account_balance_snapshots b
                    WHERE b.account_id = a.id
@@ -98,6 +101,7 @@ def savings_summary(
             row["owner"],
             row["balance_minor"],
             row["currency"],
+            row["pool"],
             tuple(
                 BalancePoint(point["observed_at"], point["current_minor"])
                 for point in connection.execute(
@@ -118,7 +122,7 @@ def savings_summary(
         for row in connection.execute(
             f"""
             SELECT id, title, kind, owner, current_value_minor, currency,
-                   as_of_date, updated_at
+                   as_of_date, updated_at, savings_pool, savings_goal_id
             FROM manual_assets WHERE active = 1 {asset_clause}
             ORDER BY kind, title, id
             """,
