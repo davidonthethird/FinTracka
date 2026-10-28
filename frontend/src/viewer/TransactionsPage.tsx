@@ -32,8 +32,8 @@ export function TransactionsPage({ snapshot }: { snapshot: RemoteSnapshot }) {
     <section className="transaction-register">{visible.length ? visible.map((item) => <button key={item.id} className="transaction-entry" onClick={() => setSelected(item)}>
       <time>{item.local_date.slice(5)}</time>
       <span><strong>{item.merchant || item.description}</strong><small>{item.category || "Uncategorized"} · {item.account_name}</small></span>
-      {item.spending_owner && <i className={`owner-dot ${item.spending_owner.toLowerCase()}`} title={item.spending_owner} />}
-      <b className={item.amount_minor < 0 ? "negative" : "positive"}>{formatMoney(item.amount_minor, item.currency)}</b>
+      <i className="owner-slot">{item.spending_owner && <span className={`owner-dot ${item.spending_owner.toLowerCase()}`} title={item.spending_owner} />}</i>
+      <b className={`transaction-amount ${item.amount_minor < 0 ? "negative" : "positive"}`}>{formatMoney(item.amount_minor, item.currency)}</b>
     </button>) : <div className="viewer-empty"><h2>No matching transactions</h2><p>Change or clear a filter to see more activity.</p></div>}</section>
     {pages > 1 && <nav className="page-controls" aria-label="Transaction pages"><button disabled={page <= 1} onClick={() => setPage(page - 1)}><ChevronLeft /> Previous</button><span>{page} of {pages}</span><button disabled={page >= pages} onClick={() => setPage(page + 1)}>Next <ChevronRight /></button></nav>}
     {selected && <TransactionDrawer transaction={selected} onClose={() => setSelected(undefined)} />}

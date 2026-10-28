@@ -17,6 +17,10 @@ test("remote viewer is read-only, responsive, drillable, and leaves no financial
     await expect(page.getByRole("heading", { name: section, exact: true })).toBeVisible();
   }
   await page.getByRole("button", { name: "Transactions", exact: true }).click();
+  const amountRightEdges = await page.locator(".transaction-entry > b").evaluateAll((amounts) =>
+    amounts.map((amount) => Math.round(amount.getBoundingClientRect().right)),
+  );
+  expect(new Set(amountRightEdges).size).toBe(1);
   await page.getByLabel("Search transactions").fill("LOWE");
   await expect(page.locator(".transaction-entry")).toHaveCount(1);
   await page.locator(".transaction-entry").click();
