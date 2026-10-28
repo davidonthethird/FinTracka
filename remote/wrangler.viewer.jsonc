@@ -4,6 +4,7 @@
   "main": "src/viewer.ts",
   "compatibility_date": "2026-10-27",
   "workers_dev": false,
+  "preview_urls": false,
   "assets": {
     "binding": "ASSETS",
     "directory": "../frontend/dist-viewer",
@@ -13,6 +14,7 @@
   "env": {
     "staging": {
       "name": "fintracka-viewer-staging",
+      "workers_dev": true,
       "r2_buckets": [{ "binding": "SNAPSHOTS", "bucket_name": "fintracka-snapshots-staging" }]
     },
     "production": {
