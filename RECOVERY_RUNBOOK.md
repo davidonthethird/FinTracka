@@ -26,3 +26,9 @@ Keep the generated backup and verification result. In Savings, review the initia
 Savings events are append-only. Use the UI's undo action for a mistaken eligible adjustment; do not edit `savings_ledger_entries` manually. A Pending-transfer mismatch means money is still awaiting a matching withdrawal or manual assignment, not that FinTracka should invent a balancing entry.
 
 Pershing remains unsupported for now. Leave it unassigned until a real connection is added and reviewed.
+
+## Remote viewer containment
+
+The hosted snapshot is not a backup and cannot restore SQLite. A local restore does not update the hosted copy until a later successful publication.
+
+If remote access may be compromised, remove the hourly publication schedule, purge the hosted snapshot, and revoke its Access service token. If the Mac is unavailable, revoke the token and both Access applications in Cloudflare, then empty the R2 bucket from the dashboard. Follow the exact sequence and deletion limitations in [REMOTE_VIEWER_RUNBOOK.md](REMOTE_VIEWER_RUNBOOK.md).

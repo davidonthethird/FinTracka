@@ -2,6 +2,8 @@
 
 FinTracka is a single-user, local-first personal finance application for macOS. SQLite is the authoritative ledger and the dashboard listens only on `127.0.0.1`. Plaid supplies account and transaction data; Google Sheets and Excel are one-way exports.
 
+An optional private remote viewer can publish a sanitized, read-only snapshot outward to Cloudflare for mobile access. It never connects inward to the Mac, never mutates FinTracka, and is not a backup. Live publication remains disabled until the staging and household-approval gate in [REMOTE_VIEWER_RUNBOOK.md](REMOTE_VIEWER_RUNBOOK.md) is complete.
+
 ## What it does
 
 - Imports balances and transactions from Plaid without giving FinTracka bank credentials.
@@ -107,6 +109,12 @@ Data and corrections persist in the local SQLite ledger when the browser or appl
 .venv/bin/python -m fintracka.cli schedule install
 .venv/bin/python -m fintracka.cli schedule status
 .venv/bin/python -m fintracka.cli schedule remove
+
+# After the remote-viewer release gate: publish and manage hourly publication
+.venv/bin/python -m fintracka.cli remote publish
+.venv/bin/python -m fintracka.cli remote schedule install
+.venv/bin/python -m fintracka.cli remote schedule status
+.venv/bin/python -m fintracka.cli remote schedule remove
 ```
 
 Scheduled work runs only while the Mac is awake. Local backups are retained according to FinTracka's backup policy; an encrypted off-device backup remains recommended.

@@ -14,3 +14,7 @@ Before activating Savings goals on live data:
 - do not infer or connect Pershing until provider support is reviewed.
 
 Off-device backup remains a visible, accepted testing warning rather than a connection blocker. A lost or destroyed Mac can therefore still cause unrecoverable test-data loss.
+
+The optional remote viewer changes the privacy boundary: Cloudflare stores a sanitized snapshot containing household balances and transaction details. It stores no Plaid/Google token, raw provider payload, note, external provider identifier, or edit capability. The Publisher uses a Keychain-held Access service token; the Viewer uses an exact two-person MFA Access policy; both normal and preview routes must be protected. The R2 bucket has no public endpoint and retains only active plus previous snapshots.
+
+The viewer writes no financial data to localStorage, sessionStorage, IndexedDB, Cache Storage, or a service worker. All responses are `no-store`. Provider logs and physical deletion remain external-service risks, so household approval, staged revocation/purge drills, and current Plaid/Cloudflare terms review are mandatory before live publication. See [REMOTE_VIEWER_RUNBOOK.md](REMOTE_VIEWER_RUNBOOK.md).

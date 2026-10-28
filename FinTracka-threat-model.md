@@ -2,7 +2,7 @@
 
 ## Scope and assumptions
 
-This model covers the localhost React/FastAPI application, SQLite ledger and backups, macOS Keychain, Plaid Production, Google Sheets, Excel exports, and launchd scheduling. It assumes one trusted macOS user, FileVault enabled, no LAN/public listener, and a public source repository containing no credentials. The approved testing exception is the lack of an off-device backup; hardware loss can therefore destroy all test data.
+This model covers the localhost React/FastAPI application, SQLite ledger and backups, macOS Keychain, Plaid Production, Google Sheets, Excel exports, launchd scheduling, and the optional Cloudflare read-only viewer. It assumes one trusted macOS user, FileVault enabled, no LAN/public listener, and a public source repository containing no credentials. The approved testing exception is the lack of an off-device backup; hardware loss can therefore destroy all test data.
 
 ## System and trust boundaries
 
@@ -15,6 +15,9 @@ flowchart LR
   API -->|"drive.file"| Google["Google Sheets"]
   API --> Export["Local backups / Excel"]
   Launchd["launchd"] --> CLI["FinTracka CLI"] --> API
+  CLI -->|"sanitized snapshot + Access service token"| Publisher["Access-protected Publisher Worker"]
+  Publisher --> R2["Private R2 active + previous snapshots"]
+  Household["David / Ariela + MFA"] --> Viewer["Access-protected read-only Viewer Worker"] --> R2
 ```
 
 Trust changes at the browser/API boundary, every external provider, Keychain, and exported file. The most sensitive assets are provider/OAuth credentials, transaction and balance data, user edits, sync checkpoints, audit history, and backups.
@@ -35,6 +38,10 @@ In scope: a hostile website targeting localhost, malicious provider/CSV text, st
 | Medium | CSV/provider text executes in UI or spreadsheet | Strict schemas and size limits, React escaping, formula-prefix escaping, no raw HTML rendering | Export recipients can change sharing permissions |
 | Medium | Third-party JavaScript compromise | Exact Plaid script/frame/connect CSP allowlist, no other runtime CDN, pinned lockfile and audits | Plaid's required stable SDK URL cannot use a fixed SRI hash |
 | Medium | Over-broad Google access discloses Drive files | Desktop OAuth with `drive.file`; app creates its workbook and never auto-shares | Google account/share configuration is user-controlled |
+| High | Hosted household data is read by an unauthorized person | Exact two-identity MFA Access allowlist on Viewer and previews; no public R2; no-store/CSP/frame denial | Cloudflare account, identity-provider, or household-email compromise |
+| High | Publisher token is stolen and used to overwrite/purge | Keychain-only secret, strict Service Auth, separate Publisher app, monotonic sequence, immutable objects, atomic conditional manifest | Logged-in host compromise or Cloudflare control-plane compromise |
+| Medium | Interrupted/replayed upload corrupts the visible snapshot | Digest/schema/size checks, immutable version write before conditional manifest, monotonic sequence, active+previous retention | Cleanup failure can temporarily retain an extra immutable object |
+| Medium | Purged cloud data remains elsewhere | Worker deletes manifest and objects; emergency dashboard purge and credential revocation are documented | Provider logs, caches, backups, and legal retention cannot be synchronously guaranteed |
 
 ## Security requirements and evidence
 
@@ -44,6 +51,7 @@ In scope: a hostile website targeting localhost, malicious provider/CSV text, st
 - `src/fintracka/backups.py`: online backup, integrity verification, atomic replacement, restrictive permissions, and retention.
 - `src/fintracka/google_sheets.py` and `src/fintracka/exports.py`: narrow OAuth scope, deterministic replacement, formula escaping, and atomic Excel output.
 - `tests/test_api.py`, `tests/test_plaid_service.py`, `tests/test_readiness.py`, and browser tests exercise the high-risk boundaries.
+- `src/fintracka/remote_snapshot.py`, `src/fintracka/remote_service.py`, `remote/src/`, and `frontend/src/viewer/` implement the one-way publication boundary and read-only viewer; shared contract, Worker fault-injection, and mobile Playwright tests run in CI with synthetic data only.
 
 ## Required operating procedure
 
