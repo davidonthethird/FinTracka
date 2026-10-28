@@ -21,6 +21,11 @@ test("remote viewer is read-only, responsive, drillable, and leaves no financial
     amounts.map((amount) => Math.round(amount.getBoundingClientRect().right)),
   );
   expect(new Set(amountRightEdges).size).toBe(1);
+  const ownerMarkerSize = await page.locator(".owner-dot").first().evaluate((marker) => {
+    const box = marker.getBoundingClientRect();
+    return { width: Math.round(box.width), height: Math.round(box.height) };
+  });
+  expect(ownerMarkerSize).toEqual({ width: 7, height: 28 });
   await page.getByLabel("Search transactions").fill("LOWE");
   await expect(page.locator(".transaction-entry")).toHaveCount(1);
   await page.locator(".transaction-entry").click();
