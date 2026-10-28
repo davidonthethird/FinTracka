@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import fixture from "../../tests/fixtures/remote_snapshot_v1.json";
 
 import { PlanningPage } from "../src/viewer/PlanningPage";
+import { buildFlowGroups } from "../src/viewer/ReportFlow";
 import { ReportsPage } from "../src/viewer/ReportsPage";
 import { SavingsPage } from "../src/viewer/SavingsPage";
 import { parseSnapshot } from "../src/viewer/model";
@@ -38,6 +39,17 @@ describe("read-only viewer finance pages", () => {
     expect(html).toContain("By person");
     expect(html).toContain("Money flow");
     expect(html).toContain("Groceries");
+    expect(html).toContain("Zoomable financial flow");
+    expect(html).toContain("Focus Essentials");
+    expect(html).toContain("% of spending");
+  });
+
+  it("derives groups and final categories from published flow links and safely handles missing flow", () => {
+    const report = snapshot.reports["2026-10|owner=Combined"] as { cash_flow_paths?: Parameters<typeof buildFlowGroups>[0] };
+    const groups = buildFlowGroups(report.cash_flow_paths);
+    expect(groups.map((group) => group.label)).toEqual(["Essentials", "Financial", "Lifestyle"]);
+    expect(groups.flatMap((group) => group.categories.map((category) => category.label))).toEqual(["Groceries", "Other", "Shopping"]);
+    expect(buildFlowGroups(undefined)).toEqual([]);
   });
 
   it("contains no mutation controls and makes no request while rendering", () => {

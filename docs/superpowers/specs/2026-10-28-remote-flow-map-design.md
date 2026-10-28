@@ -23,7 +23,7 @@ The hosted viewer stays read-only and does not persist financial data in browser
 
 ## Responsive behavior
 
-The chart never creates horizontal page overflow. At 760px and above the Sankey is used. Below 760px the wheel is used. Normal vertical page scrolling remains available, but the chart needs no horizontal pan.
+The chart never creates horizontal page overflow. At 1000px and above the Sankey is used. Below 1000px the wheel is used because the viewer's 190px navigation rail leaves too little chart width at smaller desktop breakpoints. Normal vertical page scrolling remains available, but the chart needs no horizontal pan.
 
 ## Accessibility
 

@@ -34,8 +34,22 @@ test("remote viewer is read-only, responsive, drillable, and leaves no financial
   await page.getByRole("button", { name: "Show splits" }).click();
   await expect(page.getByRole("heading", { name: "Account and asset splits" })).toBeVisible();
   await page.getByRole("button", { name: "Reports", exact: true }).click();
-  await page.locator(".report-bars button").first().click();
+  await page.setViewportSize({ width: 390, height: 800 });
+  await expect(page.locator(".flow-wheel-panel")).toBeVisible();
+  await expect(page.locator(".flow-sankey")).toBeHidden();
+  expect(await page.locator(".flow-wheel path").count()).toBeGreaterThan(0);
+  await page.locator(".flow-group-list button").first().click();
+  await expect(page.getByRole("button", { name: "Reset view" })).toBeVisible();
+  await page.getByRole("button", { name: "Reset view" }).click();
+  await page.locator(".flow-category-list button").first().click();
   await expect(page.getByRole("dialog")).toBeVisible();
+  await page.getByRole("button", { name: "Close category details" }).click();
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(page.locator(".flow-sankey")).toBeVisible();
+  await page.getByRole("button", { name: "Focus Essentials" }).first().click();
+  await expect(page.getByRole("button", { name: "Reset view" })).toBeVisible();
+  await page.getByRole("button", { name: "Reset view" }).click();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   await expect(page.getByText(/Save|Edit|Delete|Archive|Sync now|Publish now/)).toHaveCount(0);
   const persistence = await page.evaluate(async () => ({
