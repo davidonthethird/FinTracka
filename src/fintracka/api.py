@@ -68,6 +68,8 @@ from fintracka.reports import (
     spending_by_owner,
 )
 from fintracka.readiness import filevault_enabled, readiness_report
+from fintracka.remote_config import load_remote_settings
+from fintracka.remote_service import publish_remote_snapshot, purge_remote_snapshots
 from fintracka.security import LocalSessions, host_allowed, origin_allowed
 from fintracka.savings import (
     ManualAssetError,
@@ -413,6 +415,10 @@ class EmptyRequest(StrictModel):
     pass
 
 
+class RemotePurgeRequest(StrictModel):
+    confirmation: Literal["DELETE REMOTE COPY"]
+
+
 class PlaidSessionRequest(StrictModel):
     profile: Literal["david", "ariela"]
 
@@ -485,6 +491,7 @@ def create_app(
     schedule_remover: Callable[[Path], Any] = remove_schedule,
     schedule_status_reader: Callable[[Path], dict[str, bool]] = schedule_status,
     filevault_checker: Callable[[], bool] = filevault_enabled,
+    remote_secrets_factory: Callable[[], KeychainSecrets] = KeychainSecrets,
 ) -> FastAPI:
     path = Path(database_path)
     initial = connect(path)
@@ -495,6 +502,7 @@ def create_app(
     sessions = LocalSessions(bootstrap_token or secrets.token_urlsafe(32))
     jobs = JobRunner(path)
     launch_agent = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.sync.plist"
+    remote_launch_agent = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.remote.plist"
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):  # type: ignore[no-untyped-def]
@@ -628,6 +636,49 @@ def create_app(
             filevault_checker=filevault_checker,
             scheduler=schedule_status_reader(launch_agent),
         )
+
+    @app.get("/api/v1/settings/remote")
+    def remote_settings(database: Database) -> dict[str, object]:
+        settings = load_remote_settings(database)
+        scheduler = schedule_status_reader(remote_launch_agent)
+        last_bank_sync = database.execute(
+            "SELECT MAX(last_success_at) FROM provider_connections WHERE provider != 'manual'"
+        ).fetchone()[0]
+        publication_count = database.execute(
+            "SELECT COUNT(*) FROM remote_publication_runs WHERE status = 'succeeded'"
+        ).fetchone()[0]
+        return {
+            "enabled": settings.enabled,
+            "viewer_url": settings.viewer_url,
+            "history_months": settings.history_months,
+            "interval_minutes": settings.interval_minutes,
+            "schedule_installed": scheduler["installed"],
+            "schedule_loaded": scheduler["loaded"],
+            "last_source_sequence": settings.next_source_sequence - 1,
+            "last_bank_sync_at": last_bank_sync,
+            "last_snapshot_id": settings.last_snapshot_id,
+            "last_published_at": settings.last_published_at,
+            "last_error_code": settings.last_error_code,
+            "publication_count": publication_count,
+        }
+
+    @app.post("/api/v1/settings/remote/publish", status_code=202)
+    def remote_publish(payload: EmptyRequest) -> dict[str, str]:
+        del payload
+
+        def work(_: sqlite3.Connection) -> None:
+            publish_remote_snapshot(path, remote_secrets_factory(), reason="manual")
+
+        return {"job_id": jobs.submit("remote_publish", work)}
+
+    @app.delete("/api/v1/settings/remote/snapshot", status_code=202)
+    def remote_purge(payload: RemotePurgeRequest) -> dict[str, str]:
+        del payload
+
+        def work(_: sqlite3.Connection) -> None:
+            purge_remote_snapshots(path, remote_secrets_factory())
+
+        return {"job_id": jobs.submit("remote_purge", work)}
 
     @app.get("/api/v1/providers")
     def providers(database: Database) -> list[dict[str, object]]:

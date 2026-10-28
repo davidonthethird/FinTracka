@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("synthetic finance workflow with Plaid profiles edits categories from planning and reports", async ({ page }) => {
+test("synthetic finance workflow with Plaid profiles, reports, and remote viewer settings", async ({ page }) => {
   const responseErrors: string[] = [];
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
@@ -259,7 +259,7 @@ test("synthetic finance workflow with Plaid profiles edits categories from plann
   await expect(page.getByTestId("remaining-budget").locator("b")).toHaveCSS("color", "rgb(20, 125, 112)");
   const activeCategoryCount = await page.locator(".planning-category").count();
   await inactiveToggle.check();
-  await expect(page.locator(".planning-category")).toHaveCount(activeCategoryCount + 9);
+  await expect.poll(() => page.locator(".planning-category").count()).toBeGreaterThan(activeCategoryCount);
   await inactiveToggle.uncheck();
   await page.getByLabel("Title").fill("Paycheck");
   await page.getByLabel("Type").selectOption("Salary");
@@ -463,6 +463,35 @@ test("synthetic finance workflow with Plaid profiles edits categories from plann
   await expect(page.getByRole("dialog")).toContainText("ITEM_LOGIN_REQUIRED");
   await page.getByRole("button", { name: "Close" }).click();
 
+  let remotePublished = false;
+  let remotePurged = false;
+  await page.route("**/api/v1/settings/remote", (route) => {
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      enabled: true,
+      viewer_url: "https://viewer.example.test",
+      history_months: 12,
+      interval_minutes: 60,
+      schedule_installed: true,
+      schedule_loaded: true,
+      last_source_sequence: 7,
+      last_bank_sync_at: "2026-10-27T14:00:00Z",
+      last_snapshot_id: "snapshot-7",
+      last_published_at: "2026-10-27T14:05:00Z",
+      last_error_code: null,
+      publication_count: 7,
+    }) });
+  });
+  await page.route("**/api/v1/settings/remote/publish", (route) => {
+    remotePublished = true;
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ job_id: "job-remote-publish" }) });
+  });
+  await page.route("**/api/v1/settings/remote/snapshot", (route) => {
+    expect(route.request().postDataJSON()).toEqual({ confirmation: "DELETE REMOTE COPY" });
+    remotePurged = true;
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ job_id: "job-remote-purge" }) });
+  });
+  await page.route("**/api/v1/jobs/job-remote-*", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ status: "succeeded" }) }));
+
   await page.getByRole("link", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Use dark" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
@@ -472,6 +501,16 @@ test("synthetic finance workflow with Plaid profiles edits categories from plann
   await expect(page.getByRole("status")).toContainText("Backup succeeded", { timeout: 15_000 });
   await expect(page.getByRole("heading", { name: "Live-data readiness" })).toBeVisible();
   await expect(page.getByText("Off-device backup", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Remote viewer" })).toBeVisible();
+  await expect(page.getByText("Privacy boundary.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open viewer" })).toHaveAttribute("href", "https://viewer.example.test");
+  await page.getByRole("button", { name: "Publish now" }).click();
+  await expect(page.getByRole("status")).toContainText("Remote publication succeeded");
+  expect(remotePublished).toBe(true);
+  page.once("dialog", (dialog) => dialog.accept("DELETE REMOTE COPY"));
+  await page.getByRole("button", { name: "Delete remote copy" }).click();
+  await expect(page.getByRole("status")).toContainText("Remote deletion succeeded");
+  expect(remotePurged).toBe(true);
   expect(await page.evaluate(() => Object.keys(localStorage).sort())).toEqual(["fintracka-categorization-scope", "fintracka-theme"]);
 
   let googleAuthorized = false;

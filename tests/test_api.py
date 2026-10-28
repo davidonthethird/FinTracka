@@ -24,6 +24,7 @@ from fintracka.plaid_adapter import ConnectedItem, InstitutionInfo, LinkSession,
 from fintracka.plaid_service import complete_plaid_connection, configure_plaid
 from fintracka.planning import set_recurring_target
 from fintracka.providers import NormalizedAccount, NormalizedBalance, NormalizedTransaction, SyncBatch
+from fintracka.remote_config import configure_remote
 from fintracka.savings_goals import initialize_goal_ledger, update_savings_goal
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
 from fintracka.sync import apply_batch
@@ -462,6 +463,79 @@ def test_schedule_is_changed_only_by_explicit_csrf_protected_actions(tmp_path: P
         assert client.get("/api/v1/settings").json()["schedule_installed"] is True
         assert client.delete("/api/v1/settings/schedule", headers=headers).status_code == 204
         assert state == {"installed": False, "loaded": False}
+
+
+def test_remote_settings_publish_and_purge_are_local_csrf_protected_and_redacted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    keychain = KeychainSecrets(FakeKeyring())
+    connection = connect(path)
+    migrate(connection)
+    configure_remote(
+        connection,
+        keychain,
+        viewer_url="https://viewer.example.test",
+        publisher_url="https://publisher.example.test",
+        access_client_id="private-client-id",
+        access_client_secret="private-client-secret",
+    )
+    connection.close()
+    published: list[str] = []
+    purged: list[Path] = []
+    monkeypatch.setattr(
+        api_module,
+        "publish_remote_snapshot",
+        lambda database_path, secrets, reason: published.append(reason),
+    )
+    monkeypatch.setattr(
+        api_module,
+        "purge_remote_snapshots",
+        lambda database_path, secrets: purged.append(database_path),
+    )
+    app = create_app(
+        path,
+        bootstrap_token="bootstrap",
+        remote_secrets_factory=lambda: keychain,
+        schedule_status_reader=lambda destination: {"installed": False, "loaded": False},
+    )
+    with TestClient(app) as client:
+        assert client.get("/api/v1/settings/remote").status_code == 401
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+
+        status = client.get("/api/v1/settings/remote")
+        assert status.status_code == 200
+        assert status.json()["viewer_url"] == "https://viewer.example.test"
+        serialized = status.text
+        assert "publisher.example" not in serialized
+        assert "private-client" not in serialized
+        assert "keychain" not in serialized.lower()
+
+        assert client.post("/api/v1/settings/remote/publish", json={}).status_code == 403
+        assert client.post(
+            "/api/v1/settings/remote/publish", json={"unexpected": True}, headers=headers
+        ).status_code == 422
+        assert client.post(
+            "/api/v1/settings/remote/publish", content=b"", headers=headers
+        ).status_code == 422
+        queued = client.post("/api/v1/settings/remote/publish", json={}, headers=headers)
+        assert queued.status_code == 202
+        assert _wait_for_job(client, queued.json()["job_id"])["status"] == "succeeded"
+        assert published == ["manual"]
+
+        assert client.request(
+            "DELETE", "/api/v1/settings/remote/snapshot",
+            json={"confirmation": "DELETE"}, headers=headers,
+        ).status_code == 422
+        deletion = client.request(
+            "DELETE", "/api/v1/settings/remote/snapshot",
+            json={"confirmation": "DELETE REMOTE COPY"}, headers=headers,
+        )
+        assert deletion.status_code == 202
+        assert _wait_for_job(client, deletion.json()["job_id"])["status"] == "succeeded"
+        assert purged == [path]
 
 
 def test_each_startup_queues_sync_for_live_connection(tmp_path: Path) -> None:
