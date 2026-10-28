@@ -64,7 +64,7 @@ Use a separate staging bucket and Workers. Never put account IDs, household emai
    unset FINTRACKA_STAGING_ACCESS_SECRET
    ```
 
-   The two values are stored in macOS Keychain; SQLite stores only opaque reference names.
+   The two values are stored in macOS Keychain; SQLite stores only opaque reference names. Configuration leaves automatic publication disabled. A manual publish still works for reconciliation; `fintracka remote enable` is a separate post-approval step.
 
 ## Synthetic staging acceptance
 
@@ -95,12 +95,15 @@ Use a separate staging data directory containing only synthetic or Plaid Sandbox
 
 ```sh
 .venv/bin/python -m fintracka.cli remote publish --data-dir /private/staging/data
+.venv/bin/python -m fintracka.cli remote enable --data-dir /private/staging/data
 .venv/bin/python -m fintracka.cli remote schedule install --data-dir /private/staging/data
 .venv/bin/python -m fintracka.cli remote schedule status --data-dir /private/staging/data
 .venv/bin/python -m fintracka.cli remote purge --confirm-delete-remote-snapshot --data-dir /private/staging/data
 ```
 
 Scheduled work runs only while the user session and Keychain are available and the Mac is awake. Missed hourly intervals are recovered by the next startup/post-sync/scheduled publication; no queue of old snapshots is replayed.
+
+For production, reconcile the first manual snapshot while automation is still disabled. Only after that comparison passes should `remote enable` and the hourly schedule be installed. Use `remote disable` before maintenance or whenever automatic publication should stop.
 
 ## Emergency revocation and purge
 

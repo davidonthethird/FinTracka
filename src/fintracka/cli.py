@@ -26,7 +26,7 @@ from fintracka.launchd import (
 )
 from fintracka.locks import ProcessLock
 from fintracka.plaid_service import build_plaid_adapter, configure_plaid, sync_plaid_connections
-from fintracka.remote_config import configure_remote, load_remote_settings
+from fintracka.remote_config import configure_remote, load_remote_settings, set_remote_enabled
 from fintracka.remote_client import RemotePublishError
 from fintracka.remote_service import publish_remote_snapshot, purge_remote_snapshots
 from fintracka.remote_snapshot import build_remote_snapshot, serialize_remote_snapshot, snapshot_digest
@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             finally:
                 connection.close()
-        print("Remote viewer publication configured; credentials stored in macOS Keychain.")
+        print("Remote viewer configured; automatic publication remains disabled until remote enable.")
         return 0
     if args.command == "sync":
         with ProcessLock(lock_path):
@@ -234,6 +234,20 @@ def main(argv: list[str] | None = None) -> int:
             "last_error_code": settings.last_error_code,
         }, sort_keys=True))
         return 0
+    if args.command == "remote" and args.remote_action in {"enable", "disable"}:
+        with ProcessLock(lock_path):
+            connection = connect(database_path)
+            try:
+                migrate(connection)
+                settings = set_remote_enabled(connection, args.remote_action == "enable")
+            finally:
+                connection.close()
+        print(
+            "Automatic remote publication enabled."
+            if settings.enabled
+            else "Automatic remote publication disabled."
+        )
+        return 0
     if args.command == "remote" and args.remote_action == "purge":
         purge_remote_snapshots(database_path, KeychainSecrets())
         print("Remote snapshots purged.")
@@ -313,6 +327,10 @@ def _parser() -> argparse.ArgumentParser:
     remote_publish.add_argument("--reason", choices=["manual", "scheduled"], default="manual")
     remote_status = remote_subparsers.add_parser("status")
     remote_status.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    remote_enable = remote_subparsers.add_parser("enable")
+    remote_enable.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    remote_disable = remote_subparsers.add_parser("disable")
+    remote_disable.add_argument("--data-dir", type=Path, default=_default_data_directory())
     remote_purge = remote_subparsers.add_parser("purge")
     remote_purge.add_argument("--data-dir", type=Path, default=_default_data_directory())
     remote_purge.add_argument("--confirm-delete-remote-snapshot", action="store_true", required=True)

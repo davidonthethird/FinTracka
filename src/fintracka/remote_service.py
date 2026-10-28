@@ -60,7 +60,12 @@ def _publish_remote_snapshot_locked(
         try:
             migrate(connection)
             settings = load_remote_settings(connection)
-            if not settings.enabled:
+            configured = all((
+                settings.publisher_url,
+                settings.access_client_id_ref,
+                settings.access_client_secret_ref,
+            ))
+            if not configured or (reason != "manual" and not settings.enabled):
                 return None
             sequence = reserve_remote_sequence(connection)
             run_id = start_remote_run(connection, reason, sequence)

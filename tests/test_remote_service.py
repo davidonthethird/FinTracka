@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import socket
 import ssl
+import threading
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from urllib.error import HTTPError
 
@@ -52,19 +54,25 @@ def test_native_opener_uses_system_trust_and_keyword_timeout(monkeypatch) -> Non
     context = object()
     captured = {}
     protocols = []
+    handlers = []
+    class Opener:
+        def open(self, request, **kwargs):
+            captured.update(request=request, **kwargs)
+            return Response({})
     monkeypatch.setattr(
         "truststore.SSLContext", lambda protocol: protocols.append(protocol) or context
     )
     monkeypatch.setattr(
-        "fintracka.remote_client.urllib.request.urlopen",
-        lambda request, **kwargs: captured.update(request=request, **kwargs) or Response({}),
+        "fintracka.remote_client.urllib.request.build_opener",
+        lambda *items: handlers.extend(items) or Opener(),
     )
     request = object()
 
     _native_urlopen(request, 15)
 
-    assert captured == {"request": request, "timeout": 15, "context": context}
+    assert captured == {"request": request, "timeout": 15}
     assert protocols == [ssl.PROTOCOL_TLS_CLIENT]
+    assert handlers[0]._context is context
 
 
 def test_client_sends_service_token_digest_and_accepts_idempotent_response() -> None:
@@ -139,6 +147,57 @@ def test_client_retries_server_errors_twice() -> None:
     assert result.snapshot_id == "snap"
 
 
+def test_client_rejects_redirect_without_forwarding_service_token() -> None:
+    received: list[tuple[str | None, str | None]] = []
+
+    class Destination(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            received.append((
+                self.headers.get("CF-Access-Client-Id"),
+                self.headers.get("CF-Access-Client-Secret"),
+            ))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *_: object) -> None:
+            pass
+
+    destination = ThreadingHTTPServer(("127.0.0.1", 0), Destination)
+
+    class Source(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.send_response(302)
+            self.send_header(
+                "Location",
+                f"http://127.0.0.1:{destination.server_port}/stolen",
+            )
+            self.end_headers()
+
+        def log_message(self, *_: object) -> None:
+            pass
+
+    source = ThreadingHTTPServer(("127.0.0.1", 0), Source)
+    threads = [
+        threading.Thread(target=server.serve_forever, daemon=True)
+        for server in (source, destination)
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        client = RemotePublisherClient(
+            f"http://127.0.0.1:{source.server_port}", "client-id", "client-secret"
+        )
+        with pytest.raises(RemotePublishError) as caught:
+            client.publish(b"{}", "digest")
+        assert caught.value.code == "REMOTE_HTTP_ERROR"
+        assert received == []
+    finally:
+        source.shutdown()
+        destination.shutdown()
+        source.server_close()
+        destination.server_close()
+
+
 def _configured_database(tmp_path):
     path = tmp_path / "fintracka.sqlite3"
     seed_database(path)
@@ -182,6 +241,30 @@ def test_publish_service_records_success_and_preserves_financial_rows(tmp_path) 
     assert settings.last_snapshot_id == result.snapshot_id
     assert run["status"] == "succeeded"
     assert after == before
+
+
+def test_manual_publish_is_allowed_before_automatic_publication_is_enabled(tmp_path) -> None:
+    path, secrets = _configured_database(tmp_path)
+
+    class Client:
+        def publish(self, payload, digest):
+            document = json.loads(payload)
+            from fintracka.remote_client import PublishResult
+            return PublishResult(
+                document["snapshot_id"], document["source_sequence"],
+                "2026-10-27T12:00:01Z", False,
+            )
+
+    connection = connect(path)
+    assert load_remote_settings(connection).enabled is False
+    connection.close()
+    assert publish_remote_snapshot(
+        path, secrets, reason="manual", client_factory=lambda settings, keychain: Client(),
+        now=lambda: datetime(2026, 10, 27, 12, tzinfo=timezone.utc),
+    ) is not None
+    assert publish_remote_snapshot(
+        path, secrets, reason="scheduled", client_factory=lambda settings, keychain: Client(),
+    ) is None
 
 
 def test_publish_service_disabled_does_not_construct_client(tmp_path) -> None:

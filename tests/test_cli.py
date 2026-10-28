@@ -216,9 +216,11 @@ def test_remote_cli_configure_preview_status_publish_and_purge(
     assert main(["remote", "publish", "--data-dir", str(tmp_path)]) == 0
     assert main(["remote", "publish", "--reason", "scheduled", "--data-dir", str(tmp_path)]) == 0
     assert main(["remote", "status", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "enable", "--data-dir", str(tmp_path)]) == 0
     assert main(["remote", "schedule", "install", "--data-dir", str(tmp_path)]) == 0
     assert main(["remote", "schedule", "status", "--data-dir", str(tmp_path)]) == 0
     assert main(["remote", "schedule", "remove", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "disable", "--data-dir", str(tmp_path)]) == 0
     assert main([
         "remote", "purge", "--confirm-delete-remote-snapshot", "--data-dir", str(tmp_path)
     ]) == 0
@@ -230,7 +232,7 @@ def test_remote_cli_configure_preview_status_publish_and_purge(
     assert schedules == [("install", 60), "remove"]
 
     connection = connect(tmp_path / "fintracka.sqlite3")
-    assert load_remote_settings(connection).enabled is True
+    assert load_remote_settings(connection).enabled is False
     connection.close()
 
 

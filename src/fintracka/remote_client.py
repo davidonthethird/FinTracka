@@ -15,9 +15,18 @@ from fintracka.keychain import KeychainSecrets, SecretStoreUnavailable
 from fintracka.remote_config import RemoteSettings
 
 
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return None
+
+
 def _native_urlopen(request: urllib.request.Request, timeout: int):  # type: ignore[no-untyped-def]
     context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    return urllib.request.urlopen(request, timeout=timeout, context=context)
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=context),
+        _RejectRedirects(),
+    )
+    return opener.open(request, timeout=timeout)
 
 
 @dataclass(frozen=True)

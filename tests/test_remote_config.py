@@ -11,6 +11,7 @@ from fintracka.remote_config import (
     finish_remote_run,
     load_remote_settings,
     reserve_remote_sequence,
+    set_remote_enabled,
     start_remote_run,
 )
 
@@ -53,7 +54,7 @@ def test_remote_settings_default_disabled_and_configuration_keeps_secrets_out_of
         interval_minutes=90,
     )
 
-    assert configured.enabled is True
+    assert configured.enabled is False
     assert configured.viewer_url == "https://viewer.example.test"
     assert configured.publisher_url == "https://publisher.example.test/v1/snapshots"
     assert (configured.history_months, configured.interval_minutes) == (4, 90)
@@ -63,6 +64,19 @@ def test_remote_settings_default_disabled_and_configuration_keeps_secrets_out_of
     assert "client-id-secret-too" not in dump
     assert "access-secret-value" not in dump
     assert "access-secret-value" not in database_path.read_bytes().decode("utf-8", errors="ignore")
+
+    enabled = set_remote_enabled(connection, True)
+    assert enabled.enabled is True
+    disabled = set_remote_enabled(connection, False)
+    assert disabled.enabled is False
+
+
+def test_remote_automation_cannot_be_enabled_before_configuration(tmp_path) -> None:
+    connection = connect(tmp_path / "ledger.sqlite3")
+    migrate(connection)
+
+    with pytest.raises(ValueError, match="configured"):
+        set_remote_enabled(connection, True)
 
 
 @pytest.mark.parametrize(

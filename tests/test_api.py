@@ -24,7 +24,7 @@ from fintracka.plaid_adapter import ConnectedItem, InstitutionInfo, LinkSession,
 from fintracka.plaid_service import complete_plaid_connection, configure_plaid
 from fintracka.planning import set_recurring_target
 from fintracka.providers import NormalizedAccount, NormalizedBalance, NormalizedTransaction, SyncBatch
-from fintracka.remote_config import configure_remote
+from fintracka.remote_config import configure_remote, set_remote_enabled
 from fintracka.savings_goals import initialize_goal_ledger, update_savings_goal
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
 from fintracka.sync import apply_batch
@@ -480,6 +480,7 @@ def test_remote_settings_publish_and_purge_are_local_csrf_protected_and_redacted
         access_client_id="private-client-id",
         access_client_secret="private-client-secret",
     )
+    set_remote_enabled(connection, True)
     connection.close()
     published: list[str] = []
     purged: list[Path] = []
@@ -617,6 +618,7 @@ def test_startup_sync_publishes_after_sync_and_startup_without_sync_still_publis
         access_client_id="id",
         access_client_secret="secret",
     )
+    set_remote_enabled(connection, True)
     connection.close()
     events: list[str] = []
     monkeypatch.setattr(api_module, "sync_plaid_connections", lambda *args, **kwargs: events.append("sync"))

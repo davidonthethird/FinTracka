@@ -85,7 +85,7 @@ def configure_remote(
         connection.execute(
             """
             UPDATE remote_settings
-            SET enabled = 1, viewer_url = ?, publisher_url = ?, history_months = ?,
+            SET enabled = 0, viewer_url = ?, publisher_url = ?, history_months = ?,
                 interval_minutes = ?, access_client_id_ref = ?,
                 access_client_secret_ref = ?, last_error_code = NULL, updated_at = ?
             WHERE id = 1
@@ -117,6 +117,37 @@ def configure_remote(
 
     for reference in previous_refs:
         _delete_quietly(secrets, reference)
+    return load_remote_settings(connection)
+
+
+def set_remote_enabled(connection: sqlite3.Connection, enabled: bool) -> RemoteSettings:
+    current = load_remote_settings(connection)
+    if enabled and not all((
+        current.viewer_url,
+        current.publisher_url,
+        current.access_client_id_ref,
+        current.access_client_secret_ref,
+    )):
+        raise ValueError("remote publication must be configured before automation is enabled")
+    now = _now()
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute(
+            "UPDATE remote_settings SET enabled = ?, updated_at = ? WHERE id = 1",
+            (int(enabled), now),
+        )
+        connection.execute(
+            """
+            INSERT INTO audit_events
+            (id, actor, action, entity_type, entity_id, occurred_at)
+            VALUES (?, 'user', ?, 'remote_settings', '1', ?)
+            """,
+            (new_id(), "remote_enable" if enabled else "remote_disable", now),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
     return load_remote_settings(connection)
 
 
@@ -245,4 +276,3 @@ def _delete_quietly(secrets: KeychainSecrets, reference: str) -> None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
