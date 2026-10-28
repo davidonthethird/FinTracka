@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 .playwright-cli/
+.wrangler/
 .worktrees/
 .superpowers/
 node_modules/
