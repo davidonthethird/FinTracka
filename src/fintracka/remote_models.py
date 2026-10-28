@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, RootModel
+from pydantic import BaseModel, ConfigDict
 
 
-class RemoteReadModel(RootModel[dict[str, Any]]):
-    model_config = ConfigDict(frozen=True)
+class RemoteReadModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     def __getitem__(self, key: str) -> Any:
-        return self.root[key]
+        return getattr(self, key)
 
 
 class RemoteOverview(BaseModel):
@@ -27,16 +27,154 @@ class RemoteOverview(BaseModel):
     off_bank_cash_spending_minor: int
 
 
+class RemotePlanningSubcategory(RemoteReadModel):
+    subcategory: str
+    actual_minor: int
+
+
+class RemoteTrendPoint(RemoteReadModel):
+    month: str
+    amount_minor: int
+
+
+class RemotePlanningCategory(RemoteReadModel):
+    category_id: str
+    category: str
+    historical_average_minor: int
+    target_minor: int
+    actual_minor: int
+    remaining_minor: int
+    status: str
+    percent_used_basis_points: int | None
+    subcategories: tuple[RemotePlanningSubcategory, ...]
+    trend: tuple[RemoteTrendPoint, ...]
+    transaction_ids: tuple[str, ...]
+
+
 class RemotePlanningSnapshot(RemoteReadModel):
-    pass
+    month: str
+    target_total_minor: int
+    actual_total_minor: int
+    remaining_total_minor: int
+    planned_income_total_minor: int
+    surplus_shortfall_minor: int
+    categories: tuple[RemotePlanningCategory, ...]
+
+
+class RemoteSavingsAccount(RemoteReadModel):
+    account_id: str
+    name: str
+    owner: str
+    balance_minor: int
+    pool: str | None
+
+
+class RemoteManualAsset(RemoteReadModel):
+    id: str
+    title: str
+    kind: str
+    owner: str
+    current_value_minor: int
+    savings_pool: str | None
+
+
+class RemoteSavingsActivity(RemoteReadModel):
+    transaction_id: str
+    local_date: str
+    title: str
+    kind: str
+    amount_minor: int
+    owner: str
+
+
+class RemoteSavingsMonth(RemoteReadModel):
+    month: str
+    additions_minor: int
+    spending_draw_minor: int
+    closing_minor: int
+
+
+class RemoteSavingsGoal(RemoteReadModel):
+    goal_id: str
+    name: str
+    pool: str
+    owner: str
+    balance_minor: int
+    monthly_target_minor: int
+    monthly_saved_minor: int
+    monthly_funded_basis_points: int | None
+    overall_target_minor: int | None
+    overall_remaining_minor: int | None
+    months: tuple[RemoteSavingsMonth, ...]
+
+
+class RemoteSavingsGoalLedger(RemoteReadModel):
+    regular_minor: int
+    retirement_minor: int
+    combined_minor: int
+    goals: tuple[RemoteSavingsGoal, ...]
 
 
 class RemoteSavingsSnapshot(RemoteReadModel):
-    pass
+    month: str
+    owner: str | None
+    connected_total_minor: int
+    manual_savings_minor: int
+    investments_minor: int
+    other_assets_minor: int
+    combined_total_minor: int
+    contributions_minor: int
+    withdrawals_minor: int
+    earnings_minor: int
+    accounts: tuple[RemoteSavingsAccount, ...]
+    manual_assets: tuple[RemoteManualAsset, ...]
+    activity: tuple[RemoteSavingsActivity, ...]
+    goal_ledger: RemoteSavingsGoalLedger | None
+
+
+class RemoteCashFlow(RemoteReadModel):
+    income_minor: int
+    spending_minor: int
+    net_minor: int
+
+
+class RemoteReportCategory(RemoteReadModel):
+    category_id: str | None
+    category: str
+    amount_minor: int
+
+
+class RemoteReportOwner(RemoteReadModel):
+    owner: str
+    amount_minor: int
+
+
+class RemoteFlowNode(RemoteReadModel):
+    id: str
+    label: str
+    kind: str
+    amount_minor: int
+    entry_ids: tuple[str, ...]
+
+
+class RemoteFlowLink(RemoteReadModel):
+    source: int
+    target: int
+    amount_minor: int
+    entry_ids: tuple[str, ...]
+
+
+class RemoteCashFlowPaths(RemoteReadModel):
+    month: str
+    nodes: tuple[RemoteFlowNode, ...]
+    links: tuple[RemoteFlowLink, ...]
 
 
 class RemoteReportSnapshot(RemoteReadModel):
-    pass
+    cash_flow: RemoteCashFlow
+    spending_by_category: tuple[RemoteReportCategory, ...]
+    spending_by_owner: tuple[RemoteReportOwner, ...]
+    cash_flow_paths: RemoteCashFlowPaths | None = None
 
 
 class RemoteSourceFreshness(BaseModel):

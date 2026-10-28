@@ -7,7 +7,7 @@ from typing import Literal
 
 from fintracka.db import connect, migrate
 from fintracka.keychain import KeychainSecrets
-from fintracka.locks import ProcessLock
+from fintracka.locks import ProcessLock, ProcessLockError
 from fintracka.remote_client import PublishResult, RemotePublishError, RemotePublisherClient
 from fintracka.remote_config import (
     RemoteSettings,
@@ -36,6 +36,24 @@ def publish_remote_snapshot(
         [RemoteSettings, KeychainSecrets], RemotePublisherClient
     ] = RemotePublisherClient.from_settings,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+) -> PublishResult | None:
+    try:
+        return _publish_remote_snapshot_locked(
+            database_path, secrets, reason=reason, client_factory=client_factory, now=now
+        )
+    except ProcessLockError:
+        return None
+
+
+def _publish_remote_snapshot_locked(
+    database_path: Path,
+    secrets: KeychainSecrets,
+    *,
+    reason: PublishReason,
+    client_factory: Callable[
+        [RemoteSettings, KeychainSecrets], RemotePublisherClient
+    ],
+    now: Callable[[], datetime],
 ) -> PublishResult | None:
     with ProcessLock(database_path.parent / "fintracka-remote.lock"):
         connection = connect(database_path)

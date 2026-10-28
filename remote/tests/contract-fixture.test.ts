@@ -19,6 +19,7 @@ describe("remote snapshot contract", () => {
     [{ ...fixture, transactions: [{ ...fixture.transactions[0], currency: "usd" }] }],
     [{ ...fixture, transactions: [{ ...fixture.transactions[0], amount_minor: 1.5 }] }],
     [{ ...fixture, planning: { bad: { notes: "private" } } }],
+    [{ ...fixture, planning: Object.fromEntries(Object.entries(fixture.planning).map(([key, value]: [string, any], index) => [key, index ? value : { ...value, unexpected: true }])) }],
   ])("rejects unsupported, extra, malformed, floating, or forbidden data", (value) => {
     expect(() => parseRemoteSnapshot(value)).toThrow();
   });

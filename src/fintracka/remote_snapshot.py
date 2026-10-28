@@ -7,6 +7,7 @@ import sqlite3
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fintracka.ids import new_id
 from fintracka.planning import planning_snapshot
@@ -27,6 +28,7 @@ from fintracka.savings_goals import savings_goal_overview
 
 MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024
 OWNERS = (None, "David", "Ariela", "Shared")
+REPORTING_ZONE = ZoneInfo("America/New_York")
 
 
 class SnapshotTooLargeError(ValueError):
@@ -61,7 +63,8 @@ def build_remote_snapshot(
     boundary = "remote_snapshot_read"
     connection.execute(f"SAVEPOINT {boundary}" if nested else "BEGIN")
     try:
-        month = now.date().strftime("%Y-%m")
+        reporting_date = now.astimezone(REPORTING_ZONE).date()
+        month = reporting_date.strftime("%Y-%m")
         aggregate_months = _months_ending(month, 12)
         detail_months = _months_ending(month, history_months)
         history_start = detail_months[0] + "-01"
@@ -77,26 +80,24 @@ def build_remote_snapshot(
         planning_models: dict[str, RemotePlanningSnapshot] = {}
         for window in range(1, 13):
             for owner in OWNERS:
-                value = planning_snapshot(connection, month, window, owner, today=now.date())
+                value = planning_snapshot(connection, month, window, owner, today=reporting_date)
                 planning_models[view_key(month, window=window, owner=owner)] = RemotePlanningSnapshot(
-                    root=_json_value(value)
+                    **_planning_model(value)
                 )
         savings_models = {
             view_key(month, owner=owner): RemoteSavingsSnapshot(
-                root=_savings_model(connection, month, owner)
+                **_savings_model(connection, month, owner)
             )
             for owner in OWNERS
         }
         reports_models = {
             view_key(item_month): RemoteReportSnapshot(
-                root={
+                **{
                     "cash_flow": _json_value(cash_flow(connection, item_month)),
                     "spending_by_category": spending_by_category(connection, item_month),
                     "spending_by_owner": spending_by_owner(connection, item_month),
-                    **(
-                        {"cash_flow_paths": _strip_private(cash_flow_paths(connection, item_month))}
-                        if item_month in detail_months else {}
-                    ),
+                    **({"cash_flow_paths": _cash_flow_paths_model(connection, item_month)}
+                       if item_month in detail_months else {}),
                 }
             )
             for item_month in aggregate_months
@@ -222,12 +223,136 @@ def _transactions(
 def _savings_model(
     connection: sqlite3.Connection, month: str, owner: str | None
 ) -> dict[str, Any]:
-    result = _json_value(savings_summary(connection, month, owner))
+    summary = savings_summary(connection, month, owner)
+    result = {
+        "month": summary.month,
+        "owner": summary.owner,
+        "connected_total_minor": summary.connected_total_minor,
+        "manual_savings_minor": summary.manual_savings_minor,
+        "investments_minor": summary.investments_minor,
+        "other_assets_minor": summary.other_assets_minor,
+        "combined_total_minor": summary.combined_total_minor,
+        "contributions_minor": summary.contributions_minor,
+        "withdrawals_minor": summary.withdrawals_minor,
+        "earnings_minor": summary.earnings_minor,
+        "accounts": [
+            {
+                "account_id": item.account_id,
+                "name": item.name,
+                "owner": item.owner,
+                "balance_minor": item.balance_minor,
+                "pool": item.pool,
+            }
+            for item in summary.accounts
+        ],
+        "manual_assets": [
+            {
+                "id": item.id,
+                "title": item.title,
+                "kind": item.kind,
+                "owner": item.owner,
+                "current_value_minor": item.current_value_minor,
+                "savings_pool": item.savings_pool,
+            }
+            for item in summary.manual_assets
+        ],
+        "activity": [
+            {
+                "transaction_id": item.transaction_id,
+                "local_date": item.local_date,
+                "title": item.title,
+                "kind": item.kind,
+                "amount_minor": item.amount_minor,
+                "owner": item.owner,
+            }
+            for item in summary.activity
+        ],
+    }
     initialized = connection.execute("SELECT 1 FROM savings_settings WHERE id = 1").fetchone()
     result["goal_ledger"] = (
-        _json_value(savings_goal_overview(connection, month, owner)) if initialized else None
+        _goal_ledger_model(savings_goal_overview(connection, month, owner)) if initialized else None
     )
     return result
+
+
+def _planning_model(value: Any) -> dict[str, Any]:
+    return {
+        "month": value.month,
+        "target_total_minor": value.target_total_minor,
+        "actual_total_minor": value.actual_total_minor,
+        "remaining_total_minor": value.remaining_total_minor,
+        "planned_income_total_minor": value.planned_income_total_minor,
+        "surplus_shortfall_minor": value.surplus_shortfall_minor,
+        "categories": [
+            {
+                "category_id": item.category_id,
+                "category": item.category,
+                "historical_average_minor": item.historical_average_minor,
+                "target_minor": item.target_minor,
+                "actual_minor": item.actual_minor,
+                "remaining_minor": item.remaining_minor,
+                "status": item.status,
+                "percent_used_basis_points": item.percent_used_basis_points,
+                "subcategories": [
+                    {"subcategory": child.subcategory, "actual_minor": child.actual_minor}
+                    for child in item.subcategories
+                ],
+                "trend": [
+                    {"month": point.month, "amount_minor": point.amount_minor}
+                    for point in item.trend[-12:]
+                ],
+                "transaction_ids": list(item.transaction_ids),
+            }
+            for item in value.categories
+        ],
+    }
+
+
+def _goal_ledger_model(value: Any) -> dict[str, Any]:
+    return {
+        "regular_minor": value.regular_minor,
+        "retirement_minor": value.retirement_minor,
+        "combined_minor": value.combined_minor,
+        "goals": [
+            {
+                "goal_id": goal.goal_id,
+                "name": goal.name,
+                "pool": goal.pool,
+                "owner": goal.owner,
+                "balance_minor": goal.balance_minor,
+                "monthly_target_minor": goal.monthly_target_minor,
+                "monthly_saved_minor": goal.monthly_saved_minor,
+                "monthly_funded_basis_points": goal.monthly_funded_basis_points,
+                "overall_target_minor": goal.overall_target_minor,
+                "overall_remaining_minor": goal.overall_remaining_minor,
+                "months": [
+                    {
+                        "month": point.month,
+                        "additions_minor": point.additions_minor,
+                        "spending_draw_minor": point.spending_draw_minor,
+                        "closing_minor": point.closing_minor,
+                    }
+                    for point in goal.months[-12:]
+                ],
+            }
+            for goal in value.goals
+        ],
+    }
+
+
+def _cash_flow_paths_model(connection: sqlite3.Connection, month: str) -> dict[str, Any]:
+    value = cash_flow_paths(connection, month)
+    return {
+        "month": value["month"],
+        "nodes": [
+            {key: item[key] for key in ("id", "label", "kind", "amount_minor", "entry_ids")}
+            for item in value["nodes"]
+        ],
+        "links": [
+            {key: item[key] for key in ("source", "target", "amount_minor", "entry_ids")}
+            for item in value["links"]
+        ],
+    }
 
 
 def _months_ending(month: str, count: int) -> tuple[str, ...]:
@@ -249,15 +374,3 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     raise TypeError(f"unsupported snapshot value: {type(value).__name__}")
-
-
-def _strip_private(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: _strip_private(item)
-            for key, item in value.items()
-            if key not in {"notes"}
-        }
-    if isinstance(value, list):
-        return [_strip_private(item) for item in value]
-    return value

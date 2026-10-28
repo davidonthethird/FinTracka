@@ -65,6 +65,35 @@ def test_snapshot_contains_six_transaction_months_and_twelve_month_aggregates(da
     }
 
 
+def test_snapshot_uses_new_york_month_at_utc_month_boundary(database) -> None:
+    snapshot = build_remote_snapshot(
+        database,
+        source_sequence=8,
+        history_months=1,
+        now=datetime(2026, 11, 1, 1, 0, tzinfo=timezone.utc),
+        snapshot_id="snapshot-boundary",
+    )
+
+    assert snapshot.history_start == "2026-10-01"
+    assert snapshot.history_end == "2026-10-31"
+    assert view_key("2026-10", window=6) in snapshot.planning
+
+
+def test_nested_snapshot_models_publish_only_viewer_fields(database) -> None:
+    snapshot = _snapshot(database)
+    planning = snapshot.planning[view_key("2026-10", window=6)].model_dump()
+    savings = snapshot.savings[view_key("2026-10")].model_dump()
+
+    assert set(planning) == {
+        "month", "target_total_minor", "actual_total_minor", "remaining_total_minor",
+        "planned_income_total_minor", "surplus_shortfall_minor", "categories",
+    }
+    assert all("updated_at" not in category for category in planning["categories"])
+    assert all(set(account) == {"account_id", "name", "owner", "balance_minor", "pool"}
+               for account in savings["accounts"])
+    assert all(len(category["trend"]) <= 12 for category in planning["categories"])
+
+
 def test_snapshot_is_deterministic_for_fixed_clock_and_sequence(database) -> None:
     first = _snapshot(database)
     second = _snapshot(database)

@@ -28,7 +28,7 @@ export async function activateSnapshot(
     const created = await bucket.put(snapshotKey, payload, {
       onlyIf: { etagDoesNotMatch: "*" },
       httpMetadata: { contentType: "application/json", cacheControl: "no-store" },
-      customMetadata: { digest },
+      customMetadata: { digest, source_sequence: String(document.source_sequence) },
     });
     if (!created && (await bucket.head(snapshotKey))?.customMetadata?.digest !== digest) {
       throw new StorageError("SNAPSHOT_CONFLICT");
@@ -74,7 +74,7 @@ export async function activateSnapshot(
     if (!existing) await bucket.delete(snapshotKey);
     throw new StorageError("SEQUENCE_CONFLICT");
   }
-  await retainActiveAndPrevious(bucket, manifest);
+  await retainActiveAndPrevious(bucket);
   return manifest;
 }
 
@@ -93,12 +93,19 @@ async function readActive(bucket: R2Bucket): Promise<ActiveManifest | null> {
   return object ? object.json<ActiveManifest>() : null;
 }
 
-async function retainActiveAndPrevious(bucket: R2Bucket, manifest: ActiveManifest): Promise<void> {
+async function retainActiveAndPrevious(bucket: R2Bucket): Promise<void> {
+  const manifest = await readActive(bucket);
+  if (!manifest) return;
   const keep = new Set([
     `snapshots/${manifest.snapshot_id}.json`,
     ...(manifest.previous_snapshot_id ? [`snapshots/${manifest.previous_snapshot_id}.json`] : []),
   ]);
   const listed = await bucket.list({ prefix: "snapshots/" });
-  const remove = listed.objects.map((item) => item.key).filter((key) => !keep.has(key));
+  const remove: string[] = [];
+  for (const item of listed.objects) {
+    if (keep.has(item.key)) continue;
+    const sequence = Number((await bucket.head(item.key))?.customMetadata?.source_sequence);
+    if (Number.isInteger(sequence) && sequence < manifest.source_sequence - 1) remove.push(item.key);
+  }
   if (remove.length) await bucket.delete(remove);
 }

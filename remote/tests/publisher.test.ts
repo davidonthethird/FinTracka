@@ -73,6 +73,38 @@ describe("atomic snapshot activation", () => {
     await expect(activateSnapshot(bucket as any, snapshot("other", 3), digest(snapshot("other", 3)))).rejects.toMatchObject({ code: "SEQUENCE_CONFLICT" });
   });
 
+  it("does not let delayed cleanup delete a newer active snapshot", async () => {
+    let cleanupStarted!: () => void;
+    let releaseCleanup!: () => void;
+    const started = new Promise<void>((resolve) => { cleanupStarted = resolve; });
+    const released = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    class DelayedBucket extends MemoryBucket {
+      delayNextList = false;
+      override async list(options: { prefix?: string } = {}) {
+        if (this.delayNextList) {
+          this.delayNextList = false;
+          cleanupStarted();
+          await released;
+        }
+        return super.list(options);
+      }
+    }
+    const bucket = new DelayedBucket();
+    const one = snapshot("one", 1);
+    await activateSnapshot(bucket as any, one, digest(one));
+    bucket.delayNextList = true;
+    const two = snapshot("two", 2);
+    const delayed = activateSnapshot(bucket as any, two, digest(two));
+    await started;
+    const three = snapshot("three", 3);
+    await activateSnapshot(bucket as any, three, digest(three));
+    releaseCleanup();
+    await delayed;
+
+    expect(await bucket.get("snapshots/three.json")).toBeTruthy();
+    expect(await (await bucket.get("active.json"))!.json()).toMatchObject({ snapshot_id: "three" });
+  });
+
   it("does not replace active state when activation fails", async () => {
     const bucket = new MemoryBucket();
     const one = snapshot("one", 1);

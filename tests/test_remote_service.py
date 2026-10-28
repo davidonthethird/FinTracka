@@ -11,7 +11,7 @@ import pytest
 from e2e.server import seed_database
 from fintracka.db import connect
 from fintracka.keychain import KeychainSecrets, SecretStoreUnavailable
-from fintracka.locks import ProcessLock, ProcessLockError
+from fintracka.locks import ProcessLock
 from fintracka.remote_client import RemotePublishError, RemotePublisherClient
 from fintracka.remote_config import configure_remote, load_remote_settings
 from fintracka.remote_service import publish_remote_snapshot
@@ -190,5 +190,4 @@ def test_publish_service_redacts_locked_keychain_failure(tmp_path) -> None:
 def test_publish_service_honors_concurrent_lock(tmp_path) -> None:
     path, secrets = _configured_database(tmp_path)
     with ProcessLock(tmp_path / "fintracka-remote.lock"):
-        with pytest.raises(ProcessLockError):
-            publish_remote_snapshot(path, secrets, reason="manual")
+        assert publish_remote_snapshot(path, secrets, reason="manual") is None

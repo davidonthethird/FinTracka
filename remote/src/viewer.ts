@@ -12,7 +12,7 @@ interface Manifest {
 
 const securityHeaders = {
   "Cache-Control": "no-store",
-  "Content-Security-Policy": "default-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+  "Content-Security-Policy": "default-src 'self'; connect-src 'self'; img-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
   "Referrer-Policy": "no-referrer",
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
