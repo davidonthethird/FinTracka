@@ -20,6 +20,7 @@ from fintracka.launchd import install_schedule, remove_schedule, schedule_status
 from fintracka.locks import ProcessLock
 from fintracka.plaid_service import build_plaid_adapter, configure_plaid, sync_plaid_connections
 from fintracka.remote_config import configure_remote, load_remote_settings
+from fintracka.remote_client import RemotePublishError
 from fintracka.remote_service import publish_remote_snapshot, purge_remote_snapshots
 from fintracka.remote_snapshot import build_remote_snapshot, serialize_remote_snapshot, snapshot_digest
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
@@ -133,6 +134,10 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 connection.close()
         print(f"Completed {len(runs)} Plaid connection sync(s).")
+        try:
+            publish_remote_snapshot(database_path, KeychainSecrets(), reason="sync")
+        except RemotePublishError as error:
+            print(f"Remote publication failed ({error.code}); bank sync still succeeded.", file=sys.stderr)
         return 0
     if args.command == "export" and args.export_type == "excel":
         if args.output is None:

@@ -523,7 +523,7 @@ def test_remote_settings_publish_and_purge_are_local_csrf_protected_and_redacted
         queued = client.post("/api/v1/settings/remote/publish", json={}, headers=headers)
         assert queued.status_code == 202
         assert _wait_for_job(client, queued.json()["job_id"])["status"] == "succeeded"
-        assert published == ["manual"]
+        assert published == ["startup", "manual"]
 
         assert client.request(
             "DELETE", "/api/v1/settings/remote/snapshot",
@@ -590,8 +590,60 @@ def test_each_startup_queues_sync_for_live_connection(tmp_path: Path) -> None:
     connection.close()
 
 
+def test_startup_sync_publishes_after_sync_and_startup_without_sync_still_publishes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    adapter = FakePlaidAdapter()
+    complete_plaid_connection(connection, adapter, "public-production", "david")
+    keychain = KeychainSecrets(FakeKeyring())
+    configure_remote(
+        connection,
+        keychain,
+        viewer_url="https://viewer.example.test",
+        publisher_url="https://publisher.example.test",
+        access_client_id="id",
+        access_client_secret="secret",
+    )
+    connection.close()
+    events: list[str] = []
+    monkeypatch.setattr(api_module, "sync_plaid_connections", lambda *args, **kwargs: events.append("sync"))
+    monkeypatch.setattr(
+        api_module,
+        "publish_remote_snapshot",
+        lambda database_path, secrets, reason: events.append(f"publish:{reason}"),
+    )
+
+    app = create_app(path, bootstrap_token="bootstrap", remote_secrets_factory=lambda: keychain)
+    with TestClient(app):
+        for _ in range(200):
+            check = connect(path)
+            status = check.execute(
+                "SELECT status FROM jobs WHERE kind = 'plaid_sync' ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            check.close()
+            if status is not None and status[0] == "succeeded":
+                break
+            time.sleep(0.01)
+    assert events == ["sync", "publish:sync"]
+
+    connection = connect(path)
+    connection.execute("UPDATE provider_connections SET status = 'revoked'")
+    connection.close()
+    events.clear()
+    app = create_app(path, bootstrap_token="second", remote_secrets_factory=lambda: keychain)
+    with TestClient(app):
+        for _ in range(200):
+            if events:
+                break
+            time.sleep(0.01)
+    assert events == ["publish:startup"]
+
+
 def test_manual_sync_attempts_both_profiles_and_marks_job_failed_after_partial_success(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ) -> None:
     path = tmp_path / "ledger.sqlite3"
     connection = connect(path)
@@ -609,6 +661,12 @@ def test_manual_sync_attempts_both_profiles_and_marks_job_failed_after_partial_s
         calls.append((profile, environment))
         return {"david": david, "ariela": ariela}[profile]
 
+    published: list[str] = []
+    monkeypatch.setattr(
+        api_module,
+        "publish_remote_snapshot",
+        lambda database_path, secrets, reason: published.append(reason),
+    )
     app = create_app(path, bootstrap_token="bootstrap", plaid_adapter_factory=adapter_factory)
     with TestClient(app) as client:
         check = connect(path)
@@ -633,6 +691,7 @@ def test_manual_sync_attempts_both_profiles_and_marks_job_failed_after_partial_s
     ) == ("repair", "ITEM_REPAIR_REQUIRED")
     check.close()
     assert calls == [("david", "production"), ("ariela", "sandbox")]
+    assert published == []
 
 
 def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:

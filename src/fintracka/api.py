@@ -68,6 +68,7 @@ from fintracka.reports import (
     spending_by_owner,
 )
 from fintracka.readiness import filevault_enabled, readiness_report
+from fintracka.remote_client import RemotePublishError
 from fintracka.remote_config import load_remote_settings
 from fintracka.remote_service import publish_remote_snapshot, purge_remote_snapshots
 from fintracka.security import LocalSessions, host_allowed, origin_allowed
@@ -508,6 +509,7 @@ def create_app(
     async def lifespan(_: FastAPI):  # type: ignore[no-untyped-def]
         startup = connect(path)
         try:
+            remote_enabled = load_remote_settings(startup).enabled
             if _startup_sync_due(startup):
                 def catch_up(connection: sqlite3.Connection) -> None:
                     with ProcessLock(path.parent / "fintracka.lock"):
@@ -517,8 +519,17 @@ def create_app(
                                 connection, profile, environment
                             ),
                         )
+                    if remote_enabled:
+                        _publish_remote_safely(path, remote_secrets_factory, "sync")
 
                 jobs.submit("plaid_sync", catch_up)
+            elif remote_enabled:
+                jobs.submit(
+                    "remote_publish",
+                    lambda connection: _publish_remote_safely(
+                        path, remote_secrets_factory, "startup"
+                    ),
+                )
         finally:
             startup.close()
         try:
@@ -1865,6 +1876,7 @@ def create_app(
                     connection,
                     lambda profile, environment: plaid_adapter(connection, profile, environment),
                 )
+            _publish_remote_safely(path, remote_secrets_factory, "sync")
 
         return {"job_id": jobs.submit("plaid_sync", work)}
 
@@ -2228,6 +2240,17 @@ def _startup_sync_due(connection: sqlite3.Connection) -> bool:
     if running is not None:
         return False
     return True
+
+
+def _publish_remote_safely(
+    database_path: Path,
+    secrets_factory: Callable[[], KeychainSecrets],
+    reason: Literal["startup", "sync"],
+) -> None:
+    try:
+        publish_remote_snapshot(database_path, secrets_factory(), reason=reason)
+    except RemotePublishError:
+        pass
 
 
 def _encode_cursor(local_date: str, transaction_id: str) -> str:

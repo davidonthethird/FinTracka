@@ -84,11 +84,18 @@ def test_configure_plaid_profiles_and_sync_routes_every_connection(
         "build_plaid_adapter",
         build,
     )
+    published: list[tuple[object, str]] = []
+    monkeypatch.setattr(
+        cli_module,
+        "publish_remote_snapshot",
+        lambda path, keychain, reason: published.append((path, reason)),
+    )
 
     assert main(["sync", "--data-dir", str(tmp_path)]) == 0
     connection = connect(tmp_path / "fintracka.sqlite3")
     assert connection.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 2
     assert calls == [("david", "production"), ("ariela", "sandbox")]
+    assert published == [(tmp_path.resolve() / "fintracka.sqlite3", "sync")]
 
 
 def test_configure_google_reads_desktop_client_json_from_stdin(tmp_path, monkeypatch) -> None:
