@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+import ssl
 from datetime import datetime, timezone
 from io import BytesIO
 from urllib.error import HTTPError
@@ -45,6 +46,27 @@ class Response:
         return self.body
 
 
+def test_native_opener_uses_system_trust_and_keyword_timeout(monkeypatch) -> None:
+    from fintracka.remote_client import _native_urlopen
+
+    context = object()
+    captured = {}
+    protocols = []
+    monkeypatch.setattr(
+        "truststore.SSLContext", lambda protocol: protocols.append(protocol) or context
+    )
+    monkeypatch.setattr(
+        "fintracka.remote_client.urllib.request.urlopen",
+        lambda request, **kwargs: captured.update(request=request, **kwargs) or Response({}),
+    )
+    request = object()
+
+    _native_urlopen(request, 15)
+
+    assert captured == {"request": request, "timeout": 15, "context": context}
+    assert protocols == [ssl.PROTOCOL_TLS_CLIENT]
+
+
 def test_client_sends_service_token_digest_and_accepts_idempotent_response() -> None:
     requests = []
 
@@ -66,6 +88,7 @@ def test_client_sends_service_token_digest_and_accepts_idempotent_response() -> 
     assert request.get_header("Cf-access-client-id") == "client-id"
     assert request.get_header("Cf-access-client-secret") == "client-secret"
     assert request.get_header("X-fintracka-digest") == "abc123"
+    assert request.get_header("User-agent") == "FinTracka/0.1"
     assert timeout == 15
     assert result.idempotent is True
 

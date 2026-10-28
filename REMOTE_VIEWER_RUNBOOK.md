@@ -4,14 +4,14 @@ The remote viewer is a sanitized, read-only copy of the local ledger. SQLite on 
 
 ## Release gate
 
-Do not publish household data until every staging and approval item below is checked. As of 2026-10-27, local synthetic verification passes and Wrangler is authenticated to the intended account, but Cloudflare staging is **not deployed** because R2 is not enabled for that account (`10042`). Household approval and the live Cloudflare/Plaid policy review are also still required.
+Do not publish household data until every staging and approval item below is checked. As of 2026-10-28, the private R2 bucket and both Access-protected staging Workers are deployed with preview URLs disabled. Only the canonical synthetic fixture is stored remotely. Household approval, both interactive viewer logins, the remaining staging drills, and the live Cloudflare/Plaid policy review are still required.
 
 - [x] Python, Worker, frontend, contract, mobile, browser-storage, interruption, and dependency tests pass with synthetic data.
-- [x] Canonical snapshot is 530,072 bytes, below the 5 MiB hard gate. The viewer bundle is 252,763 bytes JavaScript plus 18,379 bytes CSS before transfer compression.
+- [x] Canonical snapshot is 530,210 bytes, below the 5 MiB hard gate. The viewer bundle is 252,763 bytes JavaScript plus 18,379 bytes CSS before transfer compression.
 - [x] Local Playwright exercised 320/375/390/430/768/1280 px, all five screens, filters, drawers, stale/no-snapshot states, and no browser persistence.
 - [x] Wrangler authenticated to the intended household Cloudflare account.
-- [ ] R2 enabled for the account after reviewing and accepting any Cloudflare storage/billing terms.
-- [ ] Synthetic staging deployed and the acceptance matrix below recorded.
+- [x] R2 enabled for the account after reviewing and accepting Cloudflare storage/billing terms.
+- [ ] Synthetic staging deployed; completed acceptance results are recorded below and interactive/drill checks remain pending.
 - [ ] David and Ariela explicitly approve Cloudflare storing the sanitized transaction snapshot.
 - [ ] Current Plaid agreement/use-case and Cloudflare privacy, retention, location, and deletion terms reviewed by the household.
 - [ ] Production starts empty; one manual live publish is reconciled before automation is enabled.
@@ -74,18 +74,20 @@ Record date, pass/fail, snapshot byte count, upload wall time, Worker CPU/reques
 
 | Check | Required result | Status |
 |---|---|---|
-| Viewer exact David identity + MFA | Allowed | Not run |
+| Viewer exact David identity + MFA | Allowed | Pending interactive login |
 | Viewer exact Ariela identity + MFA | Allowed | Not run |
-| Any other/no identity | Denied before Worker | Not run |
-| Publisher valid service token | POST/DELETE allowed | Not run |
-| Missing/wrong/expired token | 401/403, no redirect | Not run |
-| Publisher unsupported method/path | 404/405, no details | Not run |
+| Any other/no identity | Denied before Worker | Pass for no identity (Access login redirect) |
+| Publisher valid service token | POST/DELETE allowed | Pass for POST; DELETE pending purge drill |
+| Missing/wrong/expired token | 401/403, no redirect | Pass for missing/wrong token |
+| Publisher unsupported method/path | 404/405, no details | Pass |
 | Viewer mutation methods | 405 | Not run |
-| Production and preview Worker URLs | Both Access-protected | Not run |
-| Direct/public R2 URL | Unavailable | Not run |
-| Publish interrupted/replayed/lower sequence | Previous active remains readable | Covered locally; stage pending |
+| Production and preview Worker URLs | Both Access-protected | Preview URLs disabled; production intentionally absent |
+| Direct/public R2 URL | Unavailable | Pass (private bucket; no public endpoint) |
+| Publish interrupted/replayed/lower sequence | Previous active remains readable | Replay/lower sequence pass; interruption covered locally |
 | Mac off | Last snapshot remains viewable and shows freshness | Not run |
 | Purge | Viewer unavailable; bucket empty | Not run |
+
+Synthetic staging publication on 2026-10-28 uploaded 530,210 bytes in 1.53 seconds. Cloudflare observability and iPhone cellular timing remain to be recorded.
 
 ## Phase 2 automation drill
 

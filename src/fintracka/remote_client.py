@@ -2,14 +2,22 @@ from __future__ import annotations
 
 import json
 import socket
+import ssl
 import time
 import urllib.request
 from dataclasses import dataclass
 from typing import Callable
 from urllib.error import HTTPError, URLError
 
+import truststore
+
 from fintracka.keychain import KeychainSecrets, SecretStoreUnavailable
 from fintracka.remote_config import RemoteSettings
+
+
+def _native_urlopen(request: urllib.request.Request, timeout: int):  # type: ignore[no-untyped-def]
+    context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    return urllib.request.urlopen(request, timeout=timeout, context=context)
 
 
 @dataclass(frozen=True)
@@ -33,7 +41,7 @@ class RemotePublisherClient:
         client_id: str,
         client_secret: str,
         *,
-        opener: Callable[..., object] = urllib.request.urlopen,
+        opener: Callable[..., object] = _native_urlopen,
         sleep: Callable[[float], None] = time.sleep,
         timeout: int = 15,
     ) -> None:
@@ -82,6 +90,7 @@ class RemotePublisherClient:
             "CF-Access-Client-Id": self.client_id,
             "CF-Access-Client-Secret": self.client_secret,
             "Accept": "application/json",
+            "User-Agent": "FinTracka/0.1",
         }
         if payload is not None:
             headers["Content-Type"] = "application/json"
