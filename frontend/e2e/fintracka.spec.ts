@@ -465,14 +465,15 @@ test("synthetic finance workflow with Plaid profiles, reports, and remote viewer
 
   let remotePublished = false;
   let remotePurged = false;
+  let remoteScheduleInstalled = true;
   await page.route("**/api/v1/settings/remote", (route) => {
     return route.fulfill({ contentType: "application/json", body: JSON.stringify({
       enabled: true,
       viewer_url: "https://viewer.example.test",
       history_months: 12,
       interval_minutes: 60,
-      schedule_installed: true,
-      schedule_loaded: true,
+      schedule_installed: remoteScheduleInstalled,
+      schedule_loaded: remoteScheduleInstalled,
       last_source_sequence: 7,
       last_bank_sync_at: "2026-10-27T14:00:00Z",
       last_snapshot_id: "snapshot-7",
@@ -489,6 +490,14 @@ test("synthetic finance workflow with Plaid profiles, reports, and remote viewer
     expect(route.request().postDataJSON()).toEqual({ confirmation: "DELETE REMOTE COPY" });
     remotePurged = true;
     return route.fulfill({ contentType: "application/json", body: JSON.stringify({ job_id: "job-remote-purge" }) });
+  });
+  await page.route("**/api/v1/settings/remote/schedule", (route) => {
+    remoteScheduleInstalled = route.request().method() === "POST";
+    return route.fulfill({
+      status: remoteScheduleInstalled ? 200 : 204,
+      contentType: "application/json",
+      body: remoteScheduleInstalled ? JSON.stringify({ installed: true, loaded: true }) : "",
+    });
   });
   await page.route("**/api/v1/jobs/job-remote-*", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ status: "succeeded" }) }));
 
@@ -511,6 +520,9 @@ test("synthetic finance workflow with Plaid profiles, reports, and remote viewer
   await page.getByRole("button", { name: "Delete remote copy" }).click();
   await expect(page.getByRole("status")).toContainText("Remote deletion succeeded");
   expect(remotePurged).toBe(true);
+  await page.getByRole("button", { name: "Remove hourly publishing" }).click();
+  await expect(page.getByRole("status")).toContainText("Remote publication schedule removed");
+  await expect(page.getByRole("button", { name: "Install hourly publishing" })).toBeVisible();
   expect(await page.evaluate(() => Object.keys(localStorage).sort())).toEqual(["fintracka-categorization-scope", "fintracka-theme"]);
 
   let googleAuthorized = false;

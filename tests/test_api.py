@@ -483,6 +483,7 @@ def test_remote_settings_publish_and_purge_are_local_csrf_protected_and_redacted
     connection.close()
     published: list[str] = []
     purged: list[Path] = []
+    remote_schedule = {"installed": False, "loaded": False}
     monkeypatch.setattr(
         api_module,
         "publish_remote_snapshot",
@@ -498,6 +499,9 @@ def test_remote_settings_publish_and_purge_are_local_csrf_protected_and_redacted
         bootstrap_token="bootstrap",
         remote_secrets_factory=lambda: keychain,
         schedule_status_reader=lambda destination: {"installed": False, "loaded": False},
+        remote_schedule_installer=lambda destination, python, data, interval: remote_schedule.update(installed=True, loaded=True),
+        remote_schedule_remover=lambda destination: remote_schedule.update(installed=False, loaded=False),
+        remote_schedule_status_reader=lambda destination: dict(remote_schedule),
     )
     with TestClient(app) as client:
         assert client.get("/api/v1/settings/remote").status_code == 401
@@ -512,6 +516,12 @@ def test_remote_settings_publish_and_purge_are_local_csrf_protected_and_redacted
         assert "publisher.example" not in serialized
         assert "private-client" not in serialized
         assert "keychain" not in serialized.lower()
+
+        installed = client.post("/api/v1/settings/remote/schedule", json={}, headers=headers)
+        assert installed.json() == {"installed": True, "loaded": True}
+        assert client.get("/api/v1/settings/remote").json()["schedule_loaded"] is True
+        assert client.delete("/api/v1/settings/remote/schedule", headers=headers).status_code == 204
+        assert remote_schedule == {"installed": False, "loaded": False}
 
         assert client.post("/api/v1/settings/remote/publish", json={}).status_code == 403
         assert client.post(

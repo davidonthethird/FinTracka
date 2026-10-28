@@ -16,7 +16,14 @@ from fintracka.db import connect, migrate
 from fintracka.exports import export_excel, export_google
 from fintracka.google_sheets import build_google_gateway, configure_google
 from fintracka.keychain import KeychainSecrets
-from fintracka.launchd import install_schedule, remove_schedule, schedule_status
+from fintracka.launchd import (
+    install_remote_schedule,
+    install_schedule,
+    remote_schedule_status,
+    remove_remote_schedule,
+    remove_schedule,
+    schedule_status,
+)
 from fintracka.locks import ProcessLock
 from fintracka.plaid_service import build_plaid_adapter, configure_plaid, sync_plaid_connections
 from fintracka.remote_config import configure_remote, load_remote_settings
@@ -209,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
         }, sort_keys=True))
         return 0
     if args.command == "remote" and args.remote_action == "publish":
-        result = publish_remote_snapshot(database_path, KeychainSecrets(), reason="manual")
+        result = publish_remote_snapshot(database_path, KeychainSecrets(), reason=args.reason)
         print("Remote publication is disabled." if result is None else f"Published snapshot {result.snapshot_id}.")
         return 0
     if args.command == "remote" and args.remote_action == "status":
@@ -230,6 +237,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "remote" and args.remote_action == "purge":
         purge_remote_snapshots(database_path, KeychainSecrets())
         print("Remote snapshots purged.")
+        return 0
+    if args.command == "remote" and args.remote_action == "schedule":
+        destination = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.remote-publish.plist"
+        if args.schedule_action == "install":
+            connection = connect(database_path)
+            try:
+                migrate(connection)
+                interval_minutes = load_remote_settings(connection).interval_minutes
+            finally:
+                connection.close()
+            install_remote_schedule(destination, Path(sys.executable), data_directory, interval_minutes)
+            print(f"Remote publication schedule installed every {interval_minutes} minutes.")
+        elif args.schedule_action == "status":
+            print(json.dumps(remote_schedule_status(destination), sort_keys=True))
+        else:
+            remove_remote_schedule(destination)
+            print("Remote publication schedule removed.")
         return 0
     parser.error("unsupported command")
     return 2
@@ -286,11 +310,15 @@ def _parser() -> argparse.ArgumentParser:
     remote_preview.add_argument("--output", type=Path)
     remote_publish = remote_subparsers.add_parser("publish")
     remote_publish.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    remote_publish.add_argument("--reason", choices=["manual", "scheduled"], default="manual")
     remote_status = remote_subparsers.add_parser("status")
     remote_status.add_argument("--data-dir", type=Path, default=_default_data_directory())
     remote_purge = remote_subparsers.add_parser("purge")
     remote_purge.add_argument("--data-dir", type=Path, default=_default_data_directory())
     remote_purge.add_argument("--confirm-delete-remote-snapshot", action="store_true", required=True)
+    remote_schedule = remote_subparsers.add_parser("schedule")
+    remote_schedule.add_argument("schedule_action", choices=["install", "status", "remove"])
+    remote_schedule.add_argument("--data-dir", type=Path, default=_default_data_directory())
     return parser
 
 

@@ -42,7 +42,14 @@ from fintracka.manual_cash import (
     delete_manual_cash,
     update_manual_cash,
 )
-from fintracka.launchd import install_schedule, remove_schedule, schedule_status
+from fintracka.launchd import (
+    install_remote_schedule,
+    install_schedule,
+    remote_schedule_status,
+    remove_remote_schedule,
+    remove_schedule,
+    schedule_status,
+)
 from fintracka.ledger import (
     ConflictError,
     IntegrityError,
@@ -491,6 +498,9 @@ def create_app(
     schedule_installer: Callable[[Path, Path, Path], Any] = install_schedule,
     schedule_remover: Callable[[Path], Any] = remove_schedule,
     schedule_status_reader: Callable[[Path], dict[str, bool]] = schedule_status,
+    remote_schedule_installer: Callable[[Path, Path, Path, int], Any] = install_remote_schedule,
+    remote_schedule_remover: Callable[[Path], Any] = remove_remote_schedule,
+    remote_schedule_status_reader: Callable[[Path], dict[str, bool]] = remote_schedule_status,
     filevault_checker: Callable[[], bool] = filevault_enabled,
     remote_secrets_factory: Callable[[], KeychainSecrets] = KeychainSecrets,
 ) -> FastAPI:
@@ -503,7 +513,7 @@ def create_app(
     sessions = LocalSessions(bootstrap_token or secrets.token_urlsafe(32))
     jobs = JobRunner(path)
     launch_agent = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.sync.plist"
-    remote_launch_agent = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.remote.plist"
+    remote_launch_agent = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.remote-publish.plist"
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):  # type: ignore[no-untyped-def]
@@ -651,7 +661,7 @@ def create_app(
     @app.get("/api/v1/settings/remote")
     def remote_settings(database: Database) -> dict[str, object]:
         settings = load_remote_settings(database)
-        scheduler = schedule_status_reader(remote_launch_agent)
+        scheduler = remote_schedule_status_reader(remote_launch_agent)
         last_bank_sync = database.execute(
             "SELECT MAX(last_success_at) FROM provider_connections WHERE provider != 'manual'"
         ).fetchone()[0]
@@ -681,6 +691,23 @@ def create_app(
             publish_remote_snapshot(path, remote_secrets_factory(), reason="manual")
 
         return {"job_id": jobs.submit("remote_publish", work)}
+
+    @app.post("/api/v1/settings/remote/schedule")
+    def install_remote_publish_schedule(
+        payload: EmptyRequest, database: Database
+    ) -> dict[str, bool]:
+        del payload
+        settings = load_remote_settings(database)
+        if not settings.enabled:
+            raise HTTPException(status_code=409, detail="remote publication is not configured")
+        remote_schedule_installer(
+            remote_launch_agent, Path(sys.executable), path.parent, settings.interval_minutes
+        )
+        return remote_schedule_status_reader(remote_launch_agent)
+
+    @app.delete("/api/v1/settings/remote/schedule", status_code=204)
+    def remove_remote_publish_schedule() -> None:
+        remote_schedule_remover(remote_launch_agent)
 
     @app.delete("/api/v1/settings/remote/snapshot", status_code=202)
     def remote_purge(payload: RemotePurgeRequest) -> dict[str, str]:

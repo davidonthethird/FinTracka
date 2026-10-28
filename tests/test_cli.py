@@ -197,13 +197,37 @@ def test_remote_cli_configure_preview_status_publish_and_purge(
         "purge_remote_snapshots",
         lambda path, keychain: purged.append(path),
     )
+    schedules: list[tuple[str, int] | str] = []
+    monkeypatch.setattr(
+        cli_module,
+        "install_remote_schedule",
+        lambda destination, python, data, interval: schedules.append(("install", interval)),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "remote_schedule_status",
+        lambda destination: {"installed": True, "loaded": True},
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "remove_remote_schedule",
+        lambda destination: schedules.append("remove"),
+    )
     assert main(["remote", "publish", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "publish", "--reason", "scheduled", "--data-dir", str(tmp_path)]) == 0
     assert main(["remote", "status", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "schedule", "install", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "schedule", "status", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "schedule", "remove", "--data-dir", str(tmp_path)]) == 0
     assert main([
         "remote", "purge", "--confirm-delete-remote-snapshot", "--data-dir", str(tmp_path)
     ]) == 0
-    assert published == [(tmp_path.resolve() / "fintracka.sqlite3", "manual")]
+    assert published == [
+        (tmp_path.resolve() / "fintracka.sqlite3", "manual"),
+        (tmp_path.resolve() / "fintracka.sqlite3", "scheduled"),
+    ]
     assert purged == [tmp_path.resolve() / "fintracka.sqlite3"]
+    assert schedules == [("install", 60), "remove"]
 
     connection = connect(tmp_path / "fintracka.sqlite3")
     assert load_remote_settings(connection).enabled is True
