@@ -7,7 +7,7 @@ The remote viewer is a sanitized, read-only copy of the local ledger. SQLite on 
 Do not publish household data until every staging and approval item below is checked. As of 2026-10-28, the private R2 bucket and both Access-protected staging Workers are deployed with preview URLs disabled. Only the canonical synthetic fixture is stored remotely. Household approval, both interactive viewer logins, the remaining staging drills, and the live Cloudflare/Plaid policy review are still required.
 
 - [x] Python, Worker, frontend, contract, mobile, browser-storage, interruption, and dependency tests pass with synthetic data.
-- [x] Canonical snapshot is 530,210 bytes, below the 5 MiB hard gate. The viewer bundle is 252,763 bytes JavaScript plus 18,379 bytes CSS before transfer compression.
+- [x] Canonical snapshot is 566,949 bytes, below the 5 MiB hard gate. The viewer bundle is 568,815 bytes JavaScript plus 20,556 bytes CSS before transfer compression.
 - [x] Local Playwright exercised 320/375/390/430/768/1280 px, all five screens, filters, drawers, stale/no-snapshot states, and no browser persistence.
 - [x] Wrangler authenticated to the intended household Cloudflare account.
 - [x] R2 enabled for the account after reviewing and accepting Cloudflare storage/billing terms.

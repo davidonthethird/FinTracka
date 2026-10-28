@@ -83,6 +83,7 @@ def test_nested_snapshot_models_publish_only_viewer_fields(database) -> None:
     snapshot = _snapshot(database)
     planning = snapshot.planning[view_key("2026-10", window=6)].model_dump()
     savings = snapshot.savings[view_key("2026-10")].model_dump()
+    flow = snapshot.reports[view_key("2026-10")].cash_flow_paths
 
     assert set(planning) == {
         "month", "target_total_minor", "actual_total_minor", "remaining_total_minor",
@@ -92,6 +93,11 @@ def test_nested_snapshot_models_publish_only_viewer_fields(database) -> None:
     assert all(set(account) == {"account_id", "name", "owner", "balance_minor", "pool"}
                for account in savings["accounts"])
     assert all(len(category["trend"]) <= 12 for category in planning["categories"])
+    assert flow and flow.entries
+    assert all(set(entry.model_dump()) == {
+        "id", "transaction_id", "local_date", "merchant", "description", "category",
+        "category_id", "amount_minor", "currency", "spending_owner",
+    } for entry in flow.entries)
 
 
 def test_snapshot_is_deterministic_for_fixed_clock_and_sequence(database) -> None:

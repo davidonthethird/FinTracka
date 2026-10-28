@@ -352,6 +352,13 @@ def _cash_flow_paths_model(connection: sqlite3.Connection, month: str) -> dict[s
             {key: item[key] for key in ("source", "target", "amount_minor", "entry_ids")}
             for item in value["links"]
         ],
+        "entries": [
+            {key: item[key] for key in (
+                "id", "transaction_id", "local_date", "merchant", "description", "category",
+                "category_id", "amount_minor", "currency", "spending_owner",
+            )}
+            for item in value["entries"]
+        ],
     }
 
 

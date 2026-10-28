@@ -10,6 +10,16 @@ test("remote viewer is read-only, responsive, drillable, and leaves no financial
     await page.goto(viewer);
     await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.getByRole("button", { name: "Transactions", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Transactions", exact: true })).toBeVisible();
+    const edges = await page.locator(".transaction-entry > b").evaluateAll((amounts) => amounts.map((amount) => Math.round(amount.getBoundingClientRect().right)));
+    expect(new Set(edges).size).toBe(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.getByRole("button", { name: "Reports", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Reports", exact: true })).toBeVisible();
+    await expect(page.locator(width < 1000 ? ".flow-wheel-panel" : ".flow-sankey")).toBeVisible();
+    await expect(page.locator(width < 1000 ? ".flow-sankey" : ".flow-wheel-panel")).toBeHidden();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   }
 
   for (const section of ["Transactions", "Planning", "Savings", "Reports"]) {
@@ -43,6 +53,13 @@ test("remote viewer is read-only, responsive, drillable, and leaves no financial
   await expect(page.locator(".flow-wheel-panel")).toBeVisible();
   await expect(page.locator(".flow-sankey")).toBeHidden();
   expect(await page.locator(".flow-wheel path").count()).toBeGreaterThan(0);
+  await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
+  const wheelGroup = page.getByRole("button", { name: "Focus Essentials in flow wheel" });
+  for (let index = 0; index < 10 && !await wheelGroup.evaluate((element) => element === document.activeElement); index += 1) await page.keyboard.press("Tab");
+  await expect(wheelGroup).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("button", { name: "Reset view" })).toBeVisible();
+  await page.getByRole("button", { name: "Reset view" }).click();
   await page.locator(".flow-group-list button").first().click();
   await expect(page.getByRole("button", { name: "Reset view" })).toBeVisible();
   await page.getByRole("button", { name: "Reset view" }).click();

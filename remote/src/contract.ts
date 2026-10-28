@@ -134,6 +134,11 @@ const report = z.object({
     links: z.array(z.object({
       source: z.int(), target: z.int(), amount_minor: z.int(), entry_ids: z.array(z.string()),
     }).strict()),
+    entries: z.array(z.object({
+      id: z.string(), transaction_id: z.string(), local_date: date, merchant: z.string().nullable(),
+      description: z.string(), category: z.string(), category_id: z.string().nullable(),
+      amount_minor: z.int(), currency, spending_owner: z.string().nullable(),
+    }).strict()).optional(),
   }).strict().nullable().optional(),
 }).strict();
 

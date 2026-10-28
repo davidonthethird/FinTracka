@@ -164,10 +164,24 @@ class RemoteFlowLink(RemoteReadModel):
     entry_ids: tuple[str, ...]
 
 
+class RemoteFlowEntry(RemoteReadModel):
+    id: str
+    transaction_id: str
+    local_date: str
+    merchant: str | None
+    description: str
+    category: str
+    category_id: str | None
+    amount_minor: int
+    currency: str
+    spending_owner: str | None
+
+
 class RemoteCashFlowPaths(RemoteReadModel):
     month: str
     nodes: tuple[RemoteFlowNode, ...]
     links: tuple[RemoteFlowLink, ...]
+    entries: tuple[RemoteFlowEntry, ...] = ()
 
 
 class RemoteReportSnapshot(RemoteReadModel):
