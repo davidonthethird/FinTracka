@@ -62,7 +62,7 @@ def test_client_sends_service_token_digest_and_accepts_idempotent_response() -> 
     result = client.publish(b'{"snapshot_id":"snap-1"}', "abc123")
 
     request, timeout = requests[0]
-    assert request.full_url == "https://publish.example.test/api/v1/snapshots"
+    assert request.full_url == "https://publish.example.test/v1/snapshots"
     assert request.get_header("Cf-access-client-id") == "client-id"
     assert request.get_header("Cf-access-client-secret") == "client-secret"
     assert request.get_header("X-fintracka-digest") == "abc123"

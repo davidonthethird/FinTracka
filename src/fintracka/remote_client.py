@@ -60,7 +60,7 @@ class RemotePublisherClient:
         return cls(settings.publisher_url, client_id, client_secret)
 
     def publish(self, payload: bytes, digest: str) -> PublishResult:
-        body = self._request("POST", "/api/v1/snapshots", payload, digest)
+        body = self._request("POST", "/v1/snapshots", payload, digest)
         try:
             response = json.loads(body)
             return PublishResult(
@@ -73,7 +73,7 @@ class RemotePublisherClient:
             raise RemotePublishError("REMOTE_INVALID_RESPONSE") from error
 
     def purge(self) -> None:
-        self._request("DELETE", "/api/v1/snapshots", None, None)
+        self._request("DELETE", "/v1/snapshots", None, None)
 
     def _request(
         self, method: str, path: str, payload: bytes | None, digest: str | None
