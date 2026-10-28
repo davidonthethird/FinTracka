@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "vitest",
+    "test:ci": "vitest run",
     "typecheck": "tsc --noEmit",
     "deploy:publisher:staging": "wrangler deploy --config wrangler.publisher.jsonc --env staging",
     "deploy:publisher:production": "wrangler deploy --config wrangler.publisher.jsonc --env production",

@@ -12,6 +12,9 @@ export async function loadRemoteData(): Promise<{ snapshot: RemoteSnapshot; stat
     fetch("/api/v1/snapshot", options),
     fetch("/api/v1/status", options),
   ]);
+  if (snapshotResponse.status === 404) {
+    throw new Error("No snapshot has been published yet. Open FinTracka on your Mac to publish one.");
+  }
   if (!snapshotResponse.ok || !statusResponse.ok) {
     throw new Error("The private viewer could not load the latest snapshot.");
   }

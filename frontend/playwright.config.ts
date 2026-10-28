@@ -12,10 +12,18 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
-  webServer: {
-    command: "FINTRACKA_E2E_PORT=8788 PYTHONPATH=../src python ../e2e/server.py",
-    url: "http://127.0.0.1:8788/api/v1/health",
-    reuseExistingServer: false,
-    timeout: 30_000,
-  },
+  webServer: [
+    {
+      command: "FINTRACKA_E2E_PORT=8788 PYTHONPATH=../src python ../e2e/server.py",
+      url: "http://127.0.0.1:8788/api/v1/health",
+      reuseExistingServer: false,
+      timeout: 30_000,
+    },
+    {
+      command: "npm run build:viewer && node e2e/remote-viewer-server.ts",
+      url: "http://127.0.0.1:8789/api/v1/status",
+      reuseExistingServer: false,
+      timeout: 30_000,
+    },
+  ],
 });

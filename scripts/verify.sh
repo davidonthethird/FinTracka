@@ -16,10 +16,17 @@ cd "$PROJECT_ROOT"
 "$PYTHON_BIN" -m pytest -q
 "$PYTHON_BIN" -m pip check
 "$PYTHON_BIN" -m pip_audit
+"$PYTHON_BIN" scripts/verify_remote_snapshot.py
+
+cd "$PROJECT_ROOT/remote"
+npm run test:ci
+npm run typecheck
+npm audit --audit-level=high
 
 cd "$PROJECT_ROOT/frontend"
 npm test -- --run
 npm run typecheck
 npm run build
+npm run build:viewer
 PATH="$(dirname -- "$PYTHON_BIN"):$PATH" npm run test:e2e
 npm audit --audit-level=high

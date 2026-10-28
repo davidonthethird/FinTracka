@@ -11,6 +11,8 @@ const digest = (payload: Uint8Array) => createHash("sha256").update(payload).dig
 class MemoryBucket {
   values = new Map<string, { body: Uint8Array; etag: string; customMetadata?: Record<string, string> }>();
   failActivation = false;
+  failSnapshotWrite = false;
+  failCleanup = false;
 
   async get(key: string) {
     const value = this.values.get(key);
@@ -28,6 +30,7 @@ class MemoryBucket {
   }
 
   async put(key: string, body: Uint8Array | string, options: any = {}) {
+    if (key.startsWith("snapshots/") && this.failSnapshotWrite) throw new Error("connection lost");
     if (key === "active.json" && this.failActivation) throw new Error("ambiguous write");
     const current = this.values.get(key);
     if (options.onlyIf?.etagDoesNotMatch === "*" && current) return null;
@@ -43,6 +46,7 @@ class MemoryBucket {
   }
 
   async delete(keys: string | string[]) {
+    if (this.failCleanup && (typeof keys !== "string" || keys.startsWith("snapshots/"))) throw new Error("cleanup failed");
     for (const key of typeof keys === "string" ? [keys] : keys) this.values.delete(key);
   }
 }
@@ -77,6 +81,28 @@ describe("atomic snapshot activation", () => {
     const two = snapshot("two", 2);
     await expect(activateSnapshot(bucket as any, two, digest(two))).rejects.toBeTruthy();
     expect((await bucket.get("active.json")) && await (await bucket.get("active.json"))!.json()).toMatchObject({ snapshot_id: "one" });
+  });
+
+  it("keeps the prior active snapshot when the version write loses its connection", async () => {
+    const bucket = new MemoryBucket();
+    const one = snapshot("one", 1);
+    await activateSnapshot(bucket as any, one, digest(one));
+    bucket.failSnapshotWrite = true;
+    const two = snapshot("two", 2);
+    await expect(activateSnapshot(bucket as any, two, digest(two))).rejects.toThrow("connection lost");
+    expect(await (await bucket.get("active.json"))!.json()).toMatchObject({ snapshot_id: "one" });
+  });
+
+  it("keeps the newly activated snapshot readable when retention cleanup fails", async () => {
+    const bucket = new MemoryBucket();
+    for (const [id, sequence] of [["one", 1], ["two", 2]] as const) {
+      const body = snapshot(id, sequence); await activateSnapshot(bucket as any, body, digest(body));
+    }
+    bucket.failCleanup = true;
+    const three = snapshot("three", 3);
+    await expect(activateSnapshot(bucket as any, three, digest(three))).rejects.toThrow("cleanup failed");
+    expect(await (await bucket.get("active.json"))!.json()).toMatchObject({ snapshot_id: "three" });
+    expect(await bucket.get("snapshots/three.json")).toBeTruthy();
   });
 
   it("purges manifests and snapshot objects", async () => {
