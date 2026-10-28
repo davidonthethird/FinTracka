@@ -4,12 +4,13 @@ The remote viewer is a sanitized, read-only copy of the local ledger. SQLite on 
 
 ## Release gate
 
-Do not publish household data until every staging and approval item below is checked. As of 2026-10-27, local synthetic verification passes, but Cloudflare staging is **not deployed** because Wrangler on this Mac is not authenticated. Household approval and the live Cloudflare/Plaid policy review are also still required.
+Do not publish household data until every staging and approval item below is checked. As of 2026-10-27, local synthetic verification passes and Wrangler is authenticated to the intended account, but Cloudflare staging is **not deployed** because R2 is not enabled for that account (`10042`). Household approval and the live Cloudflare/Plaid policy review are also still required.
 
 - [x] Python, Worker, frontend, contract, mobile, browser-storage, interruption, and dependency tests pass with synthetic data.
-- [x] Canonical snapshot is 704,621 bytes, below the 5 MiB hard gate. The viewer bundle is 252,763 bytes JavaScript plus 18,379 bytes CSS before transfer compression.
+- [x] Canonical snapshot is 530,072 bytes, below the 5 MiB hard gate. The viewer bundle is 252,763 bytes JavaScript plus 18,379 bytes CSS before transfer compression.
 - [x] Local Playwright exercised 320/375/390/430/768/1280 px, all five screens, filters, drawers, stale/no-snapshot states, and no browser persistence.
-- [ ] Wrangler authenticated to the intended household Cloudflare account.
+- [x] Wrangler authenticated to the intended household Cloudflare account.
+- [ ] R2 enabled for the account after reviewing and accepting any Cloudflare storage/billing terms.
 - [ ] Synthetic staging deployed and the acceptance matrix below recorded.
 - [ ] David and Ariela explicitly approve Cloudflare storing the sanitized transaction snapshot.
 - [ ] Current Plaid agreement/use-case and Cloudflare privacy, retention, location, and deletion terms reviewed by the household.
