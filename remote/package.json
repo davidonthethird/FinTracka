@@ -6,7 +6,9 @@
     "test": "vitest",
     "typecheck": "tsc --noEmit",
     "deploy:publisher:staging": "wrangler deploy --config wrangler.publisher.jsonc --env staging",
-    "deploy:publisher:production": "wrangler deploy --config wrangler.publisher.jsonc --env production"
+    "deploy:publisher:production": "wrangler deploy --config wrangler.publisher.jsonc --env production",
+    "deploy:viewer:staging": "wrangler deploy --config wrangler.viewer.jsonc --env staging",
+    "deploy:viewer:production": "wrangler deploy --config wrangler.viewer.jsonc --env production"
   },
   "dependencies": {
     "zod": "4.6.7"
