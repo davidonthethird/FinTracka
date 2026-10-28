@@ -3,6 +3,9 @@ import { BarChart3, Landmark, List, PiggyBank, WalletCards } from "lucide-react"
 import { loadRemoteData, type ViewerStatus } from "./api";
 import type { RemoteSnapshot } from "./model";
 import { OverviewPage } from "./OverviewPage";
+import { PlanningPage } from "./PlanningPage";
+import { ReportsPage } from "./ReportsPage";
+import { SavingsPage } from "./SavingsPage";
 import { TransactionsPage } from "./TransactionsPage";
 
 const navigation = [
@@ -48,9 +51,9 @@ export function ViewerApp() {
     <main className="viewer-workspace">
       {route === "/" && <OverviewPage snapshot={snapshot} publishedAt={status?.published_at} />}
       {route === "/transactions" && <TransactionsPage snapshot={snapshot} />}
-      {route === "/planning" && <Placeholder title="Planning" text="Targets, averages, and this month’s spending." />}
-      {route === "/savings" && <Placeholder title="Savings" text="Balances, goals, and monthly progress." />}
-      {route === "/reports" && <Placeholder title="Reports" text="Where household income and spending flow." />}
+      {route === "/planning" && <PlanningPage snapshot={snapshot} />}
+      {route === "/savings" && <SavingsPage snapshot={snapshot} />}
+      {route === "/reports" && <ReportsPage snapshot={snapshot} />}
       {!navigation.some(([path]) => path === route) && <Placeholder title="Page not found" text="Choose a section below." />}
     </main>
     <nav className="viewer-nav" aria-label="Viewer sections">{navigation.map(([path, label, Icon]) => <button key={path} className={route === path ? "active" : ""} onClick={() => navigate(path)}><Icon aria-hidden="true" /><span>{label}</span></button>)}</nav>
