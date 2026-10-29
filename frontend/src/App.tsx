@@ -592,7 +592,10 @@ function CashFlowDiagram({ report, onSelect, splitByOwner = false }: { report: F
       totalBasisPoints: shares[index]?.totalBasisPoints,
       ownerBasisPoints: splitByOwner ? shares[index]?.ownerBasisPoints : undefined,
     })),
-    links: links.map((link) => ({ ...link, value: link.amount_minor })),
+    // Recharts keys links by source, target, and value. Equal owner shares are
+    // distinct ribbons, so a sub-minor-unit layout offset keeps their keys unique
+    // while the published amount_minor remains exact for labels and drilldowns.
+    links: links.map((link, index) => ({ ...link, value: link.amount_minor + index / 1_000_000 })),
   };
   return <div className="flow-chart" style={{ height: flowChartHeight(report.nodes.length) }}><ResponsiveContainer width="100%" height="100%"><Sankey data={data} iterations={0} sort={false} verticalAlign="top" nodePadding={FLOW_NODE_PADDING} nodeWidth={9} linkCurvature={0.42} margin={{ top: 24, right: 265, bottom: 24, left: 155 }} node={(props) => <FlowNodeShape {...props} selectFlow={onSelect} />} link={(props) => <FlowLinkShape {...props} selectFlow={onSelect} />} /></ResponsiveContainer></div>;
 }

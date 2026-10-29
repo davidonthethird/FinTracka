@@ -132,6 +132,18 @@ describe("mobile financial flow model", () => {
     expect(layout.nodes).toHaveLength(103);
     expect(layout.ribbons).toHaveLength(102);
   });
+
+  it("reconciles split-owner ribbon amounts to the visible household spending", () => {
+    const report = reportFixture();
+    const model = buildMobileFlowModel(report, buildFlowGroups(report), "Everyone")!;
+    const layout = layoutMobileFlow(model, {
+      width: 343, expandedSource: false, expandedGroupIds: new Set(),
+      expandedCategoryIds: new Set(), splitByOwner: true,
+    });
+
+    expect(layout.ribbons.filter((ribbon) => ribbon.owner)
+      .reduce((sum, ribbon) => sum + ribbon.amountMinor, 0)).toBe(model.visibleSpendingMinor);
+  });
 });
 
 function overlappingNodePairs(nodes: MobileFlowPosition[]): string[] {

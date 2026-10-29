@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-const viewer = "http://127.0.0.1:8789";
+const viewer = "http://127.0.0.1:18789";
 
 test("remote viewer is read-only, responsive, drillable, and leaves no financial browser data", async ({ page }) => {
   const consoleText: string[] = [];
@@ -87,6 +87,48 @@ test("remote viewer is read-only, responsive, drillable, and leaves no financial
   await expect(page.getByRole("checkbox", { name: "Split spending by person" })).not.toBeChecked();
   await expect(page.getByLabel("Search financial flow")).toHaveValue("");
   await expect(essentials).toHaveAttribute("aria-expanded", "false");
+  const financial = page.locator(".mobile-flow-group", { hasText: "Financial" });
+  await essentials.click();
+  await financial.click();
+  await expect(essentials).toHaveAttribute("aria-expanded", "true");
+  await expect(financial).toHaveAttribute("aria-expanded", "true");
+  const other = page.locator(".mobile-flow-category", { hasText: "Other" });
+  await other.click();
+  await expect(other).toHaveAttribute("aria-expanded", "true");
+  await page.locator(".mobile-flow-subcategory", { hasText: "General" }).click();
+  await expect(page.getByRole("dialog")).toContainText("Everyday Checking");
+  await expect(page.getByRole("dialog")).toContainText("Shared");
+  await page.getByRole("button", { name: "Close category details" }).click();
+  await page.getByRole("button", { name: "Collapse all" }).click();
+  await essentials.click();
+  await page.getByLabel("Search financial flow").fill("Shopping");
+  const lifestyle = page.locator(".mobile-flow-group", { hasText: "Lifestyle" });
+  await expect(lifestyle).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator(".mobile-flow-category.is-search-match", { hasText: "Shopping" })).toBeVisible();
+  await page.getByLabel("Search financial flow").fill("");
+  await expect(essentials).toHaveAttribute("aria-expanded", "true");
+  await expect(lifestyle).toHaveAttribute("aria-expanded", "false");
+  await page.getByRole("button", { name: "Collapse all" }).click();
+  const collapsedHeight = await page.locator(".mobile-flow-stage").evaluate((element) => element.getBoundingClientRect().height);
+  await page.getByRole("button", { name: "Expand all" }).click();
+  await expect.poll(() => page.locator(".mobile-flow-stage").evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(collapsedHeight);
+  const lastNode = page.locator(".mobile-flow-node").last();
+  await lastNode.scrollIntoViewIfNeeded();
+  await expect(lastNode).toBeVisible();
+  await page.getByRole("checkbox", { name: "Split spending by person" }).check();
+  await expect(page.locator('.mobile-flow-ribbons [aria-label*="Shared, 100.0%"]')).not.toHaveCount(0);
+  await page.getByRole("button", { name: "Shared", exact: true }).click();
+  await expect(page.locator(".mobile-flow-empty")).toHaveCount(0);
+  await page.getByRole("button", { name: "David", exact: true }).click();
+  await expect(page.getByText("No spending is assigned to David for this month.")).toBeVisible();
+  await page.getByRole("button", { name: "Everyone", exact: true }).click();
+  await essentials.click();
+  await page.getByRole("button", { name: "Zoom in" }).click();
+  await page.locator(".month-select select").selectOption({ index: 1 });
+  await expect(page.getByText("Detailed flow is not available")).toBeVisible();
+  await page.locator(".month-select select").selectOption("2026-10");
+  await expect(flowViewport).toHaveAttribute("data-scale", "1.0");
+  await expect(page.locator(".mobile-flow-group").first()).toHaveAttribute("aria-expanded", "false");
   await page.getByRole("button", { name: "Enter fullscreen" }).click();
   await expect.poll(() => page.evaluate(() => Boolean(document.fullscreenElement || document.querySelector(".mobile-flow-fullscreen-fallback")))).toBe(true);
   await page.getByRole("button", { name: "Exit fullscreen" }).click();

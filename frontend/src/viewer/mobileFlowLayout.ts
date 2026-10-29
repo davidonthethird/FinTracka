@@ -260,16 +260,24 @@ export function layoutMobileFlow(
     const targetPosition = positions.get(target.id);
     if (!source || !targetPosition || target.amountMinor <= 0) return;
     if (options.splitByOwner && target.ownerBasisPoints) {
-      const buckets = owners.flatMap((owner) => {
+      let assigned = 0;
+      const shares = owners.flatMap((owner) => {
         const points = target.ownerBasisPoints?.[owner] ?? 0;
-        return points > 0 ? [{ owner, amount: Math.round(target.amountMinor * points / 10_000) }] : [];
+        return points > 0 ? [{ owner, points }] : [];
+      });
+      const buckets = shares.map((share, index) => {
+        const amount = index === shares.length - 1
+          ? target.amountMinor - assigned
+          : Math.round(target.amountMinor * share.points / 10_000);
+        assigned += amount;
+        return { owner: share.owner, amount };
       });
       const totalWidth = buckets.reduce((sum, bucket) => sum + ribbonWidth(bucket.amount, model.visibleSpendingMinor || model.income.amountMinor), 0);
       let offset = -totalWidth / 2;
       buckets.forEach((bucket) => {
         const lineWidth = ribbonWidth(bucket.amount, model.visibleSpendingMinor || model.income.amountMinor);
         const centerOffset = offset + lineWidth / 2;
-        ribbons.push(makeRibbon(source, targetPosition, target, lineWidth, ownerColor(bucket.owner), bucket.owner, centerOffset));
+        ribbons.push(makeRibbon(source, targetPosition, target, lineWidth, ownerColor(bucket.owner), bucket.owner, centerOffset, bucket.amount));
         offset += lineWidth;
       });
       return;
@@ -307,6 +315,7 @@ function makeRibbon(
   color: string,
   owner?: FlowOwner,
   offset = 0,
+  amountMinor = item.amountMinor,
 ): MobileFlowRibbon {
   const horizontal = target.x >= source.x + source.width;
   const sourceX = horizontal ? source.x + source.width : source.x + source.width / 2;
@@ -320,7 +329,7 @@ function makeRibbon(
     id: `${source.id}:${target.id}${owner ? `:${owner}` : ""}`,
     sourceId: source.id,
     targetId: target.id,
-    amountMinor: item.amountMinor,
+    amountMinor,
     width,
     path,
     color,
