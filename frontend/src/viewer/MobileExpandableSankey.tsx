@@ -223,7 +223,7 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
       </div>
       <button onClick={() => { setExpandedSource(true); setExpandedGroupIds(allGroupIds); setExpandedCategoryIds(allCategoryIds); }}>Expand all</button>
       <button onClick={() => { setExpandedSource(false); setExpandedGroupIds(new Set()); setExpandedCategoryIds(new Set()); }}>Collapse all</button>
-      <label className="mobile-flow-split"><input type="checkbox" checked={splitByOwner} onChange={(event) => setSplitByOwner(event.currentTarget.checked)} />Split spending by person</label>
+      <label className="mobile-flow-split"><input type="checkbox" aria-label="Split spending by person" checked={splitByOwner} onChange={(event) => setSplitByOwner(event.currentTarget.checked)} /><span>Person split</span></label>
       <div className="mobile-flow-owners" aria-label="Spending owner">
         {(["Everyone", "David", "Ariela", "Shared"] as MobileFlowOwner[]).map((name) => <button key={name} aria-pressed={owner === name} onClick={() => changeOwner(name)}>{name}</button>)}
       </div>

@@ -5,6 +5,7 @@ import {
   buildMobileFlowModel,
   layoutMobileFlow,
   MIN_VISIBLE_RIBBON_PX,
+  MAX_VISIBLE_RIBBON_PX,
   type MobileFlowPosition,
 } from "../src/viewer/mobileFlowLayout";
 
@@ -116,6 +117,7 @@ describe("mobile financial flow model", () => {
     expect(expanded.nodes.every((node) => node.x >= 0 && node.x + node.width <= expanded.width)).toBe(true);
     expect(overlappingNodePairs(expanded.nodes)).toEqual([]);
     expect(expanded.ribbons.every((ribbon) => ribbon.width >= MIN_VISIBLE_RIBBON_PX)).toBe(true);
+    expect(expanded.ribbons.every((ribbon) => ribbon.width <= MAX_VISIBLE_RIBBON_PX)).toBe(true);
   });
 
   it("emits one bounded node and ribbon set for every visible dense-flow item", () => {

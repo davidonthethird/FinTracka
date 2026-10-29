@@ -79,7 +79,7 @@ export interface MobileFlowLayoutOptions {
 }
 
 export const MIN_VISIBLE_RIBBON_PX = 2;
-const MAX_RIBBON_PX = 30;
+export const MAX_VISIBLE_RIBBON_PX = 30;
 const MARGIN = 8;
 const CARD_HEIGHT = 54;
 const ROW_GAP = 10;
@@ -205,7 +205,7 @@ export function layoutMobileFlow(
   const nodes: MobileFlowPosition[] = [];
   const ribbons: MobileFlowRibbon[] = [];
   const positions = new Map<string, MobileFlowPosition>();
-  const groupWidth = Math.max(104, Math.min(142, Math.round(width * 0.39)));
+  const groupWidth = Math.max(112, Math.min(150, Math.round(width * 0.44)));
   const groupX = MARGIN + 22;
   const categoryX = groupX + groupWidth + 10;
   const categoryWidth = width - categoryX - MARGIN;
@@ -286,7 +286,12 @@ export function layoutMobileFlow(
       source,
       targetPosition,
       target,
-      ribbonWidth(target.amountMinor, target.kind === "source" ? model.income.amountMinor : model.visibleSpendingMinor || model.income.amountMinor),
+      ribbonWidth(
+        target.amountMinor,
+        target.kind === "source" || target.kind === "terminal"
+          ? model.income.amountMinor
+          : model.visibleSpendingMinor || model.income.amountMinor,
+      ),
       target.color,
     ));
   };
@@ -339,7 +344,10 @@ function makeRibbon(
 }
 
 function ribbonWidth(amount: number, total: number): number {
-  return Math.max(MIN_VISIBLE_RIBBON_PX, total > 0 ? amount / total * MAX_RIBBON_PX : MIN_VISIBLE_RIBBON_PX);
+  return Math.min(
+    MAX_VISIBLE_RIBBON_PX,
+    Math.max(MIN_VISIBLE_RIBBON_PX, total > 0 ? amount / total * MAX_VISIBLE_RIBBON_PX : MIN_VISIBLE_RIBBON_PX),
+  );
 }
 
 function ownerColor(owner: FlowOwner): string {
