@@ -39,6 +39,7 @@ export interface MobileFlowModel {
   terminals: MobileFlowItem[];
   householdSpendingMinor: number;
   visibleSpendingMinor: number;
+  detailsAvailable: boolean;
 }
 
 export interface MobileFlowPosition {
@@ -91,11 +92,12 @@ export function buildMobileFlowModel(
   groups: FlowGroup[],
   owner: MobileFlowOwner,
 ): MobileFlowModel | null {
-  if (!report.entries?.length || !groups.length || !validGraph(report)) return null;
-  const entries = new Map(report.entries.map((entry) => [entry.id, entry]));
+  const detailsAvailable = Boolean(report.entries?.length);
+  if (!groups.length || !validGraph(report, detailsAvailable)) return null;
+  const entries = new Map((report.entries ?? []).map((entry) => [entry.id, entry]));
   const householdSpendingMinor = groups.reduce((sum, group) => sum + group.amount_minor, 0);
 
-  const pendingGroups = groups.flatMap((group) => {
+  const pendingGroups: MobileFlowGroup[] = detailsAvailable ? groups.flatMap((group) => {
     const children = group.categories.flatMap((category) => {
       const categoryEntries = category.entry_ids
         .map((id) => entries.get(id))
@@ -103,7 +105,8 @@ export function buildMobileFlowModel(
       const amountMinor = expenseAmount(categoryEntries);
       if (amountMinor <= 0) return [];
       const childBuckets = new Map<string, { id: string | null; label: string; amount: number; entryIds: string[] }>();
-      categoryEntries.forEach((entry) => {
+      const subcategoryMetadataAvailable = categoryEntries.every((entry) => Object.hasOwn(entry, "subcategory_id") && Object.hasOwn(entry, "subcategory"));
+      if (subcategoryMetadataAvailable) categoryEntries.forEach((entry) => {
         const key = entry.subcategory_id ?? "__none__";
         const bucket = childBuckets.get(key) ?? {
           id: entry.subcategory_id ?? null,
@@ -157,7 +160,26 @@ export function buildMobileFlowModel(
       ownerBasisPoints: ownerShares(children.flatMap((child) => child.entryIds).map((id) => entries.get(id)!).filter(Boolean)),
       children,
     }];
-  });
+  }) : groups.map((group) => ({
+    id: group.id,
+    label: group.label,
+    kind: "group" as const,
+    amountMinor: group.amount_minor,
+    percentBasisPoints: 0,
+    entryIds: group.entry_ids,
+    color: group.color,
+    children: group.categories.map((category) => ({
+      id: category.id,
+      label: category.label,
+      kind: "category" as const,
+      amountMinor: category.amount_minor,
+      percentBasisPoints: 0,
+      entryIds: category.entry_ids,
+      color: category.color,
+      categoryId: category.categoryId,
+      children: [],
+    })),
+  }));
   const visibleSpendingMinor = pendingGroups.reduce((sum, group) => sum + group.amountMinor, 0);
   const withPercentages = pendingGroups.map((group) => ({
     ...group,
@@ -194,6 +216,7 @@ export function buildMobileFlowModel(
     terminals,
     householdSpendingMinor,
     visibleSpendingMinor,
+    detailsAvailable,
   };
 }
 
@@ -356,12 +379,12 @@ function ownerColor(owner: FlowOwner): string {
   return "#5b3f8c";
 }
 
-function validGraph(report: FlowGraph): boolean {
+function validGraph(report: FlowGraph, validateEntries: boolean): boolean {
   const entries = new Set(report.entries?.map((entry) => entry.id));
   return report.links.every((link) => Number.isInteger(link.source) && Number.isInteger(link.target)
     && link.source >= 0 && link.target >= 0
     && link.source < report.nodes.length && link.target < report.nodes.length
-    && link.amount_minor > 0 && link.entry_ids.every((id) => entries.has(id)));
+    && link.amount_minor > 0 && (!validateEntries || link.entry_ids.every((id) => entries.has(id))));
 }
 
 function itemFromNode(

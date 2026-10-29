@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Maximize2, Minimize2, Search, ZoomIn, ZoomOut } from "lucide-react";
 
 import { formatMoney } from "../format";
@@ -9,6 +9,7 @@ import {
   layoutMobileFlow,
   type MobileFlowCategory,
   type MobileFlowItem,
+  type MobileFlowLayout,
   type MobileFlowOwner,
   type MobileFlowSubcategory,
 } from "./mobileFlowLayout";
@@ -106,6 +107,7 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
   const allGroupIds = new Set(model.groups.map((group) => group.id));
   const allCategoryIds = new Set(model.groups.flatMap((group) => group.children.filter((category) => category.children.length).map((category) => category.id)));
   const nodeItems = new Map(layout.nodes.map((node) => [node.id, node.item]));
+  const selectedPathIds = selectedId ? flowPathIds(layout, selectedId) : new Set<string>();
   const wanted = query.trim().toLocaleLowerCase();
   const ownerEmpty = owner !== "Everyone" && model.visibleSpendingMinor === 0;
 
@@ -193,7 +195,7 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
 
   function select(item: MobileFlowItem) {
     setSelectedId(item.id);
-    if (item.kind === "subcategory" || item.kind === "category" || item.kind === "terminal") {
+    if (item.kind === "subcategory" || item.kind === "category") {
       const detail = isSubcategory(item) ? item : undefined;
       onSelect({
         categoryId: detail?.categoryId ?? (isCategory(item) ? item.categoryId : null),
@@ -209,7 +211,7 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
   function activate(item: MobileFlowItem) {
     if (item.kind === "hub") return setExpandedSource((value) => !value);
     if (item.kind === "group") return setExpandedGroupIds((value) => toggle(value, item.id));
-    if (isCategory(item) && item.children.length) {
+    if (isCategory(item) && item.children.length > 1) {
       return setExpandedCategoryIds((value) => toggle(value, item.id));
     }
     select(item);
@@ -223,9 +225,9 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
       </div>
       <button onClick={() => { setExpandedSource(true); setExpandedGroupIds(allGroupIds); setExpandedCategoryIds(allCategoryIds); }}>Expand all</button>
       <button onClick={() => { setExpandedSource(false); setExpandedGroupIds(new Set()); setExpandedCategoryIds(new Set()); }}>Collapse all</button>
-      <label className="mobile-flow-split"><input type="checkbox" aria-label="Split spending by person" checked={splitByOwner} onChange={(event) => setSplitByOwner(event.currentTarget.checked)} /><span>Person split</span></label>
+      <label className="mobile-flow-split"><input type="checkbox" aria-label="Split spending by person" checked={splitByOwner} disabled={!model.detailsAvailable} onChange={(event) => setSplitByOwner(event.currentTarget.checked)} /><span>Person split</span></label>
       <div className="mobile-flow-owners" aria-label="Spending owner">
-        {(["Everyone", "David", "Ariela", "Shared"] as MobileFlowOwner[]).map((name) => <button key={name} aria-pressed={owner === name} onClick={() => changeOwner(name)}>{name}</button>)}
+        {(["Everyone", "David", "Ariela", "Shared"] as MobileFlowOwner[]).map((name) => <button key={name} aria-pressed={owner === name} disabled={!model.detailsAvailable && name !== "Everyone"} onClick={() => changeOwner(name)}>{name}</button>)}
       </div>
       <label className="mobile-flow-search"><Search aria-hidden="true" /><span className="sr-only">Search financial flow</span><input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Search financial flow" aria-label="Search financial flow" /></label>
       <div className="mobile-flow-viewport-controls">
@@ -252,7 +254,7 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
     <div className="mobile-flow-stage" style={{ width: layout.width, height: layout.height, transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})` }}>
       <svg className="mobile-flow-ribbons" width={layout.width} height={layout.height} aria-label="Connected financial flow ribbons">
         {layout.ribbons.map((ribbon) => {
-          const faded = Boolean(selectedId && ribbon.sourceId !== selectedId && ribbon.targetId !== selectedId);
+          const faded = Boolean(selectedId && (!selectedPathIds.has(ribbon.sourceId) || !selectedPathIds.has(ribbon.targetId)));
           const target = nodeItems.get(ribbon.targetId);
           const searchMatch = Boolean(wanted && target && matches(target, wanted));
           const ownerShare = ribbon.owner && target?.amountMinor
@@ -263,14 +265,14 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
       </svg>
       {layout.nodes.map((node) => {
         const item = node.item;
-        const expandable = item.kind === "hub" || item.kind === "group" || (isCategory(item) && item.children.length > 0);
+        const categoryHasMultipleChildren = isCategory(item) && item.children.length > 1;
+        const expandable = item.kind === "hub" || item.kind === "group" || categoryHasMultipleChildren;
         const expanded = item.kind === "hub" ? expandedSource || searchExpansion.source : item.kind === "group" ? effectiveGroupIds.has(item.id) : effectiveCategoryIds.has(item.id);
-        const faded = Boolean(selectedId && selectedId !== item.id && !layout.ribbons.some((ribbon) => (ribbon.sourceId === selectedId && ribbon.targetId === item.id) || (ribbon.targetId === selectedId && ribbon.sourceId === item.id)));
+        const faded = Boolean(selectedId && !selectedPathIds.has(item.id));
         const searchMatch = Boolean(wanted && matches(item, wanted));
-        return <button
-          key={item.id}
+        return <Fragment key={item.id}><button
           id={`mobile-flow-node-${safeId(item.id)}`}
-          className={`mobile-flow-node mobile-flow-${item.kind}${selectedId === item.id ? " is-selected" : ""}${faded ? " is-faded" : ""}${searchMatch ? " is-search-match" : ""}`}
+          className={`mobile-flow-node mobile-flow-${item.kind}${categoryHasMultipleChildren ? " has-details" : ""}${selectedId === item.id ? " is-selected" : ""}${faded ? " is-faded" : ""}${searchMatch ? " is-search-match" : ""}`}
           style={{ left: node.x, top: node.y, width: node.width, height: node.height, "--flow-color": item.color } as React.CSSProperties}
           title={`${item.label}: ${formatMoney(item.amountMinor)}`}
           aria-expanded={expandable ? expanded : undefined}
@@ -284,7 +286,13 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
           {splitByOwner && item.ownerBasisPoints && <span className="mobile-flow-node-owner-splits" aria-label={ownerShareLabel(item.ownerBasisPoints)}>
             {(["David", "Ariela", "Shared"] as FlowOwner[]).flatMap((name) => item.ownerBasisPoints?.[name] ? [<i key={name} className={name.toLowerCase()}>{name[0]} {(item.ownerBasisPoints[name]! / 100).toFixed(1)}%</i>] : [])}
           </span>}
-        </button>;
+        </button>{categoryHasMultipleChildren && <button
+          className="mobile-flow-details"
+          style={{ left: node.x + node.width - 44, top: node.y, height: node.height }}
+          aria-label={`View ${item.label} details`}
+          title={`View ${item.label} transactions`}
+          onClick={() => select(item)}
+        >›</button>}</Fragment>;
       })}
       {layout.nodes.filter((node) => node.item.kind === "hub" || node.item.kind === "group" || isCategory(node.item)).map((node) => <span key={node.id} id={`mobile-flow-children-${safeId(node.id)}`} className="sr-only">Children for {node.item.label}</span>)}
     </div>
@@ -292,6 +300,24 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
     <div className="mobile-flow-owner-key" aria-label="Spending owner colors"><span className="david">David</span><span className="ariela">Ariela</span><span className="shared">Shared</span></div>
     {owner !== "Everyone" && <p className="mobile-flow-owner-summary">{owner}: {formatMoney(model.visibleSpendingMinor)} · {(model.householdSpendingMinor ? model.visibleSpendingMinor / model.householdSpendingMinor * 100 : 0).toFixed(1)}% of household spending</p>}
   </div>;
+}
+
+export function flowPathIds(layout: Pick<MobileFlowLayout, "ribbons">, selectedId: string): Set<string> {
+  const active = new Set([selectedId]);
+  const visit = (id: string, direction: "up" | "down") => {
+    layout.ribbons.forEach((ribbon) => {
+      const next = direction === "up" && ribbon.targetId === id
+        ? ribbon.sourceId
+        : direction === "down" && ribbon.sourceId === id ? ribbon.targetId : undefined;
+      if (next && !active.has(next)) {
+        active.add(next);
+        visit(next, direction);
+      }
+    });
+  };
+  visit(selectedId, "up");
+  visit(selectedId, "down");
+  return active;
 }
 
 function toggle(values: Set<string>, id: string): Set<string> {

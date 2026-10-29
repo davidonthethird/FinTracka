@@ -8,41 +8,7 @@ import {
   MAX_VISIBLE_RIBBON_PX,
   type MobileFlowPosition,
 } from "../src/viewer/mobileFlowLayout";
-
-function reportFixture(): FlowGraph {
-  return {
-    nodes: [
-      { id: "income", label: "Income", kind: "hub", amount_minor: 17_000, entry_ids: ["salary"] },
-      { id: "income:salary", label: "Salary", kind: "income", amount_minor: 15_000, entry_ids: ["salary"] },
-      { id: "funding-gap", label: "Prior cash", kind: "funding", amount_minor: 2_000, entry_ids: [] },
-      { id: "group:essentials", label: "Essentials", kind: "expense_group", amount_minor: 6_000, entry_ids: ["g1", "g2", "g3", "u1"] },
-      { id: "expense:groceries", label: "Groceries", kind: "expense", amount_minor: 4_000, entry_ids: ["g1", "g2", "g3"] },
-      { id: "expense:utilities", label: "Utilities", kind: "expense", amount_minor: 2_000, entry_ids: ["u1"] },
-      { id: "group:lifestyle", label: "Lifestyle", kind: "expense_group", amount_minor: 3_000, entry_ids: ["s1", "s2"] },
-      { id: "expense:shopping", label: "Shopping", kind: "expense", amount_minor: 3_000, entry_ids: ["s1", "s2"] },
-      { id: "retained", label: "Money retained", kind: "retained", amount_minor: 8_000, entry_ids: ["salary"] },
-    ],
-    links: [
-      { source: 1, target: 0, amount_minor: 15_000, entry_ids: ["salary"] },
-      { source: 2, target: 0, amount_minor: 2_000, entry_ids: [] },
-      { source: 0, target: 3, amount_minor: 6_000, entry_ids: ["g1", "g2", "g3", "u1"] },
-      { source: 3, target: 4, amount_minor: 4_000, entry_ids: ["g1", "g2", "g3"] },
-      { source: 3, target: 5, amount_minor: 2_000, entry_ids: ["u1"] },
-      { source: 0, target: 6, amount_minor: 3_000, entry_ids: ["s1", "s2"] },
-      { source: 6, target: 7, amount_minor: 3_000, entry_ids: ["s1", "s2"] },
-      { source: 0, target: 8, amount_minor: 8_000, entry_ids: ["salary"] },
-    ],
-    entries: [
-      entry("salary", 15_000, "Salary", "salary", null, null, null),
-      entry("g1", -3_000, "Groceries", "groceries", "food", "Food", "David"),
-      entry("g2", 500, "Groceries", "groceries", "food", "Food", "David"),
-      entry("g3", -1_500, "Groceries", "groceries", null, null, "Shared"),
-      entry("u1", -2_000, "Utilities", "utilities", "electric", "Electric", "Ariela"),
-      entry("s1", -1_000, "Shopping", "shopping", "clothes", "Clothes", "David"),
-      entry("s2", -2_000, "Shopping", "shopping", "household", "Household", "Ariela"),
-    ],
-  } as FlowGraph;
-}
+import { reportFixture } from "./mobile-flow-fixture";
 
 function entry(
   id: string,
@@ -59,7 +25,6 @@ function entry(
     subcategory, amount_minor: amount, currency: "USD", spending_owner: owner,
   };
 }
-
 describe("mobile financial flow model", () => {
   it("preserves sources, terminals, subcategories, refunds, and owner denominators", () => {
     const report = reportFixture();
@@ -96,6 +61,30 @@ describe("mobile financial flow model", () => {
       buildFlowGroups(report),
       "Everyone",
     )).toBeNull();
+  });
+
+  it("does not invent subcategories when legacy entries omit the new fields", () => {
+    const report = reportFixture();
+    const legacy = {
+      ...report,
+      entries: report.entries!.map(({ subcategory_id: _id, subcategory: _name, ...entry }) => entry),
+    };
+    const model = buildMobileFlowModel(legacy, buildFlowGroups(legacy), "Everyone")!;
+
+    expect(model.groups.flatMap((group) => group.children)
+      .find((category) => category.label === "Groceries")?.children).toEqual([]);
+  });
+
+  it("keeps the structural group and category flow when entry detail is unavailable", () => {
+    const report = { ...reportFixture(), entries: undefined };
+    const groups = buildFlowGroups(report);
+    const model = buildMobileFlowModel(report, groups, "Everyone");
+
+    expect(groups.flatMap((group) => group.categories).map((category) => category.label))
+      .toEqual(["Groceries", "Utilities", "Shopping"]);
+    expect(model?.groups.flatMap((group) => group.children).map((category) => category.label))
+      .toEqual(["Groceries", "Utilities", "Shopping"]);
+    expect(model?.groups.every((group) => group.children.every((category) => !category.children.length))).toBe(true);
   });
 
   it.each([288, 343, 398])("lays out expanded branches without overlap at %ipx", (width) => {
@@ -182,5 +171,3 @@ function denseReport(count: number): FlowGraph {
     entries: [entry("salary", count * 100, "Salary", "salary", null, null, null), ...entries],
   } as FlowGraph;
 }
-
-export { reportFixture };

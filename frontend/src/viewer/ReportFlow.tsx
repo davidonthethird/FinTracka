@@ -18,7 +18,7 @@ export type FlowGroup = FlowNode & { color: string; categories: FlowCategory[] }
 const colors = ["#e97745", "#53a86f", "#d45d8d", "#4f8edc", "#8c65c8", "#d9a62e", "#147d70"];
 
 export function buildFlowGroups(report?: FlowGraph, expected?: ExpectedCategory[]): FlowGroup[] {
-  if (!report?.nodes || !report.links || !report.entries) return [];
+  if (!report?.nodes || !report.links) return [];
   if (report.links.some((link) => !Number.isInteger(link.source) || !Number.isInteger(link.target) || link.source < 0 || link.target < 0 || link.source >= report.nodes.length || link.target >= report.nodes.length || link.amount_minor <= 0)) return [];
   const groups = report.nodes.flatMap((node, index) => node.kind === "expense_group" ? [{ node, index }] : []);
   const result = groups.map(({ node, index }, groupIndex) => ({
@@ -36,8 +36,10 @@ export function buildFlowGroups(report?: FlowGraph, expected?: ExpectedCategory[
       }];
     }),
   })).filter((group) => group.amount_minor > 0 && group.categories.length > 0 && group.categories.reduce((sum, category) => sum + category.amount_minor, 0) === group.amount_minor);
-  const entries = new Map(report.entries.map((entry) => [entry.id, entry]));
-  if (result.some((group) => group.categories.some((category) => !category.entry_ids.length || category.entry_ids.some((id) => !entries.has(id)) || -category.entry_ids.reduce((sum, id) => sum + (entries.get(id)?.amount_minor ?? 0), 0) !== category.amount_minor))) return [];
+  if (report.entries?.length) {
+    const entries = new Map(report.entries.map((entry) => [entry.id, entry]));
+    if (result.some((group) => group.categories.some((category) => !category.entry_ids.length || category.entry_ids.some((id) => !entries.has(id)) || -category.entry_ids.reduce((sum, id) => sum + (entries.get(id)?.amount_minor ?? 0), 0) !== category.amount_minor))) return [];
+  }
   if (expected) {
     const categories = result.flatMap((group) => group.categories);
     const wanted = expected.filter((category) => category.amount_minor > 0);

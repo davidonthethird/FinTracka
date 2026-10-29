@@ -4,7 +4,7 @@ import fixture from "../../tests/fixtures/remote_snapshot_v1.json";
 
 import { PlanningPage } from "../src/viewer/PlanningPage";
 import { buildFlowGroups, ReportFlow, type FlowGraph } from "../src/viewer/ReportFlow";
-import { ReportsPage, selectedFlowTransactions, spendingPercentage } from "../src/viewer/ReportsPage";
+import { ReportsPage, selectedFlowTransactions, selectionPercentage, spendingPercentage } from "../src/viewer/ReportsPage";
 import { SavingsPage } from "../src/viewer/SavingsPage";
 import { parseSnapshot } from "../src/viewer/model";
 
@@ -71,7 +71,7 @@ describe("read-only viewer finance pages", () => {
     };
     expect(renderToStaticMarkup(<ReportFlow report={graph} expectedCategories={categories} onCategory={() => undefined} />)).toContain("height:960px");
     expect(buildFlowGroups(graph, [...categories, { category_id: "missing", category: "Missing", amount_minor: 1 }])).toEqual([]);
-    expect(buildFlowGroups({ ...graph, entries: undefined }, categories)).toEqual([]);
+    expect(buildFlowGroups({ ...graph, entries: undefined }, categories)).toHaveLength(1);
   });
 
   it("uses positive final expenses for percentages when refunds reduce net spending", () => {
@@ -80,6 +80,11 @@ describe("read-only viewer finance pages", () => {
       { category_id: "b", category: "B", amount_minor: 50 },
       { category_id: "c", category: "Refund", amount_minor: -50 },
     ])).toBe("66.7");
+    expect(selectionPercentage(
+      { category_id: "a", category: "A", amount_minor: 100, owner: "David" },
+      [{ category_id: "a", category: "A", amount_minor: 300 }],
+      [{ owner: "David", amount_minor: 200 }, { owner: "Shared", amount_minor: 100 }],
+    )).toEqual({ value: "50.0", context: "David’s spending" });
   });
 
   it("uses published ledger entries for exact split amounts in report drawers", () => {
