@@ -96,7 +96,8 @@ def test_nested_snapshot_models_publish_only_viewer_fields(database) -> None:
     assert flow and flow.entries
     assert all(set(entry.model_dump()) == {
         "id", "transaction_id", "local_date", "merchant", "description", "category",
-        "category_id", "amount_minor", "currency", "spending_owner",
+        "category_id", "subcategory_id", "subcategory", "amount_minor", "currency",
+        "spending_owner",
     } for entry in flow.entries)
 
 

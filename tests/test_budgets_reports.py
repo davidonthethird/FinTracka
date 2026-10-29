@@ -15,12 +15,13 @@ from fintracka.budgets import (
 )
 from fintracka.db import connect, migrate
 from fintracka.ids import new_id
-from fintracka.ledger import confirm_transfer, update_transaction
+from fintracka.ledger import confirm_transfer, set_splits, update_transaction
 from fintracka.manual_cash import create_manual_cash
 from fintracka.providers import NormalizedAccount, NormalizedTransaction, SyncBatch
 from fintracka.reports import cash_flow, cash_flow_paths, overview, spending_by_category, spending_by_owner
 from fintracka.sync import apply_batch
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
+from fintracka.subcategories import assign_subcategory, create_subcategory
 
 
 @pytest.fixture
@@ -69,6 +70,37 @@ def test_reports_exclude_transfers_and_non_usd_and_net_refunds(
     assert {entry["spending_owner"] for entry in grocery_entries} == {"Shared"}
     assert next(node for node in paths["nodes"] if node["label"] == "Money retained")["amount_minor"] == 317_258
     assert all(entry["description"] != "Transfer" and entry["currency"] == "USD" for entry in paths["entries"])
+
+
+def test_cash_flow_paths_publish_only_category_compatible_subcategories(
+    ledger: sqlite3.Connection,
+) -> None:
+    parent_category = _category(ledger, "Groceries", "expense", "ordinary")
+    other_category = _category(ledger, "Shopping", "expense", "ordinary")
+    parent_subcategory = create_subcategory(ledger, parent_category, "Produce flow test")
+    create_subcategory(ledger, other_category, "Home flow test")
+    transaction_id = _transaction_id(ledger, "groceries-1")
+    update_transaction(ledger, transaction_id, category_id=parent_category)
+    assign_subcategory(ledger, transaction_id, parent_subcategory, "one_time")
+    set_splits(ledger, transaction_id, [
+        (-5_000, parent_category, None),
+        (-3_742, other_category, None),
+    ])
+
+    entries = [
+        entry for entry in cash_flow_paths(ledger, "2026-10")["entries"]
+        if entry["transaction_id"] == transaction_id
+    ]
+
+    assert next(item for item in entries if item["category_id"] == parent_category)[
+        "subcategory_id"
+    ] == parent_subcategory
+    assert next(item for item in entries if item["category_id"] == other_category)[
+        "subcategory_id"
+    ] is None
+    assert next(item for item in entries if item["category_id"] == other_category)[
+        "subcategory"
+    ] is None
 
 
 def test_transfer_to_tracked_savings_counts_once_as_savings(

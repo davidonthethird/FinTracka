@@ -172,6 +172,8 @@ class RemoteFlowEntry(RemoteReadModel):
     description: str
     category: str
     category_id: str | None
+    subcategory_id: str | None
+    subcategory: str | None
     amount_minor: int
     currency: str
     spending_owner: str | None

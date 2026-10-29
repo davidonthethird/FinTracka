@@ -12,6 +12,30 @@ describe("remote snapshot contract", () => {
     expect(parseRemoteSnapshot(fixture).schema_version).toBe(1);
   });
 
+  it("accepts new flow subcategories while remaining compatible with old v1 entries", () => {
+    const reportKey = Object.keys(fixture.reports).find((key) => fixture.reports[key].cash_flow_paths?.entries?.length);
+    const report = fixture.reports[reportKey!];
+    const [entry, ...remaining] = report.cash_flow_paths.entries;
+    const withEntry = (value: Record<string, unknown>) => ({
+      ...fixture,
+      reports: {
+        ...fixture.reports,
+        [reportKey!]: {
+          ...report,
+          cash_flow_paths: { ...report.cash_flow_paths, entries: [value, ...remaining] },
+        },
+      },
+    });
+
+    expect(parseRemoteSnapshot(withEntry({
+      ...entry, subcategory_id: "subcategory-1", subcategory: "Fuel",
+    })).schema_version).toBe(1);
+    expect(parseRemoteSnapshot(withEntry(entry)).schema_version).toBe(1);
+    expect(() => parseRemoteSnapshot(withEntry({
+      ...entry, subcategory_id: 42, subcategory: "Fuel",
+    }))).toThrow();
+  });
+
   it.each([
     [{ ...fixture, schema_version: 2 }],
     [{ ...fixture, unexpected: true }],

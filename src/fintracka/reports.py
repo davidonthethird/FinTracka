@@ -116,11 +116,14 @@ def cash_flow_paths(connection: sqlite3.Connection, month: str) -> dict[str, obj
             row["id"]: row
             for row in connection.execute(
                 f"""
-                SELECT id, provider_description description,
+                SELECT t.id, t.provider_description description,
                        COALESCE(NULLIF(user_merchant, ''), NULLIF(provider_merchant, ''), provider_description) merchant,
-                       notes, updated_at, is_cash_withdrawal
-                FROM transactions
-                WHERE id IN ({','.join('?' for _ in transaction_ids)})
+                       t.notes, t.updated_at, t.is_cash_withdrawal,
+                       t.subcategory_id, s.name subcategory,
+                       s.category_id subcategory_category_id
+                FROM transactions t
+                LEFT JOIN subcategories s ON s.id = t.subcategory_id
+                WHERE t.id IN ({','.join('?' for _ in transaction_ids)})
                 """,
                 transaction_ids,
             )
@@ -157,6 +160,10 @@ def cash_flow_paths(connection: sqlite3.Connection, month: str) -> dict[str, obj
                 "description": detail["description"],
                 "category": entry.category or "Uncategorized",
                 "category_id": entry.category_id,
+                "subcategory_id": detail["subcategory_id"]
+                if detail["subcategory_category_id"] == entry.category_id else None,
+                "subcategory": detail["subcategory"]
+                if detail["subcategory_category_id"] == entry.category_id else None,
                 "amount_minor": entry.amount_minor,
                 "currency": "USD",
                 "spending_owner": entry.spending_owner if is_expense else None,
