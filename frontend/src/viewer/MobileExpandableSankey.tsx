@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Maximize2, Search, ZoomIn, ZoomOut } from "lucide-react";
+import { Maximize2, Minimize2, Search, ZoomIn, ZoomOut } from "lucide-react";
 
 import { formatMoney } from "../format";
 import type { FlowOwner } from "../reports/flow";
@@ -20,7 +20,11 @@ export interface MobileExpandableSankeyProps {
 }
 
 export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpandableSankeyProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const pinchDistance = useRef(0);
   const [width, setWidth] = useState(343);
   const [expandedSource, setExpandedSource] = useState(false);
   const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
@@ -29,6 +33,10 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
   const [splitByOwner, setSplitByOwner] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string>();
+  const [scale, setScale] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [fullscreen, setFullscreen] = useState(false);
+  const [fullscreenFallback, setFullscreenFallback] = useState(false);
 
   const model = useMemo(() => buildMobileFlowModel(report, groups, owner), [report, groups, owner]);
 
@@ -41,6 +49,19 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
   }, []);
 
   useEffect(() => resetSessionView(), [report]);
+
+  useEffect(() => {
+    const fullscreenChanged = () => setFullscreen(document.fullscreenElement === rootRef.current);
+    const escapeFallback = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setFullscreenFallback(false);
+    };
+    document.addEventListener("fullscreenchange", fullscreenChanged);
+    document.addEventListener("keydown", escapeFallback);
+    return () => {
+      document.removeEventListener("fullscreenchange", fullscreenChanged);
+      document.removeEventListener("keydown", escapeFallback);
+    };
+  }, []);
 
   const searchExpansion = useMemo(() => {
     const groupIds = new Set<string>();
@@ -72,7 +93,15 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
     splitByOwner,
   }) : null, [model, width, expandedSource, searchExpansion.source, effectiveGroupIds, effectiveCategoryIds, splitByOwner]);
 
+  const viewportHeight = layout ? (scale > 1 ? Math.min(layout.height, 620) : layout.height) : 0;
+
+  useEffect(() => {
+    if (!layout) return;
+    setPan((value) => clampPan(value, scale, layout.width, layout.height, viewportHeight));
+  }, [layout, scale, viewportHeight]);
+
   if (!model || !layout) return <div className="flow-unavailable"><strong>Detailed flow is not available</strong></div>;
+  const currentLayout = layout;
 
   const allGroupIds = new Set(model.groups.map((group) => group.id));
   const allCategoryIds = new Set(model.groups.flatMap((group) => group.children.filter((category) => category.children.length).map((category) => category.id)));
@@ -84,6 +113,10 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
     setExpandedCategoryIds(new Set());
     setQuery("");
     setSelectedId(undefined);
+    setOwner("Everyone");
+    setSplitByOwner(false);
+    setScale(1);
+    setPan({ x: 0, y: 0 });
   }
 
   function changeOwner(next: MobileFlowOwner) {
@@ -92,6 +125,68 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
     setExpandedGroupIds(new Set());
     setExpandedCategoryIds(new Set());
     setSelectedId(undefined);
+    setScale(1);
+    setPan({ x: 0, y: 0 });
+  }
+
+  function changeScale(delta: number) {
+    setScale((value) => boundedScale(value + delta));
+  }
+
+  function fitView() {
+    setScale(1);
+    setPan({ x: 0, y: 0 });
+  }
+
+  async function toggleFullscreen() {
+    if (fullscreenFallback) return setFullscreenFallback(false);
+    if (document.fullscreenElement) return document.exitFullscreen();
+    const root = rootRef.current;
+    if (root?.requestFullscreen) {
+      try {
+        await root.requestFullscreen();
+        return;
+      } catch {
+        // Browser policy may reject fullscreen; the fixed overlay keeps the control useful.
+      }
+    }
+    setFullscreenFallback(true);
+  }
+
+  function pointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (scale > 1 || pointers.current.size > 1) {
+      try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Synthetic test pointers are not browser-active. */ }
+    }
+    if (pointers.current.size > 1) {
+      event.preventDefault();
+      pinchDistance.current = pointerDistance([...pointers.current.values()]);
+    }
+  }
+
+  function pointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    const previous = pointers.current.get(event.pointerId);
+    if (!previous) return;
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointers.current.size > 1) {
+      event.preventDefault();
+      const distance = pointerDistance([...pointers.current.values()]);
+      const previousDistance = pinchDistance.current;
+      if (previousDistance > 0) setScale((value) => boundedScale(value * distance / previousDistance));
+      pinchDistance.current = distance;
+    } else if (scale > 1) {
+      event.preventDefault();
+      setPan((value) => clampPan(
+        { x: value.x + event.clientX - previous.x, y: value.y + event.clientY - previous.y },
+        scale, currentLayout.width, currentLayout.height, viewportHeight,
+      ));
+    }
+  }
+
+  function pointerEnd(event: React.PointerEvent<HTMLDivElement>) {
+    pointers.current.delete(event.pointerId);
+    pinchDistance.current = pointers.current.size > 1 ? pointerDistance([...pointers.current.values()]) : 0;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   }
 
   function select(item: MobileFlowItem) {
@@ -118,7 +213,7 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
     select(item);
   }
 
-  return <div className="mobile-flow" ref={hostRef}>
+  return <div className={`mobile-flow${fullscreenFallback ? " mobile-flow-fullscreen-fallback" : ""}`} ref={(element) => { rootRef.current = element; hostRef.current = element; }}>
     <div className="mobile-flow-toolbar" aria-label="Financial flow view controls">
       <div className="mobile-flow-density" aria-label="Flow detail level">
         <button aria-pressed={!expandedGroupIds.size} onClick={() => { setExpandedSource(false); setExpandedGroupIds(new Set()); setExpandedCategoryIds(new Set()); }}>Compact</button>
@@ -132,14 +227,26 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
       </div>
       <label className="mobile-flow-search"><Search aria-hidden="true" /><span className="sr-only">Search financial flow</span><input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Search financial flow" aria-label="Search financial flow" /></label>
       <div className="mobile-flow-viewport-controls">
-        <button aria-label="Zoom in" title="Zoom in"><ZoomIn /></button>
-        <button aria-label="Zoom out" title="Zoom out"><ZoomOut /></button>
-        <button aria-label="Fit to screen">Fit to screen</button>
+        <button aria-label="Zoom in" title="Zoom in" onClick={() => changeScale(.2)}><ZoomIn /></button>
+        <button aria-label="Zoom out" title="Zoom out" onClick={() => changeScale(-.2)}><ZoomOut /></button>
+        <button aria-label="Fit to screen" onClick={fitView}>Fit to screen</button>
         <button aria-label="Reset view" onClick={resetSessionView}>Reset view</button>
-        <button aria-label="Enter fullscreen" title="Enter fullscreen"><Maximize2 /></button>
+        <button aria-label={fullscreen || fullscreenFallback ? "Exit fullscreen" : "Enter fullscreen"} title={fullscreen || fullscreenFallback ? "Exit fullscreen" : "Enter fullscreen"} onClick={toggleFullscreen}>{fullscreen || fullscreenFallback ? <Minimize2 /> : <Maximize2 />}</button>
       </div>
     </div>
-    <div className="mobile-flow-stage" style={{ width: layout.width, height: layout.height }}>
+    <div
+      ref={viewportRef}
+      className={`mobile-flow-viewport${scale > 1 ? " is-zoomed" : ""}`}
+      data-scale={scale.toFixed(1)}
+      data-pan-x={Math.round(pan.x)}
+      data-pan-y={Math.round(pan.y)}
+      style={{ height: viewportHeight }}
+      onPointerDown={pointerDown}
+      onPointerMove={pointerMove}
+      onPointerUp={pointerEnd}
+      onPointerCancel={pointerEnd}
+    >
+    <div className="mobile-flow-stage" style={{ width: layout.width, height: layout.height, transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})` }}>
       <svg className="mobile-flow-ribbons" width={layout.width} height={layout.height} aria-label="Connected financial flow ribbons">
         {layout.ribbons.map((ribbon) => {
           const faded = Boolean(selectedId && ribbon.sourceId !== selectedId && ribbon.targetId !== selectedId);
@@ -170,6 +277,7 @@ export function MobileExpandableSankey({ report, groups, onSelect }: MobileExpan
       })}
       {[...effectiveGroupIds, ...effectiveCategoryIds].map((id) => <span key={id} id={`mobile-flow-children-${safeId(id)}`} className="sr-only">Expanded children for {nodeItems.get(id)?.label}</span>)}
     </div>
+    </div>
     <div className="mobile-flow-owner-key" aria-label="Spending owner colors"><span className="david">David</span><span className="ariela">Ariela</span><span className="shared">Shared</span></div>
   </div>;
 }
@@ -198,6 +306,28 @@ function isSubcategory(item: MobileFlowItem): item is MobileFlowSubcategory {
 
 function safeId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, "-");
+}
+
+function boundedScale(value: number): number {
+  return Math.round(Math.max(.8, Math.min(2.4, value)) * 10) / 10;
+}
+
+function pointerDistance(points: { x: number; y: number }[]): number {
+  if (points.length < 2) return 0;
+  return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+}
+
+function clampPan(
+  value: { x: number; y: number }, scale: number,
+  stageWidth: number, stageHeight: number, viewportHeight: number,
+): { x: number; y: number } {
+  if (scale <= 1) return { x: 0, y: 0 };
+  const minX = Math.min(0, stageWidth - stageWidth * scale);
+  const minY = Math.min(0, viewportHeight - stageHeight * scale);
+  return {
+    x: Math.max(minX, Math.min(0, value.x)),
+    y: Math.max(minY, Math.min(0, value.y)),
+  };
 }
 
 function activateKey(event: React.KeyboardEvent, action: () => void) {

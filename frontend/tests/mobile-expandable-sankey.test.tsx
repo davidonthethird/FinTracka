@@ -21,6 +21,8 @@ describe("mobile expandable financial flow", () => {
     expect(html).toContain("$60.00");
     expect(html).toContain("66.7%");
     expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('data-scale="1.0"');
+    expect(html).toContain("mobile-flow-viewport");
     [
       "Compact", "Detailed", "Expand all", "Collapse all",
       "Split spending by person", "Everyone", "David", "Ariela", "Shared",
