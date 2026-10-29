@@ -19,6 +19,7 @@
     },
     "production": {
       "name": "fintracka-viewer-production",
+      "workers_dev": true,
       "r2_buckets": [{ "binding": "SNAPSHOTS", "bucket_name": "fintracka-snapshots-production" }]
     }
   }
