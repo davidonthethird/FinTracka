@@ -2,13 +2,13 @@ import { useMemo, useState } from "react";
 import { Pie, PieChart, ResponsiveContainer, Sankey, Sector } from "recharts";
 import type { PieSectorShapeProps, SankeyNodeProps } from "recharts";
 import { formatMoney } from "../format";
-import { flowChartHeight } from "../reports/flow";
+import { flowChartHeight, type FlowOwner } from "../reports/flow";
 
 export type FlowNode = { id: string; label: string; kind: string; amount_minor: number; entry_ids: string[] };
 export type FlowLink = { source: number; target: number; amount_minor: number; entry_ids: string[] };
-export type FlowEntry = { id: string; transaction_id: string; local_date: string; merchant: string | null; description: string; category: string; category_id: string | null; amount_minor: number; currency: string; spending_owner: string | null };
+export type FlowEntry = { id: string; transaction_id: string; local_date: string; merchant: string | null; description: string; category: string; category_id: string | null; subcategory_id?: string | null; subcategory?: string | null; amount_minor: number; currency: string; spending_owner: string | null };
 export type FlowGraph = { nodes: FlowNode[]; links: FlowLink[]; entries?: FlowEntry[] };
-export type FlowSelection = { categoryId: string | null; label: string; amountMinor: number; entryIds: string[] };
+export type FlowSelection = { categoryId: string | null; subcategoryId?: string | null; label: string; amountMinor: number; entryIds: string[]; owner?: FlowOwner };
 export type ExpectedCategory = { category_id: string | null; category: string; amount_minor: number };
 
 export type FlowCategory = FlowNode & { categoryId: string | null; groupId: string; color: string };
