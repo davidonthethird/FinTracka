@@ -39,9 +39,10 @@ describe("read-only viewer finance pages", () => {
     expect(html).toContain("By person");
     expect(html).toContain("Money flow");
     expect(html).toContain("Groceries");
-    expect(html).toContain("Zoomable financial flow");
-    expect(html).toContain("Focus Essentials");
-    expect(html).toContain("% of spending");
+    expect(html).toContain("Expandable financial flow");
+    expect(html).toContain("Expand all");
+    expect(html).toContain("Essentials");
+    expect(html).not.toContain("flow-wheel");
   });
 
   it("derives groups and final categories from published flow links and safely handles missing flow", () => {
@@ -82,15 +83,19 @@ describe("read-only viewer finance pages", () => {
   });
 
   it("uses published ledger entries for exact split amounts in report drawers", () => {
-    const base = snapshot.transactions.find((item) => item.category_id) ?? snapshot.transactions[0];
+    const original = snapshot.transactions.find((item) => item.category_id) ?? snapshot.transactions[0];
+    const base = { ...original, subcategory_id: "base-subcategory", subcategory: "Base subcategory" };
     const graph: FlowGraph = { nodes: [], links: [], entries: [{
       id: "split:1", transaction_id: base.id, local_date: base.local_date, merchant: base.merchant,
       description: base.description, category: "Groceries", category_id: "groceries", amount_minor: -1234,
-      currency: "USD", spending_owner: "Shared",
+      subcategory_id: "split-food", subcategory: "Split food", currency: "USD", spending_owner: "David",
     }] };
-    const rows = selectedFlowTransactions({ category_id: "groceries", category: "Groceries", amount_minor: 1234, entryIds: ["split:1"] }, graph, [base]);
+    const rows = selectedFlowTransactions({ category_id: "groceries", category: "Groceries", amount_minor: 1234, entryIds: ["split:1"], subcategoryId: "split-food", owner: "David" }, graph, [base]);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ id: "split:1", amount_minor: -1234, account_name: base.account_name });
+    expect(rows[0]).toMatchObject({
+      id: "split:1", amount_minor: -1234, account_name: base.account_name,
+      subcategory_id: "split-food", subcategory: "Split food", spending_owner: "David",
+    });
   });
 
   it("contains no mutation controls and makes no request while rendering", () => {

@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
-import { Pie, PieChart, ResponsiveContainer, Sankey, Sector } from "recharts";
-import type { PieSectorShapeProps, SankeyNodeProps } from "recharts";
+import { ResponsiveContainer, Sankey } from "recharts";
+import type { SankeyNodeProps } from "recharts";
 import { formatMoney } from "../format";
 import { flowChartHeight, type FlowOwner } from "../reports/flow";
+import { MobileExpandableSankey } from "./MobileExpandableSankey";
 
 export type FlowNode = { id: string; label: string; kind: string; amount_minor: number; entry_ids: string[] };
 export type FlowLink = { source: number; target: number; amount_minor: number; entry_ids: string[] };
@@ -53,44 +54,19 @@ export function ReportFlow({ report, expectedCategories, onCategory }: {
   const groups = useMemo(() => buildFlowGroups(report, expectedCategories), [report, expectedCategories]);
   const [focusedGroupId, setFocusedGroupId] = useState<string>();
   const focusedGroup = groups.find((group) => group.id === focusedGroupId);
-  const visibleGroups = focusedGroup ? [focusedGroup] : groups;
-  const categories = visibleGroups.flatMap((group) => group.categories);
-  const total = groups.reduce((sum, group) => sum + group.amount_minor, 0);
-  const visibleTotal = visibleGroups.reduce((sum, group) => sum + group.amount_minor, 0);
 
   if (!groups.length || !report) return <div className="flow-unavailable"><strong>Detailed flow is not available</strong><span>The category totals below still show this month’s spending.</span></div>;
 
-  return <div className="report-flow-map" aria-label="Zoomable financial flow">
-    <div className="flow-zoom-bar">
-      <span>{focusedGroup ? <><button onClick={() => setFocusedGroupId(undefined)}>All spending</button><b aria-hidden="true">›</b><strong>{focusedGroup.label}</strong></> : <strong>All spending</strong>}</span>
-      {focusedGroup && <button className="flow-reset" onClick={() => setFocusedGroupId(undefined)}>Reset view</button>}
-    </div>
-    <div className="flow-sankey" aria-label="Connected income and spending flow">
-      <DesktopFlow report={report} groups={groups} focusedGroup={focusedGroup} onFocus={setFocusedGroupId} onCategory={onCategory} />
-    </div>
-    <div className="flow-wheel-panel">
-      <div className="flow-wheel">
-        <PieChart width={300} height={300} style={{ width: "100%", height: "auto" }}>
-          <Pie data={visibleGroups} dataKey="amount_minor" nameKey="label" innerRadius="34%" outerRadius="54%" paddingAngle={1} stroke="#fff" strokeWidth={2} isAnimationActive={false} shape={(props) => { const group = props.payload as FlowGroup; return wheelSector(props, `Focus ${group.label} in flow wheel`, group.color, () => setFocusedGroupId(group.id)); }} />
-          <Pie data={categories} dataKey="amount_minor" nameKey="label" innerRadius="58%" outerRadius="82%" paddingAngle={1} stroke="#fff" strokeWidth={2} isAnimationActive={false} shape={(props) => { const category = props.payload as FlowCategory; return wheelSector(props, `Open ${category.label} transactions in flow wheel`, category.color, () => onCategory(selectionFor(category))); }} />
-        </PieChart>
-        <span className="flow-wheel-total"><small>{focusedGroup ? focusedGroup.label : "Outflow"}</small><strong>{formatMoney(visibleTotal)}</strong></span>
+  return <div className="report-flow-map" aria-label="Expandable financial flow">
+    <div className="mobile-flow-map"><MobileExpandableSankey report={report} groups={groups} onSelect={onCategory} /></div>
+    <div className="desktop-flow-map">
+      <div className="flow-zoom-bar">
+        <span>{focusedGroup ? <><button onClick={() => setFocusedGroupId(undefined)}>All spending</button><b aria-hidden="true">›</b><strong>{focusedGroup.label}</strong></> : <strong>All spending</strong>}</span>
+        {focusedGroup && <button className="flow-reset" onClick={() => setFocusedGroupId(undefined)}>Reset view</button>}
       </div>
-      <p>Tap a group to zoom in. Tap an outer category for its transactions.</p>
-    </div>
-    <div className="flow-group-list" aria-label="Spending groups">
-      {groups.map((group) => <button key={group.id} className={focusedGroupId === group.id ? "active" : ""} aria-label={`Focus ${group.label}`} onClick={() => setFocusedGroupId(group.id)}>
-        <i style={{ background: group.color }} />
-        <span><strong>{group.label}</strong><small>{percentage(group.amount_minor, total)}% of spending</small></span>
-        <b>{formatMoney(group.amount_minor)}</b>
-      </button>)}
-    </div>
-    <div className="flow-category-list" aria-label={focusedGroup ? `${focusedGroup.label} categories` : "All spending categories"}>
-      {categories.map((category) => <button key={category.id} onClick={() => onCategory(selectionFor(category))}>
-        <i style={{ background: category.color }} />
-        <span><strong>{category.label}</strong><small>{percentage(category.amount_minor, total)}% of spending</small></span>
-        <b>{formatMoney(category.amount_minor)}</b>
-      </button>)}
+      <div className="flow-sankey" aria-label="Connected income and spending flow">
+        <DesktopFlow report={report} groups={groups} focusedGroup={focusedGroup} onFocus={setFocusedGroupId} onCategory={onCategory} />
+      </div>
     </div>
   </div>;
 }
@@ -141,17 +117,6 @@ function FlowNodeShape({ payload, x, y, width, height, onGroupFocus, onCategory 
   </g>;
 }
 
-function percentage(amount: number, total: number): string { return total ? (amount / total * 100).toFixed(1) : "0.0"; }
-
 function selectionFor(category: Pick<FlowCategory, "categoryId" | "label" | "amount_minor" | "entry_ids">): FlowSelection {
   return { categoryId: category.categoryId, label: category.label, amountMinor: category.amount_minor, entryIds: category.entry_ids };
-}
-
-function activateKey(event: { key: string; preventDefault: () => void }, action: () => void) {
-  if (event.key === "Enter" || event.key === " ") { event.preventDefault(); action(); }
-}
-
-function wheelSector(props: PieSectorShapeProps, label: string, fill: string, action: () => void) {
-  const { payload: _payload, ...sector } = props;
-  return <Sector {...sector} fill={fill} role="button" tabIndex={0} aria-label={label} onClick={action} onKeyDown={(event) => activateKey(event, action)} />;
 }
