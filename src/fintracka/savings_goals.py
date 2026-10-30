@@ -88,6 +88,12 @@ class SavingsGoalView:
     locked: bool
     active: bool
     monthly_target_minor: int
+    monthly_saved_minor: int
+    monthly_funded_basis_points: int | None
+    overall_target_minor: int | None
+    overall_funded_basis_points: int | None
+    overall_remaining_minor: int | None
+    overflow_goal_ids: tuple[str, ...]
     balance_minor: int
     expected_to_date_minor: int
     funded_basis_points: int | None
@@ -120,7 +126,10 @@ class SavingsGoalDetail:
     owner: str
     balance_minor: int
     monthly_target_minor: int
+    overall_target_minor: int | None
+    overflow_goal_ids: tuple[str, ...]
     months: tuple[SavingsMonthPoint, ...]
+    updated_at: str
 
 
 @dataclass(frozen=True)
@@ -209,7 +218,7 @@ def initialize_goal_ledger(
     ).fetchall()
     emergency_id = _insert_goal(
         connection, "Emergency", "regular", "Shared", "shield", "blue",
-        activation_month, 10, now,
+        activation_month, 10, now, overall_target_minor=2_500_000,
     )
     general_id = _insert_goal(
         connection, "General Savings", "regular", "Shared", "piggy_bank", "green",
@@ -281,6 +290,8 @@ def create_savings_goal(
     linked_category_id: str | None = None,
     priority: int | None = None,
     monthly_target_minor: int = 0,
+    overall_target_minor: int | None = None,
+    overflow_goal_ids: Sequence[str] = (),
 ) -> str:
     name = _validate_goal_fields(
         connection, name, pool, owner, icon_key, color_key, activation_month,
@@ -293,6 +304,7 @@ def create_savings_goal(
         ).fetchone()[0]
     if isinstance(priority, bool) or not isinstance(priority, int) or priority < 0:
         raise SavingsGoalError("priority must be a nonnegative integer")
+    _validate_overall_target(overall_target_minor)
     now = _now()
     goal_id = new_id()
     try:
@@ -300,12 +312,14 @@ def create_savings_goal(
             """
             INSERT INTO savings_goals
             (id, parent_id, name, pool, owner, icon_key, color_key,
-             linked_category_id, priority, active, activation_month, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+             linked_category_id, priority, active, activation_month, created_at, updated_at,
+             overall_target_minor)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
             """,
             (
                 goal_id, parent_id, name, pool, owner, icon_key, color_key,
                 linked_category_id, priority, activation_month, now, now,
+                overall_target_minor,
             ),
         )
     except sqlite3.IntegrityError as error:
@@ -320,6 +334,7 @@ def create_savings_goal(
         """,
         (new_id(), goal_id, activation_month, monthly_target_minor, now, now),
     )
+    _set_overflow_rules(connection, goal_id, overflow_goal_ids, now)
     _audit(connection, "savings_goal_create", "savings_goal", goal_id, now)
     return goal_id
 
@@ -337,6 +352,11 @@ def update_savings_goal(
     linked_category_id: str | None,
     monthly_target_minor: int | None = None,
     effective_month: str | None = None,
+    overall_target_minor: int | None = None,
+    overall_target_supplied: bool = False,
+    overflow_goal_ids: Sequence[str] | None = None,
+    refill_sources: dict[str, int] | None = None,
+    allow_partial_refill: bool = False,
 ) -> None:
     before = _goal(connection, goal_id)
     _require_current(before, expected_updated_at, "savings goal")
@@ -351,6 +371,8 @@ def update_savings_goal(
         _validate_month(effective_month or "")
         if isinstance(monthly_target_minor, bool) or monthly_target_minor < 0:
             raise SavingsGoalError("monthly target must be a nonnegative integer")
+    if overall_target_supplied or overall_target_minor is not None:
+        _validate_overall_target(overall_target_minor)
     if before["linked_category_id"] is not None and before["linked_category_id"] != linked_category_id:
         _clear_goal_draws(connection, goal_id)
     now = _now()
@@ -358,9 +380,15 @@ def update_savings_goal(
         connection.execute(
             """
             UPDATE savings_goals SET parent_id = ?, name = ?, owner = ?, icon_key = ?,
-                color_key = ?, linked_category_id = ?, updated_at = ? WHERE id = ?
+                color_key = ?, linked_category_id = ?, overall_target_minor = ?,
+                updated_at = ? WHERE id = ?
             """,
-            (parent_id, name, owner, icon_key, color_key, linked_category_id, now, goal_id),
+            (
+                parent_id, name, owner, icon_key, color_key, linked_category_id,
+                overall_target_minor if overall_target_supplied or overall_target_minor is not None
+                else before["overall_target_minor"],
+                now, goal_id,
+            ),
         )
     except sqlite3.IntegrityError as error:
         raise SavingsGoalError("Planning category is already linked to a savings goal") from error
@@ -381,6 +409,171 @@ def update_savings_goal(
             (new_id(), goal_id, effective_month, monthly_target_minor, now, now),
         )
         connection.execute("UPDATE savings_settings SET updated_at = ? WHERE id = 1", (now,))
+    if overflow_goal_ids is not None:
+        _set_overflow_rules(connection, goal_id, overflow_goal_ids, now)
+    new_overall_target = (
+        overall_target_minor
+        if overall_target_supplied or overall_target_minor is not None
+        else before["overall_target_minor"]
+    )
+    target_increased = (
+        new_overall_target is not None
+        and new_overall_target > (before["overall_target_minor"] or 0)
+        and new_overall_target > _goal_balance(connection, goal_id)
+    )
+    if target_increased and refill_sources is None:
+        raise SavingsGoalError(
+            "choose refill sources or select a partial refill when increasing the overall target"
+        )
+    if refill_sources is not None:
+        _refill_goal(
+            connection, goal_id, new_overall_target, refill_sources,
+            allow_partial_refill, now,
+        )
+
+
+def _validate_overall_target(value: int | None) -> None:
+    if value is not None and (
+        isinstance(value, bool) or not isinstance(value, int) or value <= 0
+    ):
+        raise SavingsGoalError("overall target must be a positive integer or null")
+
+
+def _set_overflow_rules(
+    connection: sqlite3.Connection,
+    source_goal_id: str,
+    destination_goal_ids: Sequence[str],
+    now: str,
+) -> None:
+    if len(destination_goal_ids) != len(set(destination_goal_ids)):
+        raise SavingsGoalError("overflow destinations must be unique")
+    source = _goal(connection, source_goal_id)
+    edges = {
+        row["source_goal_id"]: set()
+        for row in connection.execute("SELECT source_goal_id FROM savings_goal_overflow_rules")
+        if row["source_goal_id"] != source_goal_id
+    }
+    for row in connection.execute(
+        "SELECT source_goal_id, destination_goal_id FROM savings_goal_overflow_rules WHERE source_goal_id != ?",
+        (source_goal_id,),
+    ):
+        edges.setdefault(row["source_goal_id"], set()).add(row["destination_goal_id"])
+    edges[source_goal_id] = set(destination_goal_ids)
+    for destination_id in destination_goal_ids:
+        destination = _goal(connection, destination_id)
+        if (
+            destination_id == source_goal_id
+            or destination["pool"] != source["pool"]
+            or not destination["active"]
+            or connection.execute(
+                "SELECT 1 FROM savings_goals WHERE parent_id = ? AND active = 1",
+                (destination_id,),
+            ).fetchone()
+        ):
+            raise SavingsGoalError("overflow destinations must be active leaf goals in the same pool")
+    pending = list(edges.get(source_goal_id, ()))
+    visited: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current == source_goal_id:
+            raise SavingsGoalError("overflow rules cannot contain a cycle")
+        if current not in visited:
+            visited.add(current)
+            pending.extend(edges.get(current, ()))
+    connection.execute(
+        "DELETE FROM savings_goal_overflow_rules WHERE source_goal_id = ?",
+        (source_goal_id,),
+    )
+    connection.executemany(
+        """
+        INSERT INTO savings_goal_overflow_rules
+        (source_goal_id, destination_goal_id, priority, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            (source_goal_id, destination_id, priority, now, now)
+            for priority, destination_id in enumerate(destination_goal_ids)
+        ],
+    )
+
+
+def _goal_balance(connection: sqlite3.Connection, goal_id: str) -> int:
+    return connection.execute(
+        "SELECT COALESCE(SUM(amount_minor), 0) FROM savings_ledger_entries WHERE goal_id = ?",
+        (goal_id,),
+    ).fetchone()[0]
+
+
+def _refill_goal(
+    connection: sqlite3.Connection,
+    goal_id: str,
+    overall_target_minor: int | None,
+    refill_sources: dict[str, int],
+    allow_partial_refill: bool,
+    now: str,
+) -> None:
+    if not isinstance(allow_partial_refill, bool):
+        raise SavingsGoalError("partial refill choice must be a boolean")
+    if overall_target_minor is None:
+        if refill_sources:
+            raise SavingsGoalError("a goal without an overall target cannot be refilled")
+        return
+    shortfall = max(overall_target_minor - _goal_balance(connection, goal_id), 0)
+    total = 0
+    source_rows: list[tuple[sqlite3.Row, int]] = []
+    target = _goal(connection, goal_id)
+    for source_id, amount in refill_sources.items():
+        if (
+            source_id == goal_id
+            or isinstance(amount, bool)
+            or not isinstance(amount, int)
+            or amount <= 0
+        ):
+            raise SavingsGoalError("refill sources require positive amounts from other goals")
+        source = _goal(connection, source_id)
+        if source["pool"] != target["pool"]:
+            raise SavingsGoalError("refill sources must belong to the same savings pool")
+        if _goal_balance(connection, source_id) < amount:
+            raise SavingsGoalError("refill source does not have enough savings")
+        source_rows.append((source, amount))
+        total += amount
+    if total > shortfall:
+        raise SavingsGoalError("refill sources exceed the goal shortfall")
+    if not allow_partial_refill and total != shortfall:
+        raise SavingsGoalError("refill sources must equal the goal shortfall")
+    if not total:
+        return
+    movement_id = new_id()
+    effective_date = date.today().isoformat()
+    month = effective_date[:7]
+    for source, amount in source_rows:
+        connection.execute(
+            """
+            INSERT INTO savings_ledger_entries
+            (id, movement_id, pool, bucket_type, goal_id, amount_minor, currency,
+             event_type, effective_date, month, source_key, actor, explanation, created_at)
+            VALUES (?, ?, ?, 'goal', ?, ?, 'USD', 'adjustment', ?, ?, ?, 'user', ?, ?)
+            """,
+            (
+                new_id(), movement_id, target["pool"], source["id"], -amount,
+                effective_date, month, f"reallocation:{movement_id}:from:{source['id']}",
+                f"Reallocated to {target['name']}", now,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO savings_ledger_entries
+            (id, movement_id, pool, bucket_type, goal_id, amount_minor, currency,
+             event_type, effective_date, month, source_key, actor, explanation, created_at)
+            VALUES (?, ?, ?, 'goal', ?, ?, 'USD', 'adjustment', ?, ?, ?, 'user', ?, ?)
+            """,
+            (
+                new_id(), movement_id, target["pool"], goal_id, amount,
+                effective_date, month,
+                f"reallocation:{movement_id}:to:{goal_id}:from:{source['id']}",
+                f"Reallocated from {source['name']}", now,
+            ),
+        )
 
 
 def archive_savings_goal(
@@ -393,6 +586,10 @@ def archive_savings_goal(
     if before["linked_category_id"] is not None:
         _clear_goal_draws(connection, goal_id)
     now = _now()
+    connection.execute(
+        "DELETE FROM savings_goal_overflow_rules WHERE source_goal_id = ? OR destination_goal_id = ?",
+        (goal_id, goal_id),
+    )
     connection.execute(
         "UPDATE savings_goals SET active = 0, linked_category_id = NULL, updated_at = ? WHERE id = ?",
         (now, goal_id),
@@ -415,6 +612,10 @@ def delete_unused_savings_goal(
     if used:
         raise SavingsGoalError("savings goal has history; archive it instead")
     now = _now()
+    connection.execute(
+        "DELETE FROM savings_goal_overflow_rules WHERE source_goal_id = ? OR destination_goal_id = ?",
+        (goal_id, goal_id),
+    )
     connection.execute("DELETE FROM savings_goal_target_versions WHERE goal_id = ?", (goal_id,))
     connection.execute("DELETE FROM savings_goals WHERE id = ?", (goal_id,))
     _audit(connection, "savings_goal_delete", "savings_goal", goal_id, now, dict(before), None)
@@ -501,6 +702,10 @@ def assign_account_pool(
             connection, goal_id, pool, balance[0], settings["activation_month"], now,
             source_key=f"opening:account:{account_id}",
         )
+    if changed:
+        from fintracka.ledger import classify_savings_transfers
+
+        classify_savings_transfers(connection)
     _audit(connection, "savings_account_pool_set", "account", account_id, now, dict(row), None)
 
 
@@ -648,6 +853,19 @@ def allocation_preview(
         extra = _exact_shares(remaining, targets, [row.priority for row in plan])
         allocations = [current + addition for current, addition in zip(allocations, extra, strict=True)]
         remaining = 0
+    allocation_by_goal = _route_overflow(
+        connection,
+        pool,
+        month,
+        {row.goal_id: amount for row, amount in zip(plan, allocations, strict=True)},
+    )
+    plan_ids = {row.goal_id for row in plan}
+    extra_goal_ids = sorted(
+        (goal_id for goal_id, amount in allocation_by_goal.items() if amount and goal_id not in plan_ids),
+        key=lambda goal_id: connection.execute(
+            "SELECT priority FROM savings_goals WHERE id = ?", (goal_id,)
+        ).fetchone()[0],
+    )
     return AllocationPreview(
         pool,
         month,
@@ -656,9 +874,81 @@ def allocation_preview(
         remaining,
         tuple(
             AllocationPreviewRow(row.goal_id, row.monthly_target_minor, basis, allocation)
-            for row, basis, allocation in zip(plan, basis_points, allocations, strict=True)
+            for row, basis, allocation in zip(
+                plan, basis_points,
+                [allocation_by_goal.get(row.goal_id, 0) for row in plan], strict=True,
+            )
+        ) + tuple(
+            AllocationPreviewRow(goal_id, 0, 0, allocation_by_goal[goal_id])
+            for goal_id in extra_goal_ids
         ),
     )
+
+
+def _route_overflow(
+    connection: sqlite3.Connection,
+    pool: str,
+    month: str,
+    allocations: dict[str, int],
+) -> dict[str, int]:
+    rows = connection.execute(
+        """
+        SELECT g.id, g.overall_target_minor, g.priority,
+               COALESCE((
+                   SELECT SUM(e.amount_minor) FROM savings_ledger_entries e
+                   WHERE e.goal_id = g.id
+               ), 0) balance_minor,
+               COALESCE((
+                   SELECT v.monthly_target_minor FROM savings_goal_target_versions v
+                   WHERE v.goal_id = g.id AND v.effective_month <= ?
+                   ORDER BY v.effective_month DESC LIMIT 1
+               ), 0) monthly_target_minor
+        FROM savings_goals g
+        WHERE g.pool = ? AND g.active = 1
+          AND NOT EXISTS (
+              SELECT 1 FROM savings_goals child
+              WHERE child.parent_id = g.id AND child.active = 1
+          )
+        """,
+        (month, pool),
+    ).fetchall()
+    goals = {row["id"]: row for row in rows}
+    rules: dict[str, list[str]] = {}
+    for row in connection.execute(
+        """
+        SELECT r.source_goal_id, r.destination_goal_id
+        FROM savings_goal_overflow_rules r
+        JOIN savings_goals destination ON destination.id = r.destination_goal_id
+        WHERE destination.active = 1
+        ORDER BY r.source_goal_id, r.priority, r.destination_goal_id
+        """
+    ):
+        if row["source_goal_id"] in goals and row["destination_goal_id"] in goals:
+            rules.setdefault(row["source_goal_id"], []).append(row["destination_goal_id"])
+    for _ in range(len(goals)):
+        changed = False
+        for source_id, destinations in rules.items():
+            source = goals[source_id]
+            target = source["overall_target_minor"]
+            amount = allocations.get(source_id, 0)
+            if target is None or not amount:
+                continue
+            overflow = min(amount, max(source["balance_minor"] + amount - target, 0))
+            if not overflow:
+                continue
+            allocations[source_id] = amount - overflow
+            weights = [goals[destination]["monthly_target_minor"] for destination in destinations]
+            shares = _exact_shares(
+                overflow,
+                weights if sum(weights) else [1] * len(destinations),
+                [goals[destination]["priority"] for destination in destinations],
+            )
+            for destination, share in zip(destinations, shares, strict=True):
+                allocations[destination] = allocations.get(destination, 0) + share
+            changed = True
+        if not changed:
+            break
+    return allocations
 
 
 def allocate_contribution(connection: sqlite3.Connection, transaction_id: str) -> None:
@@ -1000,7 +1290,8 @@ def savings_goal_detail(
     view = _goal_view(connection, goal, goal["activation_month"], through_month)
     return SavingsGoalDetail(
         view.goal_id, view.name, view.pool, view.owner, view.balance_minor,
-        view.monthly_target_minor, view.months,
+        view.monthly_target_minor, view.overall_target_minor,
+        view.overflow_goal_ids, view.months, view.updated_at,
     )
 
 
@@ -1062,29 +1353,47 @@ def undo_savings_event(connection: sqlite3.Connection, event_id: str, reason: st
     ).fetchone()
     if event is None:
         raise SavingsGoalError("savings event not found")
-    if event["event_type"] == "reversal" or connection.execute(
-        "SELECT 1 FROM savings_ledger_entries WHERE reverses_entry_id = ?", (event_id,)
-    ).fetchone():
+    events = [event]
+    if event["source_key"].startswith("reallocation:"):
+        events = connection.execute(
+            """
+            SELECT * FROM savings_ledger_entries
+            WHERE movement_id = ? AND source_key LIKE 'reallocation:%'
+            ORDER BY id
+            """,
+            (event["movement_id"],),
+        ).fetchall()
+    if any(
+        item["event_type"] == "reversal" or connection.execute(
+            "SELECT 1 FROM savings_ledger_entries WHERE reverses_entry_id = ?", (item["id"],)
+        ).fetchone()
+        for item in events
+    ):
         raise SavingsGoalConflict("savings event is already reversed")
-    reversal_id = new_id()
-    connection.execute(
-        """
-        INSERT INTO savings_ledger_entries
-        (id, movement_id, pool, bucket_type, goal_id, amount_minor, currency,
-         event_type, effective_date, month, source_key, source_transaction_id,
-         source_review_month, manual_asset_id, reverses_entry_id, actor,
-         explanation, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'USD', 'reversal', ?, ?, ?, ?, ?, ?, ?, 'user', ?, ?)
-        """,
-        (
-            reversal_id, new_id(), event["pool"], event["bucket_type"], event["goal_id"],
-            -event["amount_minor"], event["effective_date"], event["month"],
-            f"reversal:{event_id}", event["source_transaction_id"],
-            event["source_review_month"], event["manual_asset_id"], event_id,
-            reason.strip() or "Undo savings event", _now(),
-        ),
-    )
-    return reversal_id
+    reversal_movement_id = new_id()
+    reversal_ids: list[str] = []
+    now = _now()
+    for item in events:
+        reversal_id = new_id()
+        reversal_ids.append(reversal_id)
+        connection.execute(
+            """
+            INSERT INTO savings_ledger_entries
+            (id, movement_id, pool, bucket_type, goal_id, amount_minor, currency,
+             event_type, effective_date, month, source_key, source_transaction_id,
+             source_review_month, manual_asset_id, reverses_entry_id, actor,
+             explanation, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'USD', 'reversal', ?, ?, ?, ?, ?, ?, ?, 'user', ?, ?)
+            """,
+            (
+                reversal_id, reversal_movement_id, item["pool"], item["bucket_type"],
+                item["goal_id"], -item["amount_minor"], item["effective_date"],
+                item["month"], f"reversal:{item['id']}", item["source_transaction_id"],
+                item["source_review_month"], item["manual_asset_id"], item["id"],
+                reason.strip() or "Undo savings event", now,
+            ),
+        )
+    return reversal_ids[0]
 
 
 def generate_month_review(connection: sqlite3.Connection, month: str) -> SavingsMonthReview:
@@ -1340,11 +1649,16 @@ def _goal_view(
         "SELECT * FROM savings_ledger_entries WHERE goal_id = ? AND month <= ? ORDER BY effective_date, created_at, id",
         (goal["id"], through_month),
     ).fetchall()
+    reversed_ids = {
+        entry["reverses_entry_id"] for entry in entries
+        if entry["event_type"] == "reversal" and entry["reverses_entry_id"] is not None
+    }
     points: list[SavingsMonthPoint] = []
     running = 0
     month = max(activation_month, goal["activation_month"])
     expected = 0
     latest_target = 0
+    latest_saved = 0
     while month <= through_month:
         target_row = connection.execute(
             """
@@ -1356,13 +1670,25 @@ def _goal_view(
         ).fetchone()
         latest_target = target_row[0] if target_row else 0
         expected += latest_target
-        month_entries = [entry for entry in entries if entry["month"] == month]
+        month_entries = [
+            entry for entry in entries
+            if entry["month"] == month
+            and entry["event_type"] != "reversal"
+            and entry["id"] not in reversed_ids
+        ]
         opening = running
         additions = sum(
             entry["amount_minor"] for entry in month_entries
             if entry["event_type"] in {"opening", "deposit", "allocation", "review"}
             and entry["amount_minor"] > 0
         )
+        contributed = sum(
+            entry["amount_minor"] for entry in month_entries
+            if entry["event_type"] in {"deposit", "allocation", "review"}
+            and entry["amount_minor"] > 0
+        )
+        if month == through_month:
+            latest_saved = contributed
         spending = -sum(
             entry["amount_minor"] for entry in month_entries
             if entry["event_type"] == "spending_draw" and entry["amount_minor"] < 0
@@ -1385,10 +1711,25 @@ def _goal_view(
         )
         month = _next_month(month)
     progress = min(running * 10_000 // expected, 10_000) if expected > 0 else None
+    monthly_progress = latest_saved * 10_000 // latest_target if latest_target > 0 else None
+    overall_target = goal["overall_target_minor"]
+    overall_progress = running * 10_000 // overall_target if overall_target else None
+    overflow_goal_ids = tuple(
+        row[0] for row in connection.execute(
+            """
+            SELECT destination_goal_id FROM savings_goal_overflow_rules
+            WHERE source_goal_id = ? ORDER BY priority, destination_goal_id
+            """,
+            (goal["id"],),
+        )
+    )
     return SavingsGoalView(
         goal["id"], goal["name"], goal["pool"], goal["owner"], goal["parent_id"], goal["linked_category_id"],
         goal["icon_key"], goal["color_key"], goal["priority"], bool(goal["locked"]),
-        bool(goal["active"]), latest_target, running, expected, progress,
+        bool(goal["active"]), latest_target, latest_saved, monthly_progress,
+        overall_target, overall_progress,
+        max(overall_target - running, 0) if overall_target is not None else None,
+        overflow_goal_ids, running, expected, progress,
         max(running - expected, 0), tuple(points), goal["updated_at"],
     )
 
@@ -1688,16 +2029,20 @@ def _insert_goal(
     activation_month: str,
     priority: int,
     now: str,
+    overall_target_minor: int | None = None,
 ) -> str:
     goal_id = new_id()
     connection.execute(
         """
         INSERT INTO savings_goals
         (id, name, pool, owner, icon_key, color_key, priority, active,
-         activation_month, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+         activation_month, created_at, updated_at, overall_target_minor)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
         """,
-        (goal_id, name, pool, owner, icon_key, color_key, priority, activation_month, now, now),
+        (
+            goal_id, name, pool, owner, icon_key, color_key, priority,
+            activation_month, now, now, overall_target_minor,
+        ),
     )
     connection.execute(
         """

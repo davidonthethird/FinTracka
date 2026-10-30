@@ -42,7 +42,14 @@ from fintracka.manual_cash import (
     delete_manual_cash,
     update_manual_cash,
 )
-from fintracka.launchd import install_schedule, remove_schedule, schedule_status
+from fintracka.launchd import (
+    install_remote_schedule,
+    install_schedule,
+    remote_schedule_status,
+    remove_remote_schedule,
+    remove_schedule,
+    schedule_status,
+)
 from fintracka.ledger import (
     ConflictError,
     IntegrityError,
@@ -68,6 +75,9 @@ from fintracka.reports import (
     spending_by_owner,
 )
 from fintracka.readiness import filevault_enabled, readiness_report
+from fintracka.remote_client import RemotePublishError
+from fintracka.remote_config import load_remote_settings
+from fintracka.remote_service import publish_remote_snapshot, purge_remote_snapshots
 from fintracka.security import LocalSessions, host_allowed, origin_allowed
 from fintracka.savings import (
     ManualAssetError,
@@ -286,6 +296,8 @@ class SavingsGoalCreate(StrictModel):
     linked_category_id: StrictStr | None = None
     priority: StrictInt | None = Field(default=None, ge=0)
     monthly_target_minor: StrictInt = Field(default=0, ge=0, le=10**15)
+    overall_target_minor: StrictInt | None = Field(default=None, gt=0, le=10**15)
+    overflow_goal_ids: list[StrictStr] = Field(default_factory=list, max_length=100)
 
 
 class SavingsGoalPatch(StrictModel):
@@ -298,6 +310,10 @@ class SavingsGoalPatch(StrictModel):
     linked_category_id: StrictStr | None = None
     monthly_target_minor: StrictInt | None = Field(default=None, ge=0, le=10**15)
     effective_month: StrictStr | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
+    overall_target_minor: StrictInt | None = Field(default=None, gt=0, le=10**15)
+    overflow_goal_ids: list[StrictStr] | None = Field(default=None, max_length=100)
+    refill_sources: dict[StrictStr, StrictInt] | None = None
+    allow_partial_refill: StrictBool = False
 
 
 class SavingsRevision(StrictModel):
@@ -407,6 +423,10 @@ class EmptyRequest(StrictModel):
     pass
 
 
+class RemotePurgeRequest(StrictModel):
+    confirmation: Literal["DELETE REMOTE COPY"]
+
+
 class PlaidSessionRequest(StrictModel):
     profile: Literal["david", "ariela"]
 
@@ -478,7 +498,11 @@ def create_app(
     schedule_installer: Callable[[Path, Path, Path], Any] = install_schedule,
     schedule_remover: Callable[[Path], Any] = remove_schedule,
     schedule_status_reader: Callable[[Path], dict[str, bool]] = schedule_status,
+    remote_schedule_installer: Callable[[Path, Path, Path, int], Any] = install_remote_schedule,
+    remote_schedule_remover: Callable[[Path], Any] = remove_remote_schedule,
+    remote_schedule_status_reader: Callable[[Path], dict[str, bool]] = remote_schedule_status,
     filevault_checker: Callable[[], bool] = filevault_enabled,
+    remote_secrets_factory: Callable[[], KeychainSecrets] = KeychainSecrets,
 ) -> FastAPI:
     path = Path(database_path)
     initial = connect(path)
@@ -489,11 +513,13 @@ def create_app(
     sessions = LocalSessions(bootstrap_token or secrets.token_urlsafe(32))
     jobs = JobRunner(path)
     launch_agent = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.sync.plist"
+    remote_launch_agent = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.remote-publish.plist"
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):  # type: ignore[no-untyped-def]
         startup = connect(path)
         try:
+            remote_enabled = load_remote_settings(startup).enabled
             if _startup_sync_due(startup):
                 def catch_up(connection: sqlite3.Connection) -> None:
                     with ProcessLock(path.parent / "fintracka.lock"):
@@ -503,8 +529,17 @@ def create_app(
                                 connection, profile, environment
                             ),
                         )
+                    if remote_enabled:
+                        _publish_remote_safely(path, remote_secrets_factory, "sync")
 
                 jobs.submit("plaid_sync", catch_up)
+            elif remote_enabled:
+                jobs.submit(
+                    "remote_publish",
+                    lambda connection: _publish_remote_safely(
+                        path, remote_secrets_factory, "startup"
+                    ),
+                )
         finally:
             startup.close()
         try:
@@ -622,6 +657,66 @@ def create_app(
             filevault_checker=filevault_checker,
             scheduler=schedule_status_reader(launch_agent),
         )
+
+    @app.get("/api/v1/settings/remote")
+    def remote_settings(database: Database) -> dict[str, object]:
+        settings = load_remote_settings(database)
+        scheduler = remote_schedule_status_reader(remote_launch_agent)
+        last_bank_sync = database.execute(
+            "SELECT MAX(last_success_at) FROM provider_connections WHERE provider != 'manual'"
+        ).fetchone()[0]
+        publication_count = database.execute(
+            "SELECT COUNT(*) FROM remote_publication_runs WHERE status = 'succeeded'"
+        ).fetchone()[0]
+        return {
+            "enabled": settings.enabled,
+            "viewer_url": settings.viewer_url,
+            "history_months": settings.history_months,
+            "interval_minutes": settings.interval_minutes,
+            "schedule_installed": scheduler["installed"],
+            "schedule_loaded": scheduler["loaded"],
+            "last_source_sequence": settings.next_source_sequence - 1,
+            "last_bank_sync_at": last_bank_sync,
+            "last_snapshot_id": settings.last_snapshot_id,
+            "last_published_at": settings.last_published_at,
+            "last_error_code": settings.last_error_code,
+            "publication_count": publication_count,
+        }
+
+    @app.post("/api/v1/settings/remote/publish", status_code=202)
+    def remote_publish(payload: EmptyRequest) -> dict[str, str]:
+        del payload
+
+        def work(_: sqlite3.Connection) -> None:
+            publish_remote_snapshot(path, remote_secrets_factory(), reason="manual")
+
+        return {"job_id": jobs.submit("remote_publish", work)}
+
+    @app.post("/api/v1/settings/remote/schedule")
+    def install_remote_publish_schedule(
+        payload: EmptyRequest, database: Database
+    ) -> dict[str, bool]:
+        del payload
+        settings = load_remote_settings(database)
+        if not settings.enabled:
+            raise HTTPException(status_code=409, detail="remote publication is not configured")
+        remote_schedule_installer(
+            remote_launch_agent, Path(sys.executable), path.parent, settings.interval_minutes
+        )
+        return remote_schedule_status_reader(remote_launch_agent)
+
+    @app.delete("/api/v1/settings/remote/schedule", status_code=204)
+    def remove_remote_publish_schedule() -> None:
+        remote_schedule_remover(remote_launch_agent)
+
+    @app.delete("/api/v1/settings/remote/snapshot", status_code=202)
+    def remote_purge(payload: RemotePurgeRequest) -> dict[str, str]:
+        del payload
+
+        def work(_: sqlite3.Connection) -> None:
+            purge_remote_snapshots(path, remote_secrets_factory())
+
+        return {"job_id": jobs.submit("remote_purge", work)}
 
     @app.get("/api/v1/providers")
     def providers(database: Database) -> list[dict[str, object]]:
@@ -861,7 +956,24 @@ def create_app(
             clauses.append("t.user_archived = 0")
         parameters: list[object] = []
         if not include_transfers:
-            clauses.append("NOT EXISTS (SELECT 1 FROM transfer_links l WHERE l.status = 'confirmed' AND (l.transaction_a_id = t.id OR l.transaction_b_id = t.id))")
+            clauses.append("""
+                NOT EXISTS (
+                    SELECT 1 FROM transfer_links l
+                    WHERE l.status = 'confirmed'
+                      AND (l.transaction_a_id = t.id OR l.transaction_b_id = t.id)
+                      AND NOT (
+                          t.amount_minor < 0 AND a.savings_pool IS NULL AND EXISTS (
+                              SELECT 1 FROM transactions incoming
+                              JOIN accounts destination ON destination.id = incoming.account_id
+                              WHERE incoming.id = CASE
+                                  WHEN l.transaction_a_id = t.id THEN l.transaction_b_id
+                                  ELSE l.transaction_a_id END
+                                AND incoming.amount_minor = -t.amount_minor
+                                AND destination.savings_pool IN ('regular', 'retirement')
+                          )
+                      )
+                )
+            """)
         if cursor:
             cursor_date, cursor_id = _decode_cursor(cursor)
             clauses.append("(t.local_date < ? OR (t.local_date = ? AND t.id < ?))")
@@ -1402,10 +1514,14 @@ def create_app(
         try:
             if (payload.monthly_target_minor is None) != (payload.effective_month is None):
                 raise SavingsGoalError("monthly target and effective month must be supplied together")
+            if payload.refill_sources is not None and "overall_target_minor" not in payload.model_fields_set:
+                raise SavingsGoalError("refill sources require an overall target update")
             with _write_transaction(database):
+                values = payload.model_dump(exclude={"expected_updated_at"})
+                values["overall_target_supplied"] = "overall_target_minor" in payload.model_fields_set
                 update_savings_goal(
                     database, goal_id, payload.expected_updated_at,
-                    **payload.model_dump(exclude={"expected_updated_at"}),
+                    **values,
                 )
                 _reconcile_savings_after_mutation(database)
             month = payload.effective_month or database.execute(
@@ -1787,6 +1903,7 @@ def create_app(
                     connection,
                     lambda profile, environment: plaid_adapter(connection, profile, environment),
                 )
+            _publish_remote_safely(path, remote_secrets_factory, "sync")
 
         return {"job_id": jobs.submit("plaid_sync", work)}
 
@@ -2150,6 +2267,17 @@ def _startup_sync_due(connection: sqlite3.Connection) -> bool:
     if running is not None:
         return False
     return True
+
+
+def _publish_remote_safely(
+    database_path: Path,
+    secrets_factory: Callable[[], KeychainSecrets],
+    reason: Literal["startup", "sync"],
+) -> None:
+    try:
+        publish_remote_snapshot(database_path, secrets_factory(), reason=reason)
+    except RemotePublishError:
+        pass
 
 
 def _encode_cursor(local_date: str, transaction_id: str) -> str:

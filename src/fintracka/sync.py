@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from fintracka.dates import local_date, utc_instant
 from fintracka.ids import new_id
-from fintracka.ledger import apply_rules, confirm_learned_transfers
+from fintracka.ledger import apply_rules, classify_savings_transfers, confirm_learned_transfers
 from fintracka.providers import NormalizedAccount, NormalizedBalance, NormalizedTransaction, SyncBatch
 from fintracka.subcategories import automatic_subcategory_id, automatic_subcategory_source
 
@@ -51,6 +51,7 @@ def apply_batch(
         _reclassify_provider_transfers(connection, connection_id, now)
         apply_rules(connection)
         confirm_learned_transfers(connection)
+        classify_savings_transfers(connection)
         if connection.execute("SELECT 1 FROM savings_settings WHERE id = 1").fetchone():
             from fintracka.savings_goals import (
                 reconcile_savings_draws,

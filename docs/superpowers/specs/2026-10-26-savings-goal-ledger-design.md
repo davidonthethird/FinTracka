@@ -170,7 +170,7 @@ For each pool and month:
 1. Up to the planned monthly total, actual contributions fill fixed monthly targets from highest to lowest priority.
 2. If a higher-priority goal is already fully funded for the month, continue to the next goal.
 3. Any amount above the planned total is distributed across active goals using their allocation percentages.
-4. Excess continues to distribute across all active goals by their percentages, including goals already ahead of their cumulative monthly plan. These are accumulating monthly reserves, not lifetime goals with completion caps.
+4. Excess continues to distribute across active goals by their monthly percentages unless a goal has reached an overall goal and configured overflow destinations. In that case, its share is reassigned to those same-pool destinations by their current monthly target weights. With no overflow destination, the completed goal continues growing.
 5. With no nonzero targets, new money remains Unallocated until the user creates a plan.
 
 Provider retries, modified transactions, removed transactions, and pending-to-posted replacements adjust allocations through idempotent delta/reversal events.
@@ -226,11 +226,13 @@ History starts in the activation month. The Savings overview shows:
 - uncovered overspending and pending transfers;
 - allocation percentage and monthly target attainment.
 
-Monthly goal progress compares cumulative net goal balance against cumulative expected funding since activation:
+The overview offers two distinct views. Monthly progress compares contributions in the selected month with that month's versioned dollar goal. Overall progress compares the current virtual goal balance with its optional overall goal. Goals without an overall goal remain open-ended while still showing their long-term balance.
+
+The historical detail also retains cumulative expected funding since activation:
 
 `expected to date = monthly target × active months`
 
-Progress is capped visually at 100%, while the detail view shows any amount ahead of plan. Goals with a zero monthly target remain visible in lists and balances but do not consume an angular allocation slice.
+Progress is capped visually at 100%, while the detail view shows the actual dollar balance. Goals with a zero monthly target remain visible in lists and balances but do not consume a Monthly doughnut slice. Raising an overall goal can atomically reassign existing same-pool virtual balances from user-selected goals; these append-only ledger entries are reversible and never initiate a bank transfer.
 
 For Retirement, only explicit contribution transactions or confirmed manual contribution entries count toward monthly target attainment. Market movement and changes in a connected/manual asset valuation are recorded as valuation gains or losses and change the retirement balance without being called contributions.
 
@@ -253,7 +255,7 @@ The Savings page keeps the existing FinTracka visual language and gains four int
 3. **Manage goals**
    - Regular Savings and Retirement hierarchy.
    - Create, edit, reorder, archive, and delete-unused actions.
-   - Name, owner, icon, color, monthly target, optional linked Planning category, and active status.
+   - Name, owner, icon, color, versioned monthly goal, optional overall goal, overflow destinations, optional linked Planning category, and active status.
 
 4. **Monthly review**
    - Prior-month target, actual spending, capped suggestion, deposit match status, distribution preview, accept/transfer-wait/ignore actions, and history.

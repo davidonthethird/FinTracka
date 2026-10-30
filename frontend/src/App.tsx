@@ -35,6 +35,7 @@ type Provider = { id: string; name: string; enabled: boolean; profiles?: PlaidPr
 type LinkSession = { link_token: string; expires_at: string; environment: string };
 type ReadinessCheck = { id: string; label: string; status: "pass" | "fail" | "warning"; blocking: boolean; detail: string };
 type ReadinessData = { ready: boolean; checks: ReadinessCheck[] };
+type RemoteViewerStatus = { enabled: boolean; viewer_url?: string; history_months: number; interval_minutes: number; schedule_installed: boolean; schedule_loaded: boolean; last_source_sequence: number; last_bank_sync_at?: string; last_snapshot_id?: string; last_published_at?: string; last_error_code?: string; publication_count: number };
 type FlowNode = { id: string; label: string; kind: string; amount_minor: number; entry_ids: string[]; totalBasisPoints?: number; ownerBasisPoints?: Partial<Record<SpendingOwner, number>> };
 type FlowLink = { source: number; target: number; amount_minor: number; entry_ids: string[]; owner?: SpendingOwner };
 type FlowEntry = { id: string; transaction_id: string; local_date: string; merchant: string; description: string; category: string; category_id?: string; amount_minor: number; currency: string; spending_owner?: SpendingOwner | null; notes?: string; updated_at: string; is_cash_withdrawal: boolean };
@@ -489,6 +490,7 @@ function SettingsPage({ dark, setDark }: { dark: boolean; setDark: (value: boole
   const [refresh, setRefresh] = useState(0);
   const settings = useData<Record<string, string | boolean>>("/settings", refresh);
   const readiness = useData<ReadinessData>("/settings/readiness", refresh);
+  const remote = useData<RemoteViewerStatus>("/settings/remote", refresh);
   async function run(kind: "excel" | "backup" | "google_authorize" | "google_export") {
     const labels = { excel: "Excel export", backup: "Backup", google_authorize: "Google authorization", google_export: "Google export" };
     setOperation(`${labels[kind]} queued…`);
@@ -509,7 +511,29 @@ function SettingsPage({ dark, setDark }: { dark: boolean; setDark: (value: boole
       setOperation(installed ? "Daily sync installed." : "Daily sync removed."); setRefresh((value) => value + 1);
     } catch (caught) { setOperation(caught instanceof Error ? caught.message : "Unable to change daily sync"); }
   }
-  return <Page title="Settings" note="Security and local automation"><DataBoundary result={readiness}>{(report) => <section className="instrument-panel readiness-panel"><div className="section-heading"><h2>Live-data readiness</h2><strong className={report.ready ? "good" : "warning"}>{report.ready ? "Ready for one-bank testing" : "Blocking checks remain"}</strong></div><div className="readiness-grid">{report.checks.map((check) => <div key={check.id} className={check.status}><span aria-hidden="true">{check.status === "pass" ? "✓" : check.status === "fail" ? "×" : "!"}</span><p><strong>{check.label}</strong><small>{check.detail}</small></p><b>{check.blocking ? "Required" : "Advisory"}</b></div>)}</div></section>}</DataBoundary><DataBoundary result={settings}>{(data) => <div className="settings-list"><Setting label="Theme" text="Stored in this browser"><button onClick={() => setDark(!dark)}>{dark ? "Use light" : "Use dark"}</button></Setting><Setting label="Reporting" text={`${data.reporting_currency} · ${data.reporting_timezone}`}><span>Fixed for release 1</span></Setting><Setting label="Network" text="Dashboard listens only on 127.0.0.1"><span className="good">Local only</span></Setting><Setting label="Daily sync" text="06:17 local time and at login; the Mac must be awake"><button onClick={() => changeSchedule(!data.schedule_installed)}>{data.schedule_installed ? "Remove schedule" : "Install schedule"}</button></Setting><Setting label="Google Sheets" text="One-way export with access only to the workbook FinTracka creates">{data.google_authorized ? <button onClick={() => run("google_export")}>Export to Google</button> : <button disabled={!data.google_configured} onClick={() => run("google_authorize")}>{data.google_configured ? "Authorize Google" : "Not configured"}</button>}</Setting><Setting label="Excel snapshot" text="Writes an atomic app-owned workbook"><button onClick={() => run("excel")}>Export now</button></Setting><Setting label="Verified backup" text="SQLite online backup with integrity check"><button onClick={() => run("backup")}>Back up now</button></Setting>{operation && <div className="operation-status" role="status"><strong>Operation</strong><span>{operation}</span></div>}</div>}</DataBoundary></Page>;
+  async function runRemote(kind: "publish" | "purge") {
+    if (kind === "purge" && window.prompt("Type DELETE REMOTE COPY to remove the hosted snapshot.") !== "DELETE REMOTE COPY") return;
+    const label = kind === "publish" ? "Remote publication" : "Remote deletion";
+    setOperation(`${label} queued…`);
+    try {
+      const result = await api<{ job_id: string }>(kind === "publish" ? "/settings/remote/publish" : "/settings/remote/snapshot", { method: kind === "publish" ? "POST" : "DELETE", body: kind === "publish" ? "{}" : JSON.stringify({ confirmation: "DELETE REMOTE COPY" }) });
+      for (let attempt = 0; attempt < 600; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        const job = await api<{ status: string }>(`/jobs/${result.job_id}`);
+        if (!['queued', 'running'].includes(job.status)) { setOperation(`${label} ${job.status}.`); setRefresh((value) => value + 1); return; }
+      }
+      setOperation(`${label} is still running.`);
+    } catch (caught) { setOperation(caught instanceof Error ? caught.message : `${label} failed.`); }
+  }
+  async function changeRemoteSchedule(installed: boolean) {
+    setOperation(installed ? "Installing hourly remote publication…" : "Removing remote publication schedule…");
+    try {
+      await api("/settings/remote/schedule", { method: installed ? "POST" : "DELETE", body: installed ? "{}" : undefined });
+      setOperation(installed ? "Remote publication schedule installed." : "Remote publication schedule removed.");
+      setRefresh((value) => value + 1);
+    } catch (caught) { setOperation(caught instanceof Error ? caught.message : "Unable to change remote publication schedule."); }
+  }
+  return <Page title="Settings" note="Security and local automation"><DataBoundary result={readiness}>{(report) => <section className="instrument-panel readiness-panel"><div className="section-heading"><h2>Live-data readiness</h2><strong className={report.ready ? "good" : "warning"}>{report.ready ? "Ready for one-bank testing" : "Blocking checks remain"}</strong></div><div className="readiness-grid">{report.checks.map((check) => <div key={check.id} className={check.status}><span aria-hidden="true">{check.status === "pass" ? "✓" : check.status === "fail" ? "×" : "!"}</span><p><strong>{check.label}</strong><small>{check.detail}</small></p><b>{check.blocking ? "Required" : "Advisory"}</b></div>)}</div></section>}</DataBoundary><DataBoundary result={remote}>{(data) => <section className="instrument-panel remote-settings"><div className="section-heading"><div><p className="eyebrow">Private read-only copy</p><h2>Remote viewer</h2></div><strong className={data.enabled ? "good" : "warning"}>{data.enabled ? "Configured" : "Not configured"}</strong></div><div className="notice"><strong>Privacy boundary.</strong><span>The hosted viewer contains a sanitized financial snapshot. It cannot edit FinTracka or connect back to this Mac.</span></div><div className="remote-status-grid"><span>Latest bank sync<strong>{data.last_bank_sync_at || "Not available"}</strong></span><span>Latest cloud publish<strong>{data.last_published_at || "Not published"}</strong></span><span>Source sequence<strong>{data.last_source_sequence || "None"}</strong></span><span>Hourly schedule<strong>{data.schedule_loaded ? "Active" : data.schedule_installed ? "Installed, not loaded" : "Not installed"}</strong></span></div>{data.last_error_code && <p className="remote-error">Latest error: {data.last_error_code}</p>}<div className="remote-actions">{data.viewer_url ? <a className="button-link" href={data.viewer_url} target="_blank" rel="noreferrer">Open viewer</a> : <button disabled>Open viewer</button>}<button disabled={!data.enabled} onClick={() => changeRemoteSchedule(!data.schedule_installed)}>{data.schedule_installed ? "Remove hourly publishing" : "Install hourly publishing"}</button><button disabled={!data.enabled} onClick={() => runRemote("publish")}>Publish now</button><button className="destructive" disabled={!data.enabled} onClick={() => runRemote("purge")}>Delete remote copy</button></div></section>}</DataBoundary><DataBoundary result={settings}>{(data) => <div className="settings-list"><Setting label="Theme" text="Stored in this browser"><button onClick={() => setDark(!dark)}>{dark ? "Use light" : "Use dark"}</button></Setting><Setting label="Reporting" text={`${data.reporting_currency} · ${data.reporting_timezone}`}><span>Fixed for release 1</span></Setting><Setting label="Network" text="Dashboard listens only on 127.0.0.1"><span className="good">Local only</span></Setting><Setting label="Daily sync" text="06:17 local time and at login; the Mac must be awake"><button onClick={() => changeSchedule(!data.schedule_installed)}>{data.schedule_installed ? "Remove schedule" : "Install schedule"}</button></Setting><Setting label="Google Sheets" text="One-way export with access only to the workbook FinTracka creates">{data.google_authorized ? <button onClick={() => run("google_export")}>Export to Google</button> : <button disabled={!data.google_configured} onClick={() => run("google_authorize")}>{data.google_configured ? "Authorize Google" : "Not configured"}</button>}</Setting><Setting label="Excel snapshot" text="Writes an atomic app-owned workbook"><button onClick={() => run("excel")}>Export now</button></Setting><Setting label="Verified backup" text="SQLite online backup with integrity check"><button onClick={() => run("backup")}>Back up now</button></Setting>{operation && <div className="operation-status" role="status"><strong>Operation</strong><span>{operation}</span></div>}</div>}</DataBoundary></Page>;
 }
 
 function Page({ title, note, children }: { title: string; note: string; children: React.ReactNode }) { return <div className="page"><header className="page-title"><div><p className="eyebrow">FinTracka</p><h1>{title}</h1></div><p>{note}</p></header>{children}</div>; }
@@ -568,7 +592,10 @@ function CashFlowDiagram({ report, onSelect, splitByOwner = false }: { report: F
       totalBasisPoints: shares[index]?.totalBasisPoints,
       ownerBasisPoints: splitByOwner ? shares[index]?.ownerBasisPoints : undefined,
     })),
-    links: links.map((link) => ({ ...link, value: link.amount_minor })),
+    // Recharts keys links by source, target, and value. Equal owner shares are
+    // distinct ribbons, so a sub-minor-unit layout offset keeps their keys unique
+    // while the published amount_minor remains exact for labels and drilldowns.
+    links: links.map((link, index) => ({ ...link, value: link.amount_minor + index / 1_000_000 })),
   };
   return <div className="flow-chart" style={{ height: flowChartHeight(report.nodes.length) }}><ResponsiveContainer width="100%" height="100%"><Sankey data={data} iterations={0} sort={false} verticalAlign="top" nodePadding={FLOW_NODE_PADDING} nodeWidth={9} linkCurvature={0.42} margin={{ top: 24, right: 265, bottom: 24, left: 155 }} node={(props) => <FlowNodeShape {...props} selectFlow={onSelect} />} link={(props) => <FlowLinkShape {...props} selectFlow={onSelect} />} /></ResponsiveContainer></div>;
 }

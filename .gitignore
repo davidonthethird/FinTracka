@@ -3,10 +3,12 @@
 .env.*
 !.env.example
 .playwright-cli/
+.wrangler/
 .worktrees/
 .superpowers/
 node_modules/
 dist/
+dist-viewer/
 __pycache__/
 *.egg-info/
 .pytest_cache/

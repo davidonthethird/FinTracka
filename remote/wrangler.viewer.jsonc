@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fintracka-viewer",
+  "main": "src/viewer.ts",
+  "compatibility_date": "2026-10-27",
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "../frontend/dist-viewer",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "env": {
+    "staging": {
+      "name": "fintracka-viewer-staging",
+      "workers_dev": true,
+      "r2_buckets": [{ "binding": "SNAPSHOTS", "bucket_name": "fintracka-snapshots-staging" }]
+    },
+    "production": {
+      "name": "fintracka-viewer-production",
+      "workers_dev": true,
+      "r2_buckets": [{ "binding": "SNAPSHOTS", "bucket_name": "fintracka-snapshots-production" }]
+    }
+  }
+}

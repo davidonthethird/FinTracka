@@ -413,6 +413,127 @@ def test_allocation_priority_excess_replay_and_reversal(ledger: sqlite3.Connecti
     ).fetchone()[0] == 0
 
 
+def test_monthly_and_overall_goal_progress_are_independent(
+    ledger: sqlite3.Connection,
+) -> None:
+    account_id = _add_savings_account(ledger, 2_000_000)
+    initialize_goal_ledger(ledger, "2026-10", 2_000_000)
+    emergency = ledger.execute(
+        "SELECT * FROM savings_goals WHERE name = 'Emergency'"
+    ).fetchone()
+    update_savings_goal(
+        ledger, emergency["id"], emergency["updated_at"], name="Emergency",
+        owner="Shared", icon_key="shield", color_key="blue", parent_id=None,
+        linked_category_id=None, monthly_target_minor=100_000,
+        effective_month="2026-10", overall_target_minor=2_500_000,
+    )
+    contribution_id = _add_savings_transaction(ledger, account_id, 100_000)
+    allocate_contribution(ledger, contribution_id)
+
+    goal = next(
+        item for item in savings_goal_overview(ledger, "2026-10").goals
+        if item.goal_id == emergency["id"]
+    )
+    assert goal.monthly_saved_minor == 100_000
+    assert goal.monthly_funded_basis_points == 10_000
+    assert goal.overall_target_minor == 2_500_000
+    assert goal.overall_funded_basis_points == 8_400
+    assert goal.overall_remaining_minor == 400_000
+
+
+def test_full_goal_overflow_routes_by_destination_monthly_targets(
+    ledger: sqlite3.Connection,
+) -> None:
+    account_id = _add_savings_account(ledger, 2_500_000)
+    initialize_goal_ledger(ledger, "2026-10", 2_500_000)
+    goals = {
+        row["name"]: row for row in ledger.execute(
+            "SELECT * FROM savings_goals WHERE pool = 'regular'"
+        )
+    }
+    fun_id = create_savings_goal(
+        ledger, name="Fun", pool="regular", owner="Shared", icon_key="gamepad",
+        color_key="purple", activation_month="2026-10", monthly_target_minor=25_000,
+    )
+    update_savings_goal(
+        ledger, goals["Emergency"]["id"], goals["Emergency"]["updated_at"],
+        name="Emergency", owner="Shared", icon_key="shield", color_key="blue",
+        parent_id=None, linked_category_id=None, monthly_target_minor=100_000,
+        effective_month="2026-10", overall_target_minor=2_500_000,
+        overflow_goal_ids=[goals["General Savings"]["id"], fun_id],
+    )
+    revision = ledger.execute(
+        "SELECT updated_at FROM savings_settings WHERE id = 1"
+    ).fetchone()[0]
+    set_allocation_plan(
+        ledger, "regular", "2026-10",
+        [
+            AllocationPlanRow(goals["Emergency"]["id"], 100_000, False, 1),
+            AllocationPlanRow(goals["General Savings"]["id"], 75_000, False, 2),
+            AllocationPlanRow(fun_id, 25_000, False, 3),
+        ],
+        revision,
+    )
+
+    preview = allocation_preview(ledger, "regular", "2026-10", 100_000)
+    allocations = {row.goal_id: row.allocated_minor for row in preview.rows}
+    assert allocations[goals["Emergency"]["id"]] == 0
+    assert allocations[goals["General Savings"]["id"]] == 75_000
+    assert allocations[fun_id] == 25_000
+
+    transaction_id = _add_savings_transaction(ledger, account_id, 100_000)
+    allocate_contribution(ledger, transaction_id)
+    assert savings_goal_detail(
+        ledger, goals["Emergency"]["id"], "2026-10"
+    ).balance_minor == 2_500_000
+
+
+def test_raising_overall_goal_can_refill_from_existing_goal_balances(
+    ledger: sqlite3.Connection,
+) -> None:
+    _add_savings_account(ledger, 3_000_000)
+    initialize_goal_ledger(ledger, "2026-10", 3_000_000)
+    emergency = ledger.execute(
+        "SELECT * FROM savings_goals WHERE name = 'Emergency'"
+    ).fetchone()
+    general = ledger.execute(
+        "SELECT * FROM savings_goals WHERE name = 'General Savings'"
+    ).fetchone()
+
+    update_savings_goal(
+        ledger, emergency["id"], emergency["updated_at"], name="Emergency",
+        owner="Shared", icon_key="shield", color_key="blue", parent_id=None,
+        linked_category_id=None, overall_target_minor=3_000_000,
+        refill_sources={general["id"]: 500_000}, allow_partial_refill=False,
+    )
+    overview = savings_goal_overview(ledger, "2026-10")
+    balances = {goal.name: goal.balance_minor for goal in overview.goals}
+    assert balances["Emergency"] == 3_000_000
+    assert balances["General Savings"] == 0
+    assert overview.combined_minor == 3_000_000
+
+    reallocation_id = ledger.execute(
+        "SELECT id FROM savings_ledger_entries WHERE source_key LIKE 'reallocation:%' LIMIT 1"
+    ).fetchone()[0]
+    undo_savings_event(ledger, reallocation_id, "change refill choice")
+    overview = savings_goal_overview(ledger, "2026-10")
+    balances = {goal.name: goal.balance_minor for goal in overview.goals}
+    assert balances["Emergency"] == 2_500_000
+    assert balances["General Savings"] == 500_000
+    assert overview.combined_minor == 3_000_000
+
+    emergency = ledger.execute(
+        "SELECT * FROM savings_goals WHERE name = 'Emergency'"
+    ).fetchone()
+    with pytest.raises(SavingsGoalError, match="refill sources must equal"):
+        update_savings_goal(
+            ledger, emergency["id"], emergency["updated_at"], name="Emergency",
+            owner="Shared", icon_key="shield", color_key="blue", parent_id=None,
+            linked_category_id=None, overall_target_minor=3_100_000,
+            refill_sources={}, allow_partial_refill=False,
+        )
+
+
 def test_modified_contribution_reverses_stale_allocation_and_reallocates(
     ledger: sqlite3.Connection,
 ) -> None:

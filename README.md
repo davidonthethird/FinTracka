@@ -2,6 +2,8 @@
 
 FinTracka is a single-user, local-first personal finance application for macOS. SQLite is the authoritative ledger and the dashboard listens only on `127.0.0.1`. Plaid supplies account and transaction data; Google Sheets and Excel are one-way exports.
 
+An optional private remote viewer can publish a sanitized, read-only snapshot outward to Cloudflare for mobile access. It never connects inward to the Mac, never mutates FinTracka, and is not a backup. Live publication remains disabled until the staging and household-approval gate in [REMOTE_VIEWER_RUNBOOK.md](REMOTE_VIEWER_RUNBOOK.md) is complete.
+
 ## What it does
 
 - Imports balances and transactions from Plaid without giving FinTracka bank credentials.
@@ -107,6 +109,12 @@ Data and corrections persist in the local SQLite ledger when the browser or appl
 .venv/bin/python -m fintracka.cli schedule install
 .venv/bin/python -m fintracka.cli schedule status
 .venv/bin/python -m fintracka.cli schedule remove
+
+# After the remote-viewer release gate: publish and manage hourly publication
+.venv/bin/python -m fintracka.cli remote publish
+.venv/bin/python -m fintracka.cli remote schedule install
+.venv/bin/python -m fintracka.cli remote schedule status
+.venv/bin/python -m fintracka.cli remote schedule remove
 ```
 
 Scheduled work runs only while the Mac is awake. Local backups are retained according to FinTracka's backup policy; an encrypted off-device backup remains recommended.
@@ -125,9 +133,11 @@ Roth IRA holdings are tracked as Retirement only when explicitly assigned or ent
 
 Savings goal tracking starts in the month you activate it; it never fabricates earlier goal history. Before activation, create and verify a local SQLite backup. The setup preview allocates up to **$25,000** of current Regular Savings to **Emergency**, assigns any remainder to **General Savings**, and shows Retirement separately. Review that preview in the UI before confirming it.
 
-Monthly dollar targets are authoritative. Percentage sliders redistribute the same exact cents across unlocked goals, while priority order controls which goals receive money first when a deposit is smaller than planned. Deposits above the monthly plan are divided by the saved percentages. Goals linked to Planning categories draw only category spending above that category's target.
+Monthly dollar goals control what to add each month and apply from the selected month forward. A goal can also have an optional overall goal, such as a $25,000 Emergency fund; Monthly and Overall views keep those two kinds of progress separate. A completed overall goal can send future contributions to selected same-pool goals, while no selection lets it continue growing. Raising an overall goal can reassign existing virtual goal balances without moving money at the bank. Percentage sliders still redistribute the same exact cents across unlocked monthly goals, and priority controls which goals receive a smaller-than-planned deposit first. Goals linked to Planning categories draw only category spending above that category's target.
 
 Money committed to cover overspending remains visible as **Pending transfer** until a unique matching savings withdrawal settles it. Unmatched withdrawals require an explicit goal, Unallocated, or Pending-transfer assignment. Corrections and undo operations append reversing ledger events; historical entries are not silently rewritten. Regular Savings and Retirement always remain separate, and reconciliation warnings are visible instead of being auto-balanced.
+
+An exact confirmed transfer from a non-savings account into a tracked Regular Savings or Retirement account counts once as **Savings** in Planning, Overview, and Reports. Its incoming side is not counted as income. Transfers between tracked savings accounts and credit-card payments remain excluded.
 
 Plaid's history window cannot be expanded after Transactions has already been initialized on an Item. Do not disconnect and reconnect an existing Trial Item merely to request more history: removing it does not restore the lifetime Trial slot. Use **History import** for older records instead.
 

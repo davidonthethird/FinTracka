@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import secrets
 import subprocess
 import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fintracka.api import create_app
@@ -13,9 +16,20 @@ from fintracka.db import connect, migrate
 from fintracka.exports import export_excel, export_google
 from fintracka.google_sheets import build_google_gateway, configure_google
 from fintracka.keychain import KeychainSecrets
-from fintracka.launchd import install_schedule, remove_schedule, schedule_status
+from fintracka.launchd import (
+    install_remote_schedule,
+    install_schedule,
+    remote_schedule_status,
+    remove_remote_schedule,
+    remove_schedule,
+    schedule_status,
+)
 from fintracka.locks import ProcessLock
 from fintracka.plaid_service import build_plaid_adapter, configure_plaid, sync_plaid_connections
+from fintracka.remote_config import configure_remote, load_remote_settings, set_remote_enabled
+from fintracka.remote_client import RemotePublishError
+from fintracka.remote_service import publish_remote_snapshot, purge_remote_snapshots
+from fintracka.remote_snapshot import build_remote_snapshot, serialize_remote_snapshot, snapshot_digest
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
 from fintracka.sync import apply_batch
 
@@ -90,6 +104,28 @@ def main(argv: list[str] | None = None) -> int:
                 connection.close()
         print("Google desktop OAuth configuration stored in macOS Keychain.")
         return 0
+    if args.command == "configure" and args.provider == "remote":
+        secret = sys.stdin.readline().strip()
+        if not secret:
+            parser.error("Access client secret must be provided on stdin")
+        with ProcessLock(lock_path):
+            connection = connect(database_path)
+            try:
+                migrate(connection)
+                configure_remote(
+                    connection,
+                    KeychainSecrets(),
+                    viewer_url=args.viewer_url,
+                    publisher_url=args.publisher_url,
+                    access_client_id=args.client_id,
+                    access_client_secret=secret,
+                    history_months=args.history_months,
+                    interval_minutes=args.interval_minutes,
+                )
+            finally:
+                connection.close()
+        print("Remote viewer configured; automatic publication remains disabled until remote enable.")
+        return 0
     if args.command == "sync":
         with ProcessLock(lock_path):
             connection = connect(database_path)
@@ -105,6 +141,10 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 connection.close()
         print(f"Completed {len(runs)} Plaid connection sync(s).")
+        try:
+            publish_remote_snapshot(database_path, KeychainSecrets(), reason="sync")
+        except RemotePublishError as error:
+            print(f"Remote publication failed ({error.code}); bank sync still succeeded.", file=sys.stderr)
         return 0
     if args.command == "export" and args.export_type == "excel":
         if args.output is None:
@@ -146,6 +186,89 @@ def main(argv: list[str] | None = None) -> int:
             remove_schedule(destination)
             print("Daily sync schedule removed.")
         return 0
+    if args.command == "remote" and args.remote_action == "preview":
+        with ProcessLock(lock_path):
+            connection = connect(database_path)
+            try:
+                migrate(connection)
+                settings = load_remote_settings(connection)
+                snapshot = build_remote_snapshot(
+                    connection,
+                    source_sequence=settings.next_source_sequence,
+                    history_months=settings.history_months,
+                    now=datetime.now(timezone.utc),
+                )
+                payload = serialize_remote_snapshot(snapshot)
+            finally:
+                connection.close()
+        if args.output:
+            descriptor = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(payload + b"\n")
+        print(json.dumps({
+            "transactions": snapshot.counts.transactions,
+            "sources": snapshot.counts.sources,
+            "history_start": snapshot.history_start,
+            "history_end": snapshot.history_end,
+            "bytes": len(payload),
+            "digest": snapshot_digest(payload),
+        }, sort_keys=True))
+        return 0
+    if args.command == "remote" and args.remote_action == "publish":
+        result = publish_remote_snapshot(database_path, KeychainSecrets(), reason=args.reason)
+        print("Remote publication is disabled." if result is None else f"Published snapshot {result.snapshot_id}.")
+        return 0
+    if args.command == "remote" and args.remote_action == "status":
+        connection = connect(database_path)
+        try:
+            migrate(connection)
+            settings = load_remote_settings(connection)
+        finally:
+            connection.close()
+        print(json.dumps({
+            "enabled": settings.enabled,
+            "viewer_url": settings.viewer_url,
+            "last_snapshot_id": settings.last_snapshot_id,
+            "last_published_at": settings.last_published_at,
+            "last_error_code": settings.last_error_code,
+        }, sort_keys=True))
+        return 0
+    if args.command == "remote" and args.remote_action in {"enable", "disable"}:
+        with ProcessLock(lock_path):
+            connection = connect(database_path)
+            try:
+                migrate(connection)
+                settings = set_remote_enabled(connection, args.remote_action == "enable")
+            finally:
+                connection.close()
+        print(
+            "Automatic remote publication enabled."
+            if settings.enabled
+            else "Automatic remote publication disabled."
+        )
+        return 0
+    if args.command == "remote" and args.remote_action == "purge":
+        purge_remote_snapshots(database_path, KeychainSecrets())
+        print("Remote snapshots purged.")
+        return 0
+    if args.command == "remote" and args.remote_action == "schedule":
+        destination = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.remote-publish.plist"
+        if args.schedule_action == "install":
+            connection = connect(database_path)
+            try:
+                migrate(connection)
+                interval_minutes = load_remote_settings(connection).interval_minutes
+            finally:
+                connection.close()
+            install_remote_schedule(destination, Path(sys.executable), data_directory, interval_minutes)
+            print(f"Remote publication schedule installed every {interval_minutes} minutes.")
+        elif args.schedule_action == "status":
+            print(json.dumps(remote_schedule_status(destination), sort_keys=True))
+        else:
+            remove_remote_schedule(destination)
+            print("Remote publication schedule removed.")
+        return 0
     parser.error("unsupported command")
     return 2
 
@@ -170,6 +293,14 @@ def _parser() -> argparse.ArgumentParser:
     google = configure_subparsers.add_parser("google")
     google.add_argument("--data-dir", type=Path, default=_default_data_directory())
     google.add_argument("--client-json-stdin", action="store_true", required=True)
+    remote_config = configure_subparsers.add_parser("remote")
+    remote_config.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    remote_config.add_argument("--viewer-url", required=True)
+    remote_config.add_argument("--publisher-url", required=True)
+    remote_config.add_argument("--client-id", required=True)
+    remote_config.add_argument("--secret-stdin", action="store_true", required=True)
+    remote_config.add_argument("--history-months", type=int, choices=range(1, 7), default=6)
+    remote_config.add_argument("--interval-minutes", type=int, default=60)
     sync = subparsers.add_parser("sync")
     sync.add_argument("--data-dir", type=Path, default=_default_data_directory())
     export = subparsers.add_parser("export")
@@ -186,6 +317,26 @@ def _parser() -> argparse.ArgumentParser:
     schedule = subparsers.add_parser("schedule")
     schedule.add_argument("schedule_action", choices=["install", "status", "remove"])
     schedule.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    remote = subparsers.add_parser("remote")
+    remote_subparsers = remote.add_subparsers(dest="remote_action", required=True)
+    remote_preview = remote_subparsers.add_parser("preview")
+    remote_preview.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    remote_preview.add_argument("--output", type=Path)
+    remote_publish = remote_subparsers.add_parser("publish")
+    remote_publish.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    remote_publish.add_argument("--reason", choices=["manual", "scheduled"], default="manual")
+    remote_status = remote_subparsers.add_parser("status")
+    remote_status.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    remote_enable = remote_subparsers.add_parser("enable")
+    remote_enable.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    remote_disable = remote_subparsers.add_parser("disable")
+    remote_disable.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    remote_purge = remote_subparsers.add_parser("purge")
+    remote_purge.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    remote_purge.add_argument("--confirm-delete-remote-snapshot", action="store_true", required=True)
+    remote_schedule = remote_subparsers.add_parser("schedule")
+    remote_schedule.add_argument("schedule_action", choices=["install", "status", "remove"])
+    remote_schedule.add_argument("--data-dir", type=Path, default=_default_data_directory())
     return parser
 
 

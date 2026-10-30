@@ -116,11 +116,14 @@ def cash_flow_paths(connection: sqlite3.Connection, month: str) -> dict[str, obj
             row["id"]: row
             for row in connection.execute(
                 f"""
-                SELECT id, provider_description description,
+                SELECT t.id, t.provider_description description,
                        COALESCE(NULLIF(user_merchant, ''), NULLIF(provider_merchant, ''), provider_description) merchant,
-                       notes, updated_at, is_cash_withdrawal
-                FROM transactions
-                WHERE id IN ({','.join('?' for _ in transaction_ids)})
+                       t.notes, t.updated_at, t.is_cash_withdrawal,
+                       t.subcategory_id, s.name subcategory,
+                       s.category_id subcategory_category_id
+                FROM transactions t
+                LEFT JOIN subcategories s ON s.id = t.subcategory_id
+                WHERE t.id IN ({','.join('?' for _ in transaction_ids)})
                 """,
                 transaction_ids,
             )
@@ -157,6 +160,10 @@ def cash_flow_paths(connection: sqlite3.Connection, month: str) -> dict[str, obj
                 "description": detail["description"],
                 "category": entry.category or "Uncategorized",
                 "category_id": entry.category_id,
+                "subcategory_id": detail["subcategory_id"]
+                if detail["subcategory_category_id"] == entry.category_id else None,
+                "subcategory": detail["subcategory"]
+                if detail["subcategory_category_id"] == entry.category_id else None,
                 "amount_minor": entry.amount_minor,
                 "currency": "USD",
                 "spending_owner": entry.spending_owner if is_expense else None,
@@ -330,6 +337,18 @@ def ledger_entries(
                   SELECT 1 FROM transfer_links l
                   WHERE l.status = 'confirmed'
                     AND (l.transaction_a_id = t.id OR l.transaction_b_id = t.id)
+                    AND NOT (
+                        t.amount_minor < 0 AND a.savings_pool IS NULL AND EXISTS (
+                            SELECT 1
+                            FROM transactions incoming
+                            JOIN accounts destination ON destination.id = incoming.account_id
+                            WHERE incoming.id = CASE
+                                WHEN l.transaction_a_id = t.id THEN l.transaction_b_id
+                                ELSE l.transaction_a_id END
+                              AND incoming.amount_minor = -t.amount_minor
+                              AND destination.savings_pool IN ('regular', 'retirement')
+                        )
+                    )
               )
             UNION ALL
             SELECT t.id, t.local_date, s.amount_minor, COALESCE(s.category_id, t.category_id),
@@ -346,6 +365,18 @@ def ledger_entries(
                   SELECT 1 FROM transfer_links l
                   WHERE l.status = 'confirmed'
                     AND (l.transaction_a_id = t.id OR l.transaction_b_id = t.id)
+                    AND NOT (
+                        t.amount_minor < 0 AND a.savings_pool IS NULL AND EXISTS (
+                            SELECT 1
+                            FROM transactions incoming
+                            JOIN accounts destination ON destination.id = incoming.account_id
+                            WHERE incoming.id = CASE
+                                WHEN l.transaction_a_id = t.id THEN l.transaction_b_id
+                                ELSE l.transaction_a_id END
+                              AND incoming.amount_minor = -t.amount_minor
+                              AND destination.savings_pool IN ('regular', 'retirement')
+                        )
+                    )
               )
         )
         SELECT r.transaction_id, r.local_date, r.amount_minor, r.category_id,

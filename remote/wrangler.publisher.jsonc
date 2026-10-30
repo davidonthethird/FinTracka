@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fintracka-publisher",
+  "main": "src/publisher.ts",
+  "compatibility_date": "2026-10-27",
+  "workers_dev": false,
+  "preview_urls": false,
+  "env": {
+    "staging": {
+      "name": "fintracka-publisher-staging",
+      "workers_dev": true,
+      "r2_buckets": [{ "binding": "SNAPSHOTS", "bucket_name": "fintracka-snapshots-staging" }]
+    },
+    "production": {
+      "name": "fintracka-publisher-production",
+      "workers_dev": true,
+      "r2_buckets": [{ "binding": "SNAPSHOTS", "bucket_name": "fintracka-snapshots-production" }]
+    }
+  }
+}

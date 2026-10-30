@@ -1,0 +1,19 @@
+---
+description: Deliver completed major FinTracka work through GitHub and the live application
+alwaysApply: true
+---
+
+# Major Feature Delivery
+
+When a major project section is complete and verified, default to the complete delivery workflow without asking which Git option to use:
+
+1. Update the feature branch from the current `main` branch.
+2. Run the relevant full verification suite and fix failures.
+3. Push the feature branch and create or update its pull request.
+4. Get required CI checks green and merge the pull request into `main`.
+5. Update the local `main` checkout.
+6. Deploy each affected live component using the repository runbook.
+7. Refresh or republish live read models when the release changes their schema or contents.
+8. Verify the deployed version and report the PR and deployment result.
+
+Preserve unrelated user changes. Never force-push, bypass failing checks, expose secrets, or perform destructive cleanup without explicit authorization.

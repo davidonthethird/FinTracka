@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import stat
 
 import fintracka.cli as cli_module
 from fintracka.cli import main
@@ -11,6 +12,8 @@ from fintracka.google_sheets import google_status
 from fintracka.plaid_adapter import ConnectedItem, InstitutionInfo
 from fintracka.plaid_service import complete_plaid_connection, load_plaid_configuration
 from fintracka.providers import NormalizedAccount, NormalizedTransaction, SyncBatch
+from fintracka.remote_client import PublishResult
+from fintracka.remote_config import load_remote_settings
 
 
 def test_configure_plaid_profiles_and_sync_routes_every_connection(
@@ -81,11 +84,18 @@ def test_configure_plaid_profiles_and_sync_routes_every_connection(
         "build_plaid_adapter",
         build,
     )
+    published: list[tuple[object, str]] = []
+    monkeypatch.setattr(
+        cli_module,
+        "publish_remote_snapshot",
+        lambda path, keychain, reason: published.append((path, reason)),
+    )
 
     assert main(["sync", "--data-dir", str(tmp_path)]) == 0
     connection = connect(tmp_path / "fintracka.sqlite3")
     assert connection.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 2
     assert calls == [("david", "production"), ("ariela", "sandbox")]
+    assert published == [(tmp_path.resolve() / "fintracka.sqlite3", "sync")]
 
 
 def test_configure_google_reads_desktop_client_json_from_stdin(tmp_path, monkeypatch) -> None:
@@ -147,6 +157,83 @@ def test_open_in_chrome_uses_macos_open_without_shell(monkeypatch) -> None:
     cli_module._open_in_chrome("http://127.0.0.1:8787/#bootstrap=local")
 
     assert calls == [["open", "-a", "Google Chrome", "http://127.0.0.1:8787/#bootstrap=local"]]
+
+
+def test_remote_cli_configure_preview_status_publish_and_purge(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    backend = FakeKeyring()
+    secrets = KeychainSecrets(backend)
+    monkeypatch.setattr(cli_module, "KeychainSecrets", lambda: secrets)
+    monkeypatch.setattr(cli_module.sys, "stdin", io.StringIO("access-secret\n"))
+
+    assert main([
+        "configure", "remote", "--viewer-url", "https://view.example.test",
+        "--publisher-url", "https://publish.example.test", "--client-id", "access-id",
+        "--secret-stdin", "--data-dir", str(tmp_path),
+    ]) == 0
+    output = capsys.readouterr().out
+    assert "configured" in output.lower()
+    assert "access-id" not in output and "access-secret" not in output
+
+    preview = tmp_path / "preview.json"
+    assert main(["remote", "preview", "--output", str(preview), "--data-dir", str(tmp_path)]) == 0
+    preview_output = capsys.readouterr().out
+    assert "digest" in preview_output.lower() and "transactions" in preview_output.lower()
+    assert stat.S_IMODE(preview.stat().st_mode) == 0o600
+    assert json.loads(preview.read_text())["schema_version"] == 1
+
+    published = []
+    purged = []
+    monkeypatch.setattr(
+        cli_module,
+        "publish_remote_snapshot",
+        lambda path, keychain, reason: published.append((path, reason)) or PublishResult(
+            "snapshot", 1, "2026-10-27T12:00:00Z", False
+        ),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "purge_remote_snapshots",
+        lambda path, keychain: purged.append(path),
+    )
+    schedules: list[tuple[str, int] | str] = []
+    monkeypatch.setattr(
+        cli_module,
+        "install_remote_schedule",
+        lambda destination, python, data, interval: schedules.append(("install", interval)),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "remote_schedule_status",
+        lambda destination: {"installed": True, "loaded": True},
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "remove_remote_schedule",
+        lambda destination: schedules.append("remove"),
+    )
+    assert main(["remote", "publish", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "publish", "--reason", "scheduled", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "status", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "enable", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "schedule", "install", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "schedule", "status", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "schedule", "remove", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "disable", "--data-dir", str(tmp_path)]) == 0
+    assert main([
+        "remote", "purge", "--confirm-delete-remote-snapshot", "--data-dir", str(tmp_path)
+    ]) == 0
+    assert published == [
+        (tmp_path.resolve() / "fintracka.sqlite3", "manual"),
+        (tmp_path.resolve() / "fintracka.sqlite3", "scheduled"),
+    ]
+    assert purged == [tmp_path.resolve() / "fintracka.sqlite3"]
+    assert schedules == [("install", 60), "remove"]
+
+    connection = connect(tmp_path / "fintracka.sqlite3")
+    assert load_remote_settings(connection).enabled is False
+    connection.close()
 
 
 class FakeKeyring:

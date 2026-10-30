@@ -23,7 +23,11 @@ from fintracka.google_sheets import (
 from fintracka.keychain import KeychainSecrets
 from fintracka.launchd import (
     build_launch_agent,
+    build_remote_launch_agent,
+    install_remote_schedule,
     install_schedule,
+    remote_schedule_status,
+    remove_remote_schedule,
     remove_schedule,
     schedule_status,
 )
@@ -72,11 +76,11 @@ def test_pre_migration_backup_is_verified_and_private(tmp_path: Path) -> None:
     migrate(connection)
 
     backups = sorted((tmp_path / "backups").glob("fintracka-pre-migration-*.sqlite3"))
-    assert len(backups) == 2
+    assert len(backups) == 6
     for backup in backups:
         verify_backup(backup)
         assert stat.S_IMODE(backup.stat().st_mode) == 0o600
-    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 14
+    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 18
     connection.close()
 
 
@@ -354,6 +358,58 @@ def test_launchd_schedule_install_status_and_remove_are_explicit(tmp_path: Path)
 
     remove_schedule(destination, runner=runner, user_id=501)
     assert calls[-1][:3] == ["launchctl", "bootout", "gui/501"]
+    assert not destination.exists()
+
+
+def test_remote_launchd_schedule_is_private_hourly_and_restores_previous_on_failure(
+    tmp_path: Path,
+) -> None:
+    data_directory = tmp_path / "data"
+    destination = tmp_path / "Library" / "LaunchAgents" / "com.fintracka.remote-publish.plist"
+    payload = plistlib.loads(
+        build_remote_launch_agent(Path("/opt/fintracka/bin/python"), data_directory)
+    )
+    assert payload["Label"] == "com.fintracka.remote-publish"
+    assert payload["RunAtLoad"] is True
+    assert payload["StartInterval"] == 3600
+    assert payload["ProcessType"] == "Background"
+    assert payload["ProgramArguments"] == [
+        "/opt/fintracka/bin/python", "-m", "fintracka.cli", "remote", "publish",
+        "--reason", "scheduled", "--data-dir", str(data_directory),
+    ]
+    assert "secret" not in plistlib.dumps(payload).decode().lower()
+
+    calls: list[list[str]] = []
+    def runner(command: list[str], **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    install_remote_schedule(
+        destination, Path("/opt/fintracka/bin/python"), data_directory,
+        runner=runner, user_id=501,
+    )
+    assert destination.stat().st_mode & 0o777 == 0o600
+    assert (data_directory / "logs").stat().st_mode & 0o777 == 0o700
+    assert remote_schedule_status(destination, runner=runner, user_id=501) == {
+        "installed": True, "loaded": True,
+    }
+    previous = destination.read_bytes()
+
+    def failing_runner(command: list[str], **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        if command[1] == "bootstrap":
+            raise subprocess.CalledProcessError(1, command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        install_remote_schedule(
+            destination, Path("/different/python"), data_directory, 30,
+            runner=failing_runner, user_id=501,
+        )
+    assert destination.read_bytes() == previous
+
+    remove_remote_schedule(destination, runner=runner, user_id=501)
     assert not destination.exists()
 
 

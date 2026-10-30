@@ -24,6 +24,7 @@ from fintracka.plaid_adapter import ConnectedItem, InstitutionInfo, LinkSession,
 from fintracka.plaid_service import complete_plaid_connection, configure_plaid
 from fintracka.planning import set_recurring_target
 from fintracka.providers import NormalizedAccount, NormalizedBalance, NormalizedTransaction, SyncBatch
+from fintracka.remote_config import configure_remote, set_remote_enabled
 from fintracka.savings_goals import initialize_goal_ledger, update_savings_goal
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
 from fintracka.sync import apply_batch
@@ -464,6 +465,90 @@ def test_schedule_is_changed_only_by_explicit_csrf_protected_actions(tmp_path: P
         assert state == {"installed": False, "loaded": False}
 
 
+def test_remote_settings_publish_and_purge_are_local_csrf_protected_and_redacted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    keychain = KeychainSecrets(FakeKeyring())
+    connection = connect(path)
+    migrate(connection)
+    configure_remote(
+        connection,
+        keychain,
+        viewer_url="https://viewer.example.test",
+        publisher_url="https://publisher.example.test",
+        access_client_id="private-client-id",
+        access_client_secret="private-client-secret",
+    )
+    set_remote_enabled(connection, True)
+    connection.close()
+    published: list[str] = []
+    purged: list[Path] = []
+    remote_schedule = {"installed": False, "loaded": False}
+    monkeypatch.setattr(
+        api_module,
+        "publish_remote_snapshot",
+        lambda database_path, secrets, reason: published.append(reason),
+    )
+    monkeypatch.setattr(
+        api_module,
+        "purge_remote_snapshots",
+        lambda database_path, secrets: purged.append(database_path),
+    )
+    app = create_app(
+        path,
+        bootstrap_token="bootstrap",
+        remote_secrets_factory=lambda: keychain,
+        schedule_status_reader=lambda destination: {"installed": False, "loaded": False},
+        remote_schedule_installer=lambda destination, python, data, interval: remote_schedule.update(installed=True, loaded=True),
+        remote_schedule_remover=lambda destination: remote_schedule.update(installed=False, loaded=False),
+        remote_schedule_status_reader=lambda destination: dict(remote_schedule),
+    )
+    with TestClient(app) as client:
+        assert client.get("/api/v1/settings/remote").status_code == 401
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        headers = {"origin": "http://testserver", "x-csrf-token": csrf}
+
+        status = client.get("/api/v1/settings/remote")
+        assert status.status_code == 200
+        assert status.json()["viewer_url"] == "https://viewer.example.test"
+        serialized = status.text
+        assert "publisher.example" not in serialized
+        assert "private-client" not in serialized
+        assert "keychain" not in serialized.lower()
+
+        installed = client.post("/api/v1/settings/remote/schedule", json={}, headers=headers)
+        assert installed.json() == {"installed": True, "loaded": True}
+        assert client.get("/api/v1/settings/remote").json()["schedule_loaded"] is True
+        assert client.delete("/api/v1/settings/remote/schedule", headers=headers).status_code == 204
+        assert remote_schedule == {"installed": False, "loaded": False}
+
+        assert client.post("/api/v1/settings/remote/publish", json={}).status_code == 403
+        assert client.post(
+            "/api/v1/settings/remote/publish", json={"unexpected": True}, headers=headers
+        ).status_code == 422
+        assert client.post(
+            "/api/v1/settings/remote/publish", content=b"", headers=headers
+        ).status_code == 422
+        queued = client.post("/api/v1/settings/remote/publish", json={}, headers=headers)
+        assert queued.status_code == 202
+        assert _wait_for_job(client, queued.json()["job_id"])["status"] == "succeeded"
+        assert published == ["startup", "manual"]
+
+        assert client.request(
+            "DELETE", "/api/v1/settings/remote/snapshot",
+            json={"confirmation": "DELETE"}, headers=headers,
+        ).status_code == 422
+        deletion = client.request(
+            "DELETE", "/api/v1/settings/remote/snapshot",
+            json={"confirmation": "DELETE REMOTE COPY"}, headers=headers,
+        )
+        assert deletion.status_code == 202
+        assert _wait_for_job(client, deletion.json()["job_id"])["status"] == "succeeded"
+        assert purged == [path]
+
+
 def test_each_startup_queues_sync_for_live_connection(tmp_path: Path) -> None:
     path = tmp_path / "ledger.sqlite3"
     connection = connect(path)
@@ -516,8 +601,61 @@ def test_each_startup_queues_sync_for_live_connection(tmp_path: Path) -> None:
     connection.close()
 
 
+def test_startup_sync_publishes_after_sync_and_startup_without_sync_still_publishes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    adapter = FakePlaidAdapter()
+    complete_plaid_connection(connection, adapter, "public-production", "david")
+    keychain = KeychainSecrets(FakeKeyring())
+    configure_remote(
+        connection,
+        keychain,
+        viewer_url="https://viewer.example.test",
+        publisher_url="https://publisher.example.test",
+        access_client_id="id",
+        access_client_secret="secret",
+    )
+    set_remote_enabled(connection, True)
+    connection.close()
+    events: list[str] = []
+    monkeypatch.setattr(api_module, "sync_plaid_connections", lambda *args, **kwargs: events.append("sync"))
+    monkeypatch.setattr(
+        api_module,
+        "publish_remote_snapshot",
+        lambda database_path, secrets, reason: events.append(f"publish:{reason}"),
+    )
+
+    app = create_app(path, bootstrap_token="bootstrap", remote_secrets_factory=lambda: keychain)
+    with TestClient(app):
+        for _ in range(200):
+            check = connect(path)
+            status = check.execute(
+                "SELECT status FROM jobs WHERE kind = 'plaid_sync' ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            check.close()
+            if status is not None and status[0] == "succeeded":
+                break
+            time.sleep(0.01)
+    assert events == ["sync", "publish:sync"]
+
+    connection = connect(path)
+    connection.execute("UPDATE provider_connections SET status = 'revoked'")
+    connection.close()
+    events.clear()
+    app = create_app(path, bootstrap_token="second", remote_secrets_factory=lambda: keychain)
+    with TestClient(app):
+        for _ in range(200):
+            if events:
+                break
+            time.sleep(0.01)
+    assert events == ["publish:startup"]
+
+
 def test_manual_sync_attempts_both_profiles_and_marks_job_failed_after_partial_success(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ) -> None:
     path = tmp_path / "ledger.sqlite3"
     connection = connect(path)
@@ -535,6 +673,12 @@ def test_manual_sync_attempts_both_profiles_and_marks_job_failed_after_partial_s
         calls.append((profile, environment))
         return {"david": david, "ariela": ariela}[profile]
 
+    published: list[str] = []
+    monkeypatch.setattr(
+        api_module,
+        "publish_remote_snapshot",
+        lambda database_path, secrets, reason: published.append(reason),
+    )
     app = create_app(path, bootstrap_token="bootstrap", plaid_adapter_factory=adapter_factory)
     with TestClient(app) as client:
         check = connect(path)
@@ -559,6 +703,7 @@ def test_manual_sync_attempts_both_profiles_and_marks_job_failed_after_partial_s
     ) == ("repair", "ITEM_REPAIR_REQUIRED")
     check.close()
     assert calls == [("david", "production"), ("ariela", "sandbox")]
+    assert published == []
 
 
 def test_transaction_pagination_and_optimistic_conflict(tmp_path: Path) -> None:
@@ -1394,7 +1539,7 @@ def test_transaction_api_hides_confirmed_transfers_and_credit_card_payments_by_d
     migrate(connection)
     connection_id = create_synthetic_ledger(connection, count=1, demo=True)[0]
     connection.execute(
-        "INSERT INTO accounts (id, connection_id, provider_account_id, name, type, subtype, nature, currency, created_at, updated_at) VALUES (?, ?, 'savings-api', 'Savings API', 'depository', 'savings', 'asset', 'USD', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')",
+        "INSERT INTO accounts (id, connection_id, provider_account_id, name, type, subtype, nature, currency, savings_pool, created_at, updated_at) VALUES (?, ?, 'savings-api', 'Savings API', 'depository', 'savings', 'asset', 'USD', 'regular', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')",
         (new_id(), connection_id),
     )
     rows = (
@@ -1431,7 +1576,10 @@ def test_transaction_api_hides_confirmed_transfers_and_credit_card_payments_by_d
     with TestClient(app) as client:
         client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
         ordinary = client.get("/api/v1/transactions").json()["items"]
-        assert [row["description"] for row in ordinary] == ["BOOK STORE", "SAVINGS TRANSFER"]
+        assert [row["description"] for row in ordinary] == [
+            "BOOK STORE", "SAVINGS TRANSFER", "OWN TRANSFER OUT",
+        ]
+        assert ordinary[-1]["category"] == "Savings"
         assert client.get(
             "/api/v1/transactions", params={"search": "PAYMENT"}
         ).json()["items"] == []
@@ -1761,6 +1909,21 @@ def test_savings_goal_api_initializes_and_rejects_unknown_or_stale_mutations(
         )
         assert changed_goal.status_code == 200
         assert changed_goal.json()["monthly_target_minor"] == 50_000
+        general = next(goal for goal in initialized.json()["goals"] if goal["name"] == "General Savings")
+        changed_goal = client.patch(
+            f"/api/v1/savings/goals/{emergency['goal_id']}",
+            json={
+                "expected_updated_at": changed_goal.json()["updated_at"],
+                "name": "Emergency", "owner": "Shared", "icon_key": "shield",
+                "color_key": "blue", "parent_id": None, "linked_category_id": None,
+                "overall_target_minor": 2_500_000,
+                "overflow_goal_ids": [general["goal_id"]],
+            },
+            headers=headers,
+        )
+        assert changed_goal.status_code == 200
+        assert changed_goal.json()["overall_target_minor"] == 2_500_000
+        assert changed_goal.json()["overflow_goal_ids"] == [general["goal_id"]]
         body = client.get("/api/v1/savings/2026-10").json()
         assert body["goal_ledger"]["combined_minor"] == balance
         assert "secret" not in json.dumps(body).lower()
