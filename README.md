@@ -2,7 +2,7 @@
 
 FinTracka is a single-user, local-first personal finance application for macOS. SQLite is the authoritative ledger and the dashboard listens only on `127.0.0.1`. Plaid supplies account and transaction data; Google Sheets and Excel are one-way exports.
 
-An optional private remote viewer can publish a sanitized, read-only snapshot outward to Cloudflare for mobile access. It never connects inward to the Mac, never mutates FinTracka, and is not a backup. Live publication remains disabled until the staging and household-approval gate in [REMOTE_VIEWER_RUNBOOK.md](REMOTE_VIEWER_RUNBOOK.md) is complete.
+An optional private remote viewer publishes a sanitized snapshot outward to Cloudflare for mobile access. The financial views remain read-only, but an authenticated household member can propose a one-time transaction category/subcategory correction. The Mac claims that narrowly typed command and performs the actual ledger write; Cloudflare never receives a generic database-write capability. SQLite on the Mac remains authoritative, and the remote copy is not a backup. Live publication and mobile commands use separate release gates in [REMOTE_VIEWER_RUNBOOK.md](REMOTE_VIEWER_RUNBOOK.md).
 
 ## What it does
 
@@ -115,9 +115,20 @@ Data and corrections persist in the local SQLite ledger when the browser or appl
 .venv/bin/python -m fintracka.cli remote schedule install
 .venv/bin/python -m fintracka.cli remote schedule status
 .venv/bin/python -m fintracka.cli remote schedule remove
+
+# After the separate mobile-command release gate: inspect one-minute processing
+.venv/bin/python -m fintracka.cli remote commands status
+.venv/bin/python -m fintracka.cli remote commands process
+.venv/bin/python -m fintracka.cli remote commands schedule status
 ```
 
 Scheduled work runs only while the Mac is awake. Local backups are retained according to FinTracka's backup policy; an encrypted off-device backup remains recommended.
+
+### Mobile classification corrections
+
+The private phone viewer can edit only a transaction's category and optional subcategory, and every mobile edit is one-time. It cannot create learning rules, recategorize historical/future matches, change amounts or accounts, or edit Planning/Reports totals. A pending proposal is shown only as an overlay in Transactions; financial totals continue using the last committed snapshot until the Mac applies the command and publishes a newer revision.
+
+Cloudflare D1 stores command identifiers, revision guards, taxonomy identifiers, state, and retention timestamps—not merchant text, account names, descriptions, or amounts. Pending commands expire after 30 days and terminal command records after 90 days; permanent redacted receipts remain locally on the Mac for exact-once processing. The command processor uses a dedicated Cloudflare Access service token and a separate, path-specific Mac Access application. Do not reuse the snapshot Publisher token or enable command processing before the runbook's Mac-auth gate passes.
 
 ## Live-data safety
 

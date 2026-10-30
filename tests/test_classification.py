@@ -36,6 +36,7 @@ def ledger(tmp_path: Path) -> sqlite3.Connection:
                     "USD",
                     "LOCAL STORE",
                     merchant="Local Store",
+                    pending=True,
                 ),
             ),
             next_checkpoint="classification-1",
@@ -175,7 +176,7 @@ def test_stale_revision_and_invalid_taxonomy_do_not_mutate(
     ) == (shopping, clothing, 1)
 
 
-def test_uncategorized_clears_parent_child_and_manual_provenance(
+def test_uncategorized_is_an_explicit_manual_choice_that_survives_provider_updates(
     ledger: sqlite3.Connection,
 ) -> None:
     transaction_id = _transaction_id(ledger)
@@ -213,7 +214,78 @@ def test_uncategorized_clears_parent_child_and_manual_provenance(
             """,
             (transaction_id,),
         ).fetchone()
-    ) == (None, None, None, None, 2)
+    ) == (None, "manual", None, "manual", 2)
+
+    connection_id, account_external_id = ledger.execute(
+        "SELECT a.connection_id, a.provider_account_id FROM transactions t "
+        "JOIN accounts a ON a.id = t.account_id WHERE t.id = ?",
+        (transaction_id,),
+    ).fetchone()
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(
+            added=(NormalizedTransaction(
+                "classification-posted",
+                account_external_id,
+                "2026-10-11T12:00:00Z",
+                -2_500,
+                "USD",
+                "LOCAL STORE POSTED",
+                merchant="Local Store",
+                provider_category_primary="GENERAL_MERCHANDISE",
+                provider_category_detailed="GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE",
+                pending_external_id="classification-target",
+            ),),
+            removed=("classification-target",),
+            next_checkpoint="classification-2",
+        ),
+    )
+    assert tuple(ledger.execute(
+        "SELECT category_id, category_source, subcategory_id, subcategory_source "
+        "FROM transactions WHERE id = ?",
+        (transaction_id,),
+    ).fetchone()) == (None, "manual", None, "manual")
+
+
+def test_explicit_no_subcategory_survives_provider_update(
+    ledger: sqlite3.Connection,
+) -> None:
+    transaction_id = _transaction_id(ledger)
+    shopping = _category(ledger, "Shopping")
+    set_transaction_classification_once(
+        ledger, transaction_id, shopping, None, 0,
+        actor="member:test", command_id="command-no-child",
+    )
+
+    connection_id, account_external_id = ledger.execute(
+        "SELECT a.connection_id, a.provider_account_id FROM transactions t "
+        "JOIN accounts a ON a.id = t.account_id WHERE t.id = ?",
+        (transaction_id,),
+    ).fetchone()
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(
+            modified=(NormalizedTransaction(
+                "classification-target",
+                account_external_id,
+                "2026-10-11T12:00:00Z",
+                -2_500,
+                "USD",
+                "MACY'S",
+                merchant="Macy's",
+                provider_category_primary="GENERAL_MERCHANDISE",
+                provider_category_detailed="GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES",
+            ),),
+            next_checkpoint="classification-2",
+        ),
+    )
+    assert tuple(ledger.execute(
+        "SELECT category_id, category_source, subcategory_id, subcategory_source "
+        "FROM transactions WHERE id = ?",
+        (transaction_id,),
+    ).fetchone()) == (shopping, "manual", None, "manual")
 
 
 def test_archived_transaction_is_rejected(ledger: sqlite3.Connection) -> None:

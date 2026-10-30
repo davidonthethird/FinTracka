@@ -166,6 +166,46 @@ describe("mobile command store", () => {
     expect(await store.listVisible(HOUSEHOLD, 10)).toEqual([]);
   });
 
+  it("cleans expired work on browser-visible reads even when no Mac claims", async () => {
+    let now = NOW;
+    const store = new MobileCommandStore(env.COMMANDS, () => now);
+    await provision(store);
+    await store.createOrReplace(
+      HOUSEHOLD, MEMBER, command("browser-expiry-01", "transaction-1"),
+    );
+
+    now = new Date(NOW.getTime() + 31 * 86_400_000);
+    expect((await store.listVisible(HOUSEHOLD, 10))[0].status).toBe("expired");
+  });
+
+  it("keeps active work visible ahead of a full page of newer terminal history", async () => {
+    const store = makeStore();
+    await provision(store);
+    const active = await store.createOrReplace(
+      HOUSEHOLD, MEMBER, command("old-active-001", "transaction-active"),
+    );
+    await env.COMMANDS.batch(Array.from({ length: 100 }, (_, index) => {
+      const time = new Date(NOW.getTime() + (index + 1) * 1_000).toISOString();
+      return env.COMMANDS.prepare(`
+        INSERT INTO mobile_commands
+          (id, household_id, actor_member_id, command_type, command_version,
+           target_type, target_id, observed_revision, payload_json, payload_digest,
+           idempotency_key, status, error_code, created_at, updated_at, expires_at, finished_at)
+        VALUES (?, ?, ?, 'transaction.set_classification', 1, 'transaction', ?, 0,
+                ?, ?, ?, 'rejected', 'FIXTURE_REJECTED', ?, ?, ?, ?)
+      `).bind(
+        `terminal-${index}`, HOUSEHOLD, MEMBER, `terminal-target-${index}`,
+        '{"category_id":"category-fun","subcategory_id":null}', "a".repeat(64),
+        `new-terminal-${String(index).padStart(3, "0")}`, time, time,
+        new Date(NOW.getTime() + 31 * 86_400_000).toISOString(), time,
+      );
+    }));
+
+    expect((await store.listVisible(HOUSEHOLD, 100)).some(
+      (item) => item.id === active.command.id && item.status === "pending",
+    )).toBe(true);
+  });
+
   it("enforces payload and state constraints in D1", async () => {
     const store = makeStore();
     await provision(store);

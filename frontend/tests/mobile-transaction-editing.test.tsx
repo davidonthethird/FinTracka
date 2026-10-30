@@ -4,6 +4,7 @@ import fixture from "../../tests/fixtures/remote_snapshot_v2.json";
 
 import {
   activeCommandForTransaction,
+  appliedCommandMatchesSnapshot,
   proposedClassification,
   statusLabel,
   type MobileCommand,
@@ -56,6 +57,26 @@ describe("mobile transaction classification editing", () => {
     expect(statusLabel("processing")).toBe("Applying");
     expect(statusLabel("conflict")).toBe("Needs review");
     expect(statusLabel("superseded")).toBe("Replaced");
+  });
+
+  it("keeps refreshing an applied command until its committed revision arrives", () => {
+    const applied = command({
+      status: "applied",
+      result: {
+        status: "applied",
+        category_id: null,
+        subcategory_id: null,
+        classification_revision: (transaction.classification_revision ?? 0) + 1,
+      },
+    });
+    expect(appliedCommandMatchesSnapshot(applied, snapshot)).toBe(false);
+    if (applied.result?.status !== "applied") throw new Error("applied result required");
+    const newer = structuredClone(snapshot);
+    const target = newer.transactions.find((item) => item.id === transaction.id)!;
+    target.classification_revision = applied.result.classification_revision;
+    target.category_id = null;
+    target.subcategory_id = null;
+    expect(appliedCommandMatchesSnapshot(applied, newer)).toBe(true);
   });
 
   it("renders committed and proposed classifications separately with replace/cancel controls", () => {

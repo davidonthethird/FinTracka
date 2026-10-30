@@ -86,6 +86,23 @@ describe("mobile gateway", () => {
     );
   });
 
+  it("fails closed when browser and Mac audiences are configured identically", async () => {
+    const gateway = makeGateway();
+    const misconfigured = gatewayEnv();
+    misconfigured.ACCESS_MAC_AUD = misconfigured.ACCESS_USER_AUD;
+
+    await expectError(
+      await gateway.fetch(userRequest("/api/v1/mobile/session"), misconfigured),
+      503,
+      "MOBILE_AUTH_MISCONFIGURED",
+    );
+    await expectError(
+      await gateway.fetch(macRequest("/api/v1/mobile/mac/commands/claim", json({ limit: 1 })), misconfigured),
+      503,
+      "MOBILE_AUTH_MISCONFIGURED",
+    );
+  });
+
   it("requires same-origin bounded JSON for browser mutations", async () => {
     const gateway = makeGateway();
     await provision(gateway);
@@ -187,6 +204,38 @@ describe("mobile gateway", () => {
     ), gatewayEnv());
     expect(cancelled.status).toBe(200);
     expect((await cancelled.json() as any).command.status).toBe("cancelled");
+  });
+
+  it("replays an applied idempotency key before validating a newer snapshot", async () => {
+    const gateway = makeGateway();
+    await provision(gateway);
+    const original = command();
+    const first = await gateway.fetch(
+      userRequest("/api/v1/mobile/commands", json(original)), gatewayEnv(),
+    );
+    const created = await first.json() as any;
+    const claim = await gateway.fetch(macRequest(
+      "/api/v1/mobile/mac/commands/claim", json({ limit: 1 }),
+    ), gatewayEnv());
+    const claimed = (await claim.json() as any).commands[0];
+    await gateway.fetch(macRequest(
+      `/api/v1/mobile/mac/commands/${created.command.id}/complete`,
+      json({ claim_token: claimed.claim_token, result: {
+        status: "applied", category_id: original.category_id,
+        subcategory_id: original.subcategory_id, classification_revision: 1,
+      } }),
+    ), gatewayEnv());
+
+    const newer = structuredClone(snapshotV2) as any;
+    newer.transactions[0].classification_revision = 1;
+    const replay = await gateway.fetch(
+      userRequest("/api/v1/mobile/commands", json(original)), gatewayEnv(newer),
+    );
+    expect(replay.status).toBe(200);
+    expect((await replay.json() as any)).toMatchObject({
+      replayed: true,
+      command: { id: created.command.id, status: "applied" },
+    });
   });
 
   it("enforces a conservative household pending-command cap", async () => {

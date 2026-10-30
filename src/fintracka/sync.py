@@ -269,8 +269,11 @@ def _upsert_transaction(
     else:
         preserve_subcategory = (
             before["subcategory_source"] in ("manual", "rule")
-            and _subcategory_belongs_to_category(
-                connection, before["subcategory_id"], effective_category_id
+            and (
+                (before["subcategory_source"] == "manual" and before["subcategory_id"] is None)
+                or _subcategory_belongs_to_category(
+                    connection, before["subcategory_id"], effective_category_id
+                )
             )
         )
         effective_subcategory_id = (

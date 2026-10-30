@@ -6,6 +6,7 @@
     "test": "vitest",
     "test:ci": "vitest run",
     "typecheck": "tsc --noEmit",
+    "check:deployment": "node scripts/check-mobile-command-deployment.ts",
     "deploy:publisher:staging": "wrangler deploy --config wrangler.publisher.jsonc --env staging",
     "deploy:publisher:production": "wrangler deploy --config wrangler.publisher.jsonc --env production",
     "deploy:viewer:staging": "wrangler deploy --config wrangler.viewer.jsonc --env staging",

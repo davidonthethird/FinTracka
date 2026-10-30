@@ -1,6 +1,6 @@
 # FinTracka remote viewer runbook
 
-The remote viewer is a sanitized, read-only copy of the local ledger. SQLite on the Mac remains authoritative. The viewer is not a backup and cannot sync, categorize, edit, or recover local data.
+The remote viewer is a sanitized copy of the local ledger. SQLite on the Mac remains authoritative. Financial views are read-only and the viewer is not a backup. An authenticated household member may submit one narrowly typed, one-time category/subcategory proposal; only the Mac can validate and apply it to the ledger. The remote service cannot sync banks, change amounts/accounts/owners, create classification rules, bulk-edit transactions, or recover local data.
 
 ## Release gate
 
@@ -17,6 +17,61 @@ Do not publish household data until every staging and approval item below is che
 - [ ] Production starts empty; one manual live publish is reconciled before automation is enabled.
 
 If the snapshot exceeds 5 MiB or a supported iPhone cannot load/filter it acceptably, stop. Design a D1-backed viewer; do not silently remove history or fields.
+
+## Mobile-command security boundary
+
+Mobile classification editing has a separate release gate from snapshot viewing. Keep it disabled until every item below passes:
+
+- [x] D1 stores only command metadata and category/subcategory IDs; no amount, merchant, description, account, provider payload, or financial snapshot.
+- [x] Browser users are authenticated by the existing household Viewer Access application.
+- [ ] Create a second, more-specific Access application for `/api/v1/mobile/mac/*` on each Viewer host.
+- [ ] Give that application only a **Service Auth** policy for a new, dedicated FinTracka mobile-command service token. Do not reuse the Publisher token.
+- [ ] Put that application's audience in `ACCESS_MAC_AUD`, deploy, then run `npm run check:deployment -- --require-mac-access`.
+- [ ] Apply D1 migrations twice (the second run must report no migrations), then test missing, wrong, expired, and valid machine credentials.
+- [ ] Provision the two exact household member mappings from the Mac, reconcile one synthetic command, and only then enable/schedule production processing.
+
+The more-specific Mac application must win over the general Viewer application for `/api/v1/mobile/mac/*`. Bad or missing service credentials must return 401/403 and must never fall back to an interactive login redirect. Phone API routes remain under the exact-household, MFA-protected Viewer application. `ACCESS_MAC_AUD=UNCONFIGURED_DENY_ALL` intentionally keeps the Mac routes fail-closed before this setup is complete.
+
+Apply and verify the command schema:
+
+```sh
+cd remote
+npx wrangler d1 migrations apply fintracka-mobile-commands-staging --remote --config wrangler.viewer.jsonc --env staging
+npx wrangler d1 migrations apply fintracka-mobile-commands-staging --remote --config wrangler.viewer.jsonc --env staging
+npx wrangler d1 migrations apply fintracka-mobile-commands-production --remote --config wrangler.viewer.jsonc --env production
+npx wrangler d1 migrations apply fintracka-mobile-commands-production --remote --config wrangler.viewer.jsonc --env production
+npm run check:deployment
+# After ACCESS_MAC_AUD is configured:
+npm run check:deployment -- --require-mac-access
+```
+
+Configure the Mac only after creating the dedicated token. Pipe secrets and member emails over standard input so they are not placed in shell history:
+
+```sh
+read -s FINTRACKA_COMMAND_SECRET
+printf '%s' "$FINTRACKA_COMMAND_SECRET" | \
+  .venv/bin/python -m fintracka.cli configure mobile-commands \
+    --gateway-url https://VIEWER_PRODUCTION_HOST \
+    --client-id MOBILE_COMMAND_ACCESS_CLIENT_ID \
+    --secret-stdin
+unset FINTRACKA_COMMAND_SECRET
+
+read -r FINTRACKA_MEMBER_EMAIL
+printf '%s' "$FINTRACKA_MEMBER_EMAIL" | \
+  .venv/bin/python -m fintracka.cli remote commands member upsert \
+    --member-id HOUSEHOLD_MEMBER_ID \
+    --display-name HOUSEHOLD_MEMBER_DISPLAY_NAME \
+    --email-stdin
+unset FINTRACKA_MEMBER_EMAIL
+
+.venv/bin/python -m fintracka.cli remote commands status
+.venv/bin/python -m fintracka.cli remote commands process
+.venv/bin/python -m fintracka.cli remote commands enable
+.venv/bin/python -m fintracka.cli remote commands schedule install
+.venv/bin/python -m fintracka.cli remote commands schedule status
+```
+
+The LaunchAgent checks once per minute and at login while the user session, Mac, network, and Keychain are available. Disable safely with `remote commands disable`, then `remote commands schedule remove`. Mark a replaced household member inactive by rerunning `member upsert --inactive`; revoke their Viewer Access identity/session as a separate Cloudflare action. D1 pending commands expire after 30 days and terminal records after 90 days. Local redacted receipts are retained so a replay can never apply the same command twice.
 
 ## Staging provisioning
 

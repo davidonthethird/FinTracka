@@ -63,6 +63,9 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
       const url = new URL(request.url);
       const store = new MobileCommandStore(env.COMMANDS, now);
       try {
+        if (!validSeparateAudiences(env.ACCESS_USER_AUD, env.ACCESS_MAC_AUD)) {
+          return errorResponse(503, "MOBILE_AUTH_MISCONFIGURED");
+        }
         if (url.pathname.startsWith("/api/v1/mobile/mac/")) {
           const identity = await resolveProcessorIdentity(request, {
             teamDomain: env.ACCESS_TEAM_DOMAIN,
@@ -119,21 +122,21 @@ async function handleBrowser(
       return jsonResponse(200, { commands: await store.listVisible(member.household_id, 100) });
     }
     if (request.method !== "POST") return methodNotAllowed("GET, POST");
+    await store.expireAndPrune();
     const input = CreateClassificationCommandSchema.safeParse(await readBrowserJson(request));
     if (!input.success) return errorResponse(400, "INVALID_COMMAND");
+    const replay = await store.replayExisting(member.household_id, member.id, input.data);
+    if (replay) return jsonResponse(200, replay);
     const snapshot = await readSnapshot(env.SNAPSHOTS);
     const validationError = validateAgainstSnapshot(snapshot, input.data);
     if (validationError) return errorResponse(409, validationError);
-    const isReplay = await store.hasIdempotencyKey(member.id, input.data.idempotency_key);
-    if (!isReplay) {
-      if (input.data.replace_command_id === null
-          && await store.countActive(member.household_id) >= pendingLimit) {
-        return errorResponse(429, "TOO_MANY_PENDING_COMMANDS");
-      }
-      const oneHourAgo = new Date(now().getTime() - 60 * 60_000).toISOString();
-      if (await store.countRecentForMember(member.id, oneHourAgo) >= recentLimit) {
-        return errorResponse(429, "COMMAND_RATE_LIMITED");
-      }
+    if (input.data.replace_command_id === null
+        && await store.countActive(member.household_id) >= pendingLimit) {
+      return errorResponse(429, "TOO_MANY_PENDING_COMMANDS");
+    }
+    const oneHourAgo = new Date(now().getTime() - 60 * 60_000).toISOString();
+    if (await store.countRecentForMember(member.id, oneHourAgo) >= recentLimit) {
+      return errorResponse(429, "COMMAND_RATE_LIMITED");
     }
     const result = await store.createOrReplace(member.household_id, member.id, input.data);
     return jsonResponse(result.replayed ? 200 : 201, result);
@@ -141,6 +144,7 @@ async function handleBrowser(
   const cancelMatch = url.pathname.match(/^\/api\/v1\/mobile\/commands\/([^/]+)\/cancel$/);
   if (cancelMatch) {
     if (request.method !== "POST") return methodNotAllowed("POST");
+    await store.expireAndPrune();
     await readBrowserJson(request);
     const command = await store.cancel(
       member.household_id,
@@ -150,6 +154,12 @@ async function handleBrowser(
     return jsonResponse(200, { command });
   }
   return errorResponse(404, "NOT_FOUND");
+}
+
+function validSeparateAudiences(userAudience: string, macAudience: string): boolean {
+  const user = userAudience.trim();
+  const mac = macAudience.trim();
+  return user.length > 0 && mac.length > 0 && user !== mac;
 }
 
 async function handleMac(

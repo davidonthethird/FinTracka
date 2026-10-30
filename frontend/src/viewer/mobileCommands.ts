@@ -65,7 +65,10 @@ export function MobileCommandProvider({ snapshot, onSnapshotRefresh, children }:
   const [commands, setCommands] = useState<MobileCommand[]>([]);
   const [loading, setLoading] = useState(supported);
   const [error, setError] = useState("");
-  const refreshedApplied = useRef(new Set<string>());
+  const snapshotRef = useRef(snapshot);
+  const snapshotRefreshRef = useRef(onSnapshotRefresh);
+  snapshotRef.current = snapshot;
+  snapshotRefreshRef.current = onSnapshotRefresh;
   const refresh = useCallback(async () => {
     if (!supported) return;
     try {
@@ -76,17 +79,19 @@ export function MobileCommandProvider({ snapshot, onSnapshotRefresh, children }:
       setSession(nextSession);
       setCommands(response.commands);
       setError("");
-      const newlyApplied = response.commands.filter((item) => item.status === "applied" && !refreshedApplied.current.has(item.id));
-      if (newlyApplied.length) {
-        newlyApplied.forEach((item) => refreshedApplied.current.add(item.id));
-        await onSnapshotRefresh();
+      const awaitingCommittedSnapshot = response.commands.some(
+        (item) => item.status === "applied"
+          && !appliedCommandMatchesSnapshot(item, snapshotRef.current),
+      );
+      if (awaitingCommittedSnapshot) {
+        await snapshotRefreshRef.current();
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Phone editing is temporarily unavailable.");
     } finally {
       setLoading(false);
     }
-  }, [onSnapshotRefresh, supported]);
+  }, [supported]);
 
   useEffect(() => {
     if (!supported) { setSession(undefined); setCommands([]); setLoading(false); setError(""); return; }
@@ -153,6 +158,17 @@ export function activeCommandForTransaction(commands: MobileCommand[], transacti
 export function latestCommandForTransaction(commands: MobileCommand[], transactionId: string): MobileCommand | undefined {
   return commands.filter((item) => item.target_id === transactionId)
     .sort((left, right) => right.created_at.localeCompare(left.created_at))[0];
+}
+
+export function appliedCommandMatchesSnapshot(
+  command: MobileCommand,
+  snapshot: RemoteSnapshot,
+): boolean {
+  if (command.status !== "applied" || command.result?.status !== "applied") return false;
+  const transaction = snapshot.transactions.find((item) => item.id === command.target_id);
+  return transaction?.classification_revision === command.result.classification_revision
+    && transaction.category_id === command.result.category_id
+    && transaction.subcategory_id === command.result.subcategory_id;
 }
 
 export function proposedClassification(command: MobileCommand, taxonomy: ClassificationTaxonomy | null): {

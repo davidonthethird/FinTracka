@@ -77,16 +77,14 @@ def set_transaction_classification_once(
         """
         UPDATE transactions
         SET category_id = ?,
-            category_source = CASE WHEN ? IS NULL THEN NULL ELSE 'manual' END,
+            category_source = 'manual',
             subcategory_id = ?,
-            subcategory_source = CASE WHEN ? IS NULL THEN NULL ELSE 'manual' END,
+            subcategory_source = 'manual',
             updated_at = ?
         WHERE id = ? AND classification_revision = ?
         """,
         (
             category_id,
-            category_id,
-            subcategory_id,
             subcategory_id,
             now,
             transaction_id,

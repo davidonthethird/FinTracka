@@ -185,13 +185,34 @@ export class MobileCommandStore {
     return { command: await this.requireCommand(id), replayed: false };
   }
 
+  async replayExisting(
+    householdId: string,
+    actorMemberId: string,
+    untrustedInput: CreateClassificationCommand,
+  ): Promise<{ command: PublicMobileCommand; replayed: true } | null> {
+    const parsed = CreateClassificationCommandSchema.safeParse(untrustedInput);
+    if (!parsed.success) throw new MobileCommandStoreError("INVALID_COMMAND");
+    await this.ensureActiveMember(householdId, actorMemberId);
+    const input = parsed.data;
+    const payloadDigest = await sha256Hex(
+      canonicalClassificationPayload(input.category_id, input.subcategory_id),
+    );
+    const existing = await this.findIdempotent(actorMemberId, input.idempotency_key);
+    if (!existing) return null;
+    if (!sameCommand(existing, input, payloadDigest)) {
+      throw new MobileCommandStoreError("IDEMPOTENCY_CONFLICT");
+    }
+    return { command: toPublicCommand(existing), replayed: true };
+  }
+
   async listVisible(householdId: string, requestedLimit = 50): Promise<PublicMobileCommand[]> {
+    await this.expireAndPrune();
     const limit = Math.max(1, Math.min(requestedLimit, 100));
     const result = await this.database.prepare(`
       SELECT * FROM mobile_commands
       WHERE household_id = ?
-      ORDER BY created_at DESC,
-               CASE WHEN status IN ('pending', 'processing') THEN 0 ELSE 1 END,
+      ORDER BY CASE WHEN status IN ('pending', 'processing') THEN 0 ELSE 1 END,
+               created_at DESC,
                id DESC
       LIMIT ?
     `).bind(householdId, limit).all<CommandRow>();
@@ -212,10 +233,6 @@ export class MobileCommandStore {
       WHERE actor_member_id = ? AND created_at >= ?
     `).bind(actorMemberId, since).first<{ count: number }>();
     return row?.count ?? 0;
-  }
-
-  async hasIdempotencyKey(actorMemberId: string, key: string): Promise<boolean> {
-    return (await this.findIdempotent(actorMemberId, key)) !== null;
   }
 
   async cancel(

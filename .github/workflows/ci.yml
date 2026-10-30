@@ -33,6 +33,8 @@ jobs:
         working-directory: remote
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
+      - run: npm run check:deployment
+        working-directory: remote
       - run: ./scripts/verify.sh
         env:
           FINTRACKA_PYTHON: python
