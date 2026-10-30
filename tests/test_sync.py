@@ -93,6 +93,53 @@ def test_repeat_modify_and_remove_are_idempotent(ledger: sqlite3.Connection) -> 
     ).fetchone()[0] == 1
 
 
+def test_provider_only_sync_update_does_not_change_classification_revision(
+    ledger: sqlite3.Connection,
+) -> None:
+    connection_id = create_synthetic_ledger(ledger)[0]
+    original = NormalizedTransaction(
+        "provider-revision",
+        "checking-1",
+        "2026-10-08T12:00:00Z",
+        -1_250,
+        "USD",
+        "PENDING LOCAL STORE",
+        merchant="Local Store",
+        pending=True,
+    )
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(added=(original,), next_checkpoint="provider-revision-1"),
+    )
+    transaction_id = ledger.execute(
+        """
+        SELECT transaction_id FROM transaction_external_ids
+        WHERE external_id = 'provider-revision'
+        """
+    ).fetchone()[0]
+
+    posted = NormalizedTransaction(
+        **{
+            **original.__dict__,
+            "description": "LOCAL STORE",
+            "pending": False,
+        }
+    )
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(modified=(posted,), next_checkpoint="provider-revision-2"),
+    )
+
+    assert tuple(
+        ledger.execute(
+            "SELECT pending, provider_description, classification_revision FROM transactions WHERE id = ?",
+            (transaction_id,),
+        ).fetchone()
+    ) == (0, "LOCAL STORE", 0)
+
+
 def test_provider_category_is_mapped_without_overwriting_manual_choice(
     ledger: sqlite3.Connection,
 ) -> None:
