@@ -7,6 +7,7 @@ import {
   type ClaimedCommand,
   type CommandResult,
   type CreateClassificationCommand,
+  type CategorizationScope,
   type HouseholdMember,
   type PublicMobileCommand,
 } from "./mobileCommandModel";
@@ -25,7 +26,7 @@ interface CommandRow {
   household_id: string;
   actor_member_id: string;
   command_type: "transaction.set_classification";
-  command_version: 1;
+  command_version: 1 | 2;
   target_id: string;
   observed_revision: number;
   payload_json: string;
@@ -45,6 +46,7 @@ interface CommandRow {
 interface ClassificationPayload {
   category_id: string | null;
   subcategory_id: string | null;
+  scope?: CategorizationScope;
 }
 
 export class MobileCommandStore {
@@ -107,7 +109,12 @@ export class MobileCommandStore {
     if (!parsed.success) throw new MobileCommandStoreError("INVALID_COMMAND");
     const input = parsed.data;
     await this.ensureActiveMember(householdId, actorMemberId);
-    const payloadJson = canonicalClassificationPayload(input.category_id, input.subcategory_id);
+    const payloadJson = canonicalClassificationPayload(
+      input.command_version,
+      input.category_id,
+      input.subcategory_id,
+      input.command_version === 2 ? input.scope : "one_time",
+    );
     const payloadDigest = await sha256Hex(payloadJson);
 
     const replay = await this.findIdempotent(actorMemberId, input.idempotency_key);
@@ -195,7 +202,12 @@ export class MobileCommandStore {
     await this.ensureActiveMember(householdId, actorMemberId);
     const input = parsed.data;
     const payloadDigest = await sha256Hex(
-      canonicalClassificationPayload(input.category_id, input.subcategory_id),
+      canonicalClassificationPayload(
+        input.command_version,
+        input.category_id,
+        input.subcategory_id,
+        input.command_version === 2 ? input.scope : "one_time",
+      ),
     );
     const existing = await this.findIdempotent(actorMemberId, input.idempotency_key);
     if (!existing) return null;
@@ -456,12 +468,13 @@ export class MobileCommandStore {
         (id, household_id, actor_member_id, command_type, command_version,
          target_type, target_id, observed_revision, payload_json, payload_digest,
          idempotency_key, status, supersedes_command_id, created_at, updated_at, expires_at)
-      VALUES (?, ?, ?, 'transaction.set_classification', 1, 'transaction', ?, ?, ?, ?, ?,
+      VALUES (?, ?, ?, 'transaction.set_classification', ?, 'transaction', ?, ?, ?, ?, ?,
               'pending', ?, ?, ?, ?)
     `).bind(
       input.id,
       input.householdId,
       input.actorMemberId,
+      input.input.command_version,
       input.input.target_id,
       input.input.observed_revision,
       input.payloadJson,
@@ -529,7 +542,11 @@ function sameCommand(
 
 function parsePayload(row: CommandRow): ClassificationPayload {
   const value = JSON.parse(row.payload_json) as ClassificationPayload;
-  return { category_id: value.category_id, subcategory_id: value.subcategory_id };
+  const scope = row.command_version === 1 ? "one_time" : value.scope;
+  if (!scope || !(["one_time", "future", "past_and_future"] as const).includes(scope)) {
+    throw new MobileCommandStoreError("INVALID_COMMAND");
+  }
+  return { category_id: value.category_id, subcategory_id: value.subcategory_id, scope };
 }
 
 function toPublicCommand(row: CommandRow): PublicMobileCommand {
@@ -543,6 +560,7 @@ function toPublicCommand(row: CommandRow): PublicMobileCommand {
     observed_revision: row.observed_revision,
     category_id: payload.category_id,
     subcategory_id: payload.subcategory_id,
+    scope: payload.scope!,
     status: row.status,
     supersedes_command_id: row.supersedes_command_id,
     result: row.result_json ? CommandResultSchema.parse(JSON.parse(row.result_json)) : null,
@@ -566,6 +584,7 @@ function toClaimedCommand(row: CommandRow): ClaimedCommand {
     observed_revision: row.observed_revision,
     category_id: payload.category_id,
     subcategory_id: payload.subcategory_id,
+    scope: payload.scope!,
     payload_digest: row.payload_digest,
     claim_token: row.claim_token,
     expires_at: row.expires_at,

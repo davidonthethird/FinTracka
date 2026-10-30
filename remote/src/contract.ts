@@ -175,7 +175,10 @@ const RemoteSnapshotV1Object = z.object({
 
 const capabilities = z.object({
   commands: z.object({
-    "transaction.set_classification": z.tuple([z.literal(1)]).optional(),
+    "transaction.set_classification": z.union([
+      z.tuple([z.literal(1)]),
+      z.tuple([z.literal(1), z.literal(2)]),
+    ]).optional(),
   }).strict(),
 }).strict();
 

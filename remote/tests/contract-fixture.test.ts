@@ -14,6 +14,10 @@ describe("remote snapshot contract", () => {
   });
 
   it("requires strict v2 revisions, taxonomy parents, and capability versions", () => {
+    expect(parseRemoteSnapshot({
+      ...fixtureV2,
+      capabilities: { commands: { "transaction.set_classification": [1, 2] } },
+    }).schema_version).toBe(2);
     expect(() => parseRemoteSnapshot({
       ...fixtureV2,
       transactions: [{ ...fixtureV2.transactions[0], classification_revision: 1.5 }],

@@ -109,10 +109,11 @@ async function handleBrowser(
   if (url.pathname === "/api/v1/mobile/session") {
     if (request.method !== "GET") return methodNotAllowed("GET");
     const snapshot = await readSnapshot(env.SNAPSHOTS);
+    const versions = classificationVersions(snapshot);
     return jsonResponse(200, {
       member: { id: member.id, display_name: member.display_name },
-      capabilities: classificationEnabled(snapshot)
-        ? { "transaction.set_classification": [1] }
+      capabilities: versions
+        ? { "transaction.set_classification": versions }
         : {},
       server_time: new Date().toISOString(),
     });
@@ -257,11 +258,22 @@ function classificationEnabled(snapshot: RemoteSnapshot): snapshot is RemoteSnap
     && snapshot.capabilities.commands["transaction.set_classification"]?.includes(1) === true;
 }
 
+function classificationVersions(snapshot: RemoteSnapshot): [1] | [1, 2] | null {
+  if (!classificationEnabled(snapshot)) return null;
+  return snapshot.capabilities.commands["transaction.set_classification"]?.length === 2
+    ? [1, 2]
+    : [1];
+}
+
 function validateAgainstSnapshot(
   snapshot: RemoteSnapshot,
   input: z.infer<typeof CreateClassificationCommandSchema>,
 ): string | null {
   if (!classificationEnabled(snapshot)) return "EDITING_UNAVAILABLE";
+  const versions = classificationVersions(snapshot);
+  if (!versions || (input.command_version === 2 && versions.length !== 2)) {
+    return "EDITING_UNAVAILABLE";
+  }
   const target = snapshot.transactions.find((item) => item.id === input.target_id);
   if (!target) return "TARGET_NOT_FOUND";
   if (target.classification_revision !== input.observed_revision) return "STALE_CLASSIFICATION";

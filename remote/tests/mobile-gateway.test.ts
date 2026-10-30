@@ -50,6 +50,47 @@ describe("mobile gateway", () => {
     expect(JSON.stringify(body)).not.toContain("david@example.test");
   });
 
+  it("negotiates v2 scope and rejects malformed versioned commands", async () => {
+    const gateway = makeGateway();
+    await provision(gateway);
+    const document = structuredClone(snapshotV2) as any;
+    document.capabilities.commands["transaction.set_classification"] = [1, 2];
+    const testEnv = gatewayEnv(document);
+
+    const session = await gateway.fetch(userRequest("/api/v1/mobile/session"), testEnv);
+    expect(await session.json()).toMatchObject({
+      capabilities: { "transaction.set_classification": [1, 2] },
+    });
+    const created = await gateway.fetch(userRequest("/api/v1/mobile/commands", json(command({
+      command_version: 2,
+      scope: "past_and_future",
+    }))), testEnv);
+    expect(created.status).toBe(201);
+    expect((await created.json() as any).command).toMatchObject({
+      command_version: 2,
+      scope: "past_and_future",
+    });
+    const claimed = await gateway.fetch(macRequest(
+      "/api/v1/mobile/mac/commands/claim", json({ limit: 1 }),
+    ), testEnv);
+    expect((await claimed.json() as any).commands[0]).toMatchObject({
+      command_version: 2,
+      scope: "past_and_future",
+    });
+
+    for (const malformed of [
+      command({ command_version: 2 }),
+      command({ command_version: 2, scope: "everywhere" }),
+      command({ command_version: 1, scope: "past_and_future" }),
+    ]) {
+      await expectError(
+        await gateway.fetch(userRequest("/api/v1/mobile/commands", json(malformed)), testEnv),
+        400,
+        "INVALID_COMMAND",
+      );
+    }
+  });
+
   it("rejects missing, spoofed, unknown, and inactive browser identities", async () => {
     const gateway = makeGateway();
     await provision(gateway);
