@@ -30,4 +30,4 @@ CREATE TABLE mobile_command_receipts (
 
 CREATE INDEX mobile_command_receipts_publication_idx
 ON mobile_command_receipts(snapshot_published_at, processed_at)
-WHERE status = 'applied' AND snapshot_published_at IS NULL;
+WHERE status IN ('applied', 'conflict') AND snapshot_published_at IS NULL;

@@ -146,7 +146,7 @@ def publish_unpublished_mobile_results(
     rows = connection.execute(
         """
         SELECT command_id FROM mobile_command_receipts
-        WHERE status = 'applied' AND snapshot_published_at IS NULL
+        WHERE status IN ('applied', 'conflict') AND snapshot_published_at IS NULL
         ORDER BY processed_at, command_id
         """
     ).fetchall()
@@ -161,7 +161,8 @@ def publish_unpublished_mobile_results(
         connection.executemany(
             """
             UPDATE mobile_command_receipts SET snapshot_published_at = ?
-            WHERE command_id = ? AND status = 'applied' AND snapshot_published_at IS NULL
+            WHERE command_id = ? AND status IN ('applied', 'conflict')
+              AND snapshot_published_at IS NULL
             """,
             [(result.published_at, command_id) for command_id in command_ids],
         )

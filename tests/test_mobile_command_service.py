@@ -118,10 +118,12 @@ def test_stale_revision_returns_conflict_without_mutation(tmp_path) -> None:
         observed_revision=7,
     )
     client = Client(((command,),))
+    publications = []
 
     result = process_mobile_commands(
         path, secrets, client_factory=lambda *_: client,
-        publisher=lambda *_args, **_kwargs: None,
+        publisher=lambda *_args, **_kwargs: publications.append(True)
+        or SimpleNamespace(published_at="2026-10-30T12:01:00Z"),
     )
 
     connection = connect(path)
@@ -132,7 +134,8 @@ def test_stale_revision_returns_conflict_without_mutation(tmp_path) -> None:
         "SELECT status FROM mobile_command_receipts WHERE command_id = ?", (command.id,),
     ).fetchone()[0] == "conflict"
     connection.close()
-    assert (result.conflicts, result.applied) == (1, 0)
+    assert (result.conflicts, result.applied, result.published) == (1, 0, True)
+    assert publications == [True]
     assert client.completions[0][2]["status"] == "conflict"
 
 

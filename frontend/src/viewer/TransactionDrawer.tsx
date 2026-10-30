@@ -1,8 +1,19 @@
 import { X } from "lucide-react";
 import { formatMoney } from "../format";
 import type { RemoteTransaction } from "./model";
+import type { ClassificationTaxonomy } from "./model";
+import type { MobileCommand } from "./mobileCommands";
+import { TransactionClassificationEditor } from "./TransactionClassificationEditor";
 
-export function TransactionDrawer({ transaction, onClose }: { transaction: RemoteTransaction; onClose: () => void }) {
+export function TransactionDrawer({ transaction, taxonomy, command, editingAvailable, onSave, onCancel, onClose }: {
+  transaction: RemoteTransaction;
+  taxonomy: ClassificationTaxonomy | null;
+  command?: MobileCommand;
+  editingAvailable: boolean;
+  onSave: (input: { categoryId: string | null; subcategoryId: string | null; replaceCommandId: string | null; observedRevision?: number }) => Promise<void>;
+  onCancel: (commandId: string) => Promise<void>;
+  onClose: () => void;
+}) {
   return <div className="viewer-drawer-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
     <aside className="viewer-drawer" role="dialog" aria-modal="true" aria-labelledby="transaction-title">
       <button className="drawer-close" aria-label="Close transaction details" onClick={onClose}><X /></button>
@@ -19,6 +30,7 @@ export function TransactionDrawer({ transaction, onClose }: { transaction: Remot
         <Detail label="Status" value={transaction.pending ? "Pending" : "Posted"} />
         {transaction.is_cash_withdrawal && <Detail label="Transaction type" value="Cash withdrawal" />}
       </dl>
+      {editingAvailable && taxonomy && <TransactionClassificationEditor transaction={transaction} taxonomy={taxonomy} command={command} onSave={onSave} onCancel={onCancel} />}
     </aside>
   </div>;
 }

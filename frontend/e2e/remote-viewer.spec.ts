@@ -196,3 +196,42 @@ test("remote viewer shows stale and unavailable states without leaking server de
   await expect(page.getByRole("heading", { name: "Viewer unavailable" })).toBeVisible();
   await expect(page.getByText("private_detail")).toHaveCount(0);
 });
+
+test("authorized household members can propose, replace, and cancel a one-time classification", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.goto(`${viewer}/transactions`);
+  await expect(page.getByRole("heading", { name: "Transactions", exact: true })).toBeVisible();
+  await page.getByLabel("Search transactions").fill("LOWE");
+  await page.locator(".transaction-entry").click();
+  await page.getByRole("button", { name: "Edit classification" }).click();
+  await page.getByLabel("Search categories").fill("Grocer");
+  await page.getByRole("listbox", { name: "Category" }).getByRole("option", { name: "Groceries", exact: true }).click();
+  await expect(page.locator(".classification-preview")).toContainText("Shopping / Home improvement → Groceries");
+  await page.getByRole("button", { name: "Save proposal" }).click();
+  const drawer = page.getByRole("dialog");
+  await expect(drawer.getByText("Pending", { exact: true })).toBeVisible();
+  await expect(drawer.getByText("Proposed classification")).toBeVisible();
+  await expect(drawer.locator(".proposal-row")).toContainText("Groceries");
+  await page.getByRole("button", { name: "Close transaction details" }).click();
+  await expect(page.locator(".transaction-entry")).toContainText("Pending proposal");
+
+  await page.locator(".transaction-entry").click();
+  await page.getByRole("button", { name: "Replace proposal" }).click();
+  await page.getByLabel("Search categories").fill("Other");
+  await page.getByRole("listbox", { name: "Category" }).getByRole("option", { name: "Other", exact: true }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Replace proposal" }).click();
+  await expect(page.getByRole("dialog").locator(".proposal-row")).toContainText("Other");
+
+  await page.getByRole("button", { name: "Close transaction details" }).click();
+  await page.getByRole("button", { name: "Planning", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Planning", exact: true })).toBeVisible();
+  await expect(page.getByText("Pending proposal")).toHaveCount(0);
+  await page.getByRole("button", { name: "Transactions", exact: true }).click();
+  await page.getByLabel("Search transactions").fill("LOWE");
+  await page.locator(".transaction-entry").click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Cancel proposal" }).click();
+  await expect(page.getByRole("dialog").getByText("Cancelled", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Edit classification" })).toBeVisible();
+});
