@@ -1,6 +1,16 @@
 # FinTracka remote viewer runbook
 
-The remote viewer is a sanitized copy of the local ledger. SQLite on the Mac remains authoritative. Financial views are read-only and the viewer is not a backup. An authenticated household member may submit one narrowly typed, one-time category/subcategory proposal; only the Mac can validate and apply it to the ledger. The remote service cannot sync banks, change amounts/accounts/owners, create classification rules, bulk-edit transactions, or recover local data.
+The remote viewer is a sanitized copy of the local ledger. SQLite on the Mac remains authoritative. Financial views are read-only and the viewer is not a backup. An authenticated household member may submit one narrowly typed category/subcategory proposal with a one-time, current-and-future, or eligible-past-and-future scope; only the Mac can validate and apply it to the ledger. The remote service cannot sync banks, change amounts/accounts/owners, bulk-edit arbitrary fields, or recover local data.
+
+## Scoped mobile editing rollout — 2026-10-30
+
+- Worker command protocol v2 is deployed to staging and production. Worker versions: staging `c53cee49-f182-4387-8eb3-9530b7b4bb9b`; production `66cbdce1-e4c0-4846-ad09-5fd3b96ac878`.
+- D1 migration `0002_mobile_command_v2.sql` was applied once and its second application reported no pending migrations in both environments.
+- A fresh production snapshot advertising command versions `[1, 2]` was published after deployment.
+- Missing and deliberately invalid Mac credentials return `401` on both Viewer origins. Unauthenticated human Viewer requests still redirect to the interactive Access login. Valid production machine authentication reached the Mac API and found no queued command.
+- Both household member mappings are active. The mobile processor and its LaunchAgent remain disabled until the controlled `1×` and `↔` production reconciliations below are completed.
+- The phone editor defaults to `↔ Past + future` every time it opens. It does not persist this selection. `1×` and `→ Current + future` remain available. Cash withdrawals and Uncategorized changes are forced to `1×`.
+- Service-token expiry is intentionally not stored in Git. Confirm its expiration and renewal reminder in the household password manager before enabling the schedule.
 
 ## Release gate
 
@@ -24,11 +34,11 @@ Mobile classification editing has a separate release gate from snapshot viewing.
 
 - [x] D1 stores only command metadata and category/subcategory IDs; no amount, merchant, description, account, provider payload, or financial snapshot.
 - [x] Browser users are authenticated by the existing household Viewer Access application.
-- [ ] Create a second, more-specific Access application for `/api/v1/mobile/mac/*` on each Viewer host.
-- [ ] Give that application only a **Service Auth** policy for a new, dedicated FinTracka mobile-command service token. Do not reuse the Publisher token.
-- [ ] Put that application's audience in `ACCESS_MAC_AUD`, deploy, then run `npm run check:deployment -- --require-mac-access`.
-- [ ] Apply D1 migrations twice (the second run must report no migrations), then test missing, wrong, expired, and valid machine credentials.
-- [ ] Provision the two exact household member mappings from the Mac, reconcile one synthetic command, and only then enable/schedule production processing.
+- [x] Create a second, more-specific Access application for `/api/v1/mobile/mac/*` on each Viewer host.
+- [x] Give that application only a **Service Auth** policy for a new, dedicated FinTracka mobile-command service token. Do not reuse the Publisher token.
+- [x] Put that application's audience in `ACCESS_MAC_AUD`, deploy, then run `npm run check:deployment -- --require-mac-access`.
+- [x] Apply D1 migrations twice (the second run must report no migrations), then test missing, wrong, and valid machine credentials. Expired/revoked credential drills remain part of rotation testing.
+- [ ] Provision the two exact household member mappings from the Mac, reconcile controlled `1×` and `↔` commands, and only then enable/schedule production processing. The mappings are provisioned; reconciliation remains.
 
 The more-specific Mac application must win over the general Viewer application for `/api/v1/mobile/mac/*`. Bad or missing service credentials must return 401/403 and must never fall back to an interactive login redirect. Phone API routes remain under the exact-household, MFA-protected Viewer application. `ACCESS_MAC_AUD=UNCONFIGURED_DENY_ALL` intentionally keeps the Mac routes fail-closed before this setup is complete.
 
@@ -71,7 +81,16 @@ unset FINTRACKA_MEMBER_EMAIL
 .venv/bin/python -m fintracka.cli remote commands schedule status
 ```
 
-The LaunchAgent checks once per minute and at login while the user session, Mac, network, and Keychain are available. Disable safely with `remote commands disable`, then `remote commands schedule remove`. Mark a replaced household member inactive by rerunning `member upsert --inactive`; revoke their Viewer Access identity/session as a separate Cloudflare action. D1 pending commands expire after 30 days and terminal records after 90 days. Local redacted receipts are retained so a replay can never apply the same command twice.
+The LaunchAgent checks once per minute and at login while the user session, Mac, network, and Keychain are available. Disable safely with `remote commands disable`, then `remote commands schedule remove`. Mark a replaced household member inactive by rerunning `member upsert --inactive`; revoke their Viewer Access identity/session as a separate Cloudflare action. D1 pending commands expire after 30 days and terminal records after 90 days. Local redacted receipts are retained so a replay can never apply the same command twice. Protocol-v1 commands remain one-time; protocol-v2 commands carry the explicit scope.
+
+### Controlled v2 reconciliation gate
+
+Keep the scheduler off. From the authenticated phone Viewer, choose known, harmless transactions and queue:
+
+1. A `1×` edit. Record the target's revision and learned-rule counts locally before processing. Process once; verify only the target changed, one permanent receipt exists, no categorization/subcategory rule changed, and processing the receipt again is a no-op.
+2. A `↔` edit for a merchant with understood history. Record eligible matching IDs before processing. Verify the target plus only non-manual, non-withdrawal eligible matches changed; the learned category/subcategory rules use the desktop rule format; `affected_count` is exact; and replay is a no-op.
+
+Never choose these test transactions on the user's behalf. The household member must identify the intended transaction and destination classification in the authenticated Viewer.
 
 ## Staging provisioning
 
