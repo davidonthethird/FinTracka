@@ -19,6 +19,20 @@ test("remote viewer is read-only, responsive, drillable, and leaves no financial
     await expect(page.getByRole("heading", { name: "Reports", exact: true })).toBeVisible();
     await expect(page.locator(width < 1000 ? ".mobile-flow-map" : ".flow-sankey")).toBeVisible();
     await expect(page.locator(width < 1000 ? ".flow-sankey" : ".mobile-flow-map")).toBeHidden();
+    if (width < 1000) {
+      const flowEdges = await page.locator(".mobile-flow-map").evaluate((element) => {
+        const flow = element.getBoundingClientRect();
+        const workspace = document.querySelector(".viewer-workspace")!.getBoundingClientRect();
+        return {
+          flowLeft: Math.round(flow.left), flowRight: Math.round(flow.right),
+          workspaceLeft: Math.round(workspace.left), workspaceRight: Math.round(workspace.right),
+        };
+      });
+      expect(flowEdges).toEqual({
+        flowLeft: flowEdges.workspaceLeft, flowRight: flowEdges.workspaceRight,
+        workspaceLeft: flowEdges.workspaceLeft, workspaceRight: flowEdges.workspaceRight,
+      });
+    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   }
 
@@ -122,7 +136,8 @@ test("remote viewer is read-only, responsive, drillable, and leaves no financial
   await page.getByRole("button", { name: "Expand all" }).click();
   await expect.poll(() => page.locator(".mobile-flow-stage").evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(collapsedHeight);
   await page.evaluate(() => window.scrollBy(0, 650));
-  await expect.poll(() => page.locator(".mobile-flow-toolbar").evaluate((element) => Math.round(element.getBoundingClientRect().top))).toBe(58);
+  await expect.poll(() => page.locator(".viewer-topbar").evaluate((element) => Math.round(element.getBoundingClientRect().bottom))).toBeLessThan(0);
+  await expect.poll(() => page.locator(".mobile-flow-toolbar").evaluate((element) => Math.round(element.getBoundingClientRect().bottom))).toBeLessThan(0);
   const lastNode = page.locator(".mobile-flow-node").last();
   await lastNode.scrollIntoViewIfNeeded();
   await expect(lastNode).toBeVisible();
