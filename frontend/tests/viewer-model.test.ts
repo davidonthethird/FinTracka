@@ -5,7 +5,9 @@ import {
   freshnessLabel,
   paginateTransactions,
   parseSnapshot,
+  classificationTaxonomy,
   snapshotMonths,
+  supportsMobileClassification,
   type RemoteTransaction,
   type RemoteSnapshot,
 } from "../src/viewer/model";
@@ -45,8 +47,32 @@ const snapshot: RemoteSnapshot = {
 describe("remote viewer model", () => {
   it("accepts schema one and rejects unsupported or malformed snapshots", () => {
     expect(parseSnapshot(snapshot).snapshot_id).toBe("snapshot");
-    expect(() => parseSnapshot({ ...snapshot, schema_version: 2 })).toThrow();
+    expect(supportsMobileClassification(snapshot)).toBe(false);
+    expect(classificationTaxonomy(snapshot)).toBeNull();
+    expect(() => parseSnapshot({ ...snapshot, schema_version: 3 })).toThrow();
     expect(() => parseSnapshot({ ...snapshot, transactions: "private" })).toThrow();
+  });
+
+  it("accepts schema two and exposes taxonomy only with the supported capability", () => {
+    const v2 = parseSnapshot({
+      ...snapshot,
+      schema_version: 2,
+      capabilities: { commands: { "transaction.set_classification": [1] } },
+      taxonomy: {
+        categories: [{
+          id: "fun", name: "Fun", category_type: "expense", reporting_behavior: "ordinary",
+          group_id: "lifestyle", group: "Lifestyle", sort_order: 10,
+        }],
+        subcategories: [{ id: "games", category_id: "fun", name: "Games", sort_order: 10 }],
+      },
+      transactions: [{ ...transaction, classification_revision: 0 }],
+    });
+
+    expect(supportsMobileClassification(v2)).toBe(true);
+    expect(classificationTaxonomy(v2)?.subcategories[0].category_id).toBe("fun");
+    expect(supportsMobileClassification(parseSnapshot({
+      ...v2, capabilities: { commands: {} },
+    }))).toBe(false);
   });
 
   it("sorts available months newest first", () => {

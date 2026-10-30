@@ -181,7 +181,7 @@ def test_remote_cli_configure_preview_status_publish_and_purge(
     preview_output = capsys.readouterr().out
     assert "digest" in preview_output.lower() and "transactions" in preview_output.lower()
     assert stat.S_IMODE(preview.stat().st_mode) == 0o600
-    assert json.loads(preview.read_text())["schema_version"] == 1
+    assert json.loads(preview.read_text())["schema_version"] == 2
 
     published = []
     purged = []

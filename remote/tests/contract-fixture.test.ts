@@ -6,10 +6,36 @@ import { parseRemoteSnapshot } from "../src/contract";
 const fixture = JSON.parse(
   readFileSync("../tests/fixtures/remote_snapshot_v1.json", "utf8"),
 );
+const fixtureV2 = JSON.parse(
+  readFileSync("../tests/fixtures/remote_snapshot_v2.json", "utf8"),
+);
 
 describe("remote snapshot contract", () => {
   it("accepts the shared Python fixture", () => {
     expect(parseRemoteSnapshot(fixture).schema_version).toBe(1);
+    expect(parseRemoteSnapshot(fixtureV2).schema_version).toBe(2);
+  });
+
+  it("requires strict v2 revisions, taxonomy parents, and capability versions", () => {
+    expect(() => parseRemoteSnapshot({
+      ...fixtureV2,
+      transactions: [{ ...fixtureV2.transactions[0], classification_revision: 1.5 }],
+    })).toThrow();
+    expect(() => parseRemoteSnapshot({
+      ...fixtureV2,
+      taxonomy: {
+        ...fixtureV2.taxonomy,
+        subcategories: [{ ...fixtureV2.taxonomy.subcategories[0], category_id: "missing" }],
+      },
+    })).toThrow();
+    expect(() => parseRemoteSnapshot({
+      ...fixtureV2,
+      capabilities: { commands: { "transaction.set_classification": [2] } },
+    })).toThrow();
+    expect(() => parseRemoteSnapshot({
+      ...fixtureV2,
+      capabilities: { commands: { "transaction.archive": [1] } },
+    })).toThrow();
   });
 
   it("accepts new flow subcategories while remaining compatible with old v1 entries", () => {
@@ -37,7 +63,7 @@ describe("remote snapshot contract", () => {
   });
 
   it.each([
-    [{ ...fixture, schema_version: 2 }],
+    [{ ...fixture, schema_version: 3 }],
     [{ ...fixture, unexpected: true }],
     [{ ...fixture, captured_at: "not-a-date" }],
     [{ ...fixture, transactions: [{ ...fixture.transactions[0], currency: "usd" }] }],

@@ -237,7 +237,7 @@ def test_publish_service_records_success_and_preserves_financial_rows(tmp_path) 
     connection.close()
 
     assert result is not None and result.source_sequence == 1
-    assert captured["schema_version"] == 1
+    assert captured["schema_version"] == 2
     assert settings.last_snapshot_id == result.snapshot_id
     assert run["status"] == "succeeded"
     assert after == before

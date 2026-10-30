@@ -17,6 +17,7 @@ from fintracka.remote_snapshot import (
     snapshot_digest,
     view_key,
 )
+from fintracka.remote_models import RemoteSnapshotV2
 from fintracka.reports import overview
 
 
@@ -40,6 +41,51 @@ def _snapshot(database):
         now=NOW,
         snapshot_id="snapshot-test",
     )
+
+
+def test_snapshot_v2_capability_is_default_off_and_taxonomy_is_active_only(database) -> None:
+    archived_category = database.execute(
+        "SELECT id FROM categories WHERE archived = 0 ORDER BY id LIMIT 1"
+    ).fetchone()[0]
+    database.execute("UPDATE categories SET archived = 1 WHERE id = ?", (archived_category,))
+    archived_subcategory = database.execute(
+        "SELECT id FROM subcategories WHERE archived = 0 ORDER BY id LIMIT 1"
+    ).fetchone()[0]
+    database.execute(
+        "UPDATE subcategories SET archived = 1 WHERE id = ?", (archived_subcategory,)
+    )
+
+    disabled = _snapshot(database)
+    enabled = build_remote_snapshot(
+        database,
+        source_sequence=8,
+        history_months=6,
+        now=NOW,
+        snapshot_id="snapshot-enabled",
+        mobile_commands_enabled=True,
+    )
+
+    assert isinstance(disabled, RemoteSnapshotV2)
+    assert disabled.schema_version == 2
+    assert disabled.capabilities.commands == {}
+    assert enabled.capabilities.commands == {"transaction.set_classification": (1,)}
+    assert all(item.id != archived_category for item in enabled.taxonomy.categories)
+    assert all(item.id != archived_subcategory for item in enabled.taxonomy.subcategories)
+    assert all(item.classification_revision >= 0 for item in enabled.transactions)
+    active_category_ids = {item.id for item in enabled.taxonomy.categories}
+    assert all(item.category_id in active_category_ids for item in enabled.taxonomy.subcategories)
+    assert len(serialize_remote_snapshot(enabled)) < MAX_SNAPSHOT_BYTES
+
+
+def test_snapshot_v2_fixture_is_strict_and_requires_integer_revisions() -> None:
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "remote_snapshot_v2.json").read_text()
+    )
+
+    assert RemoteSnapshotV2.model_validate(fixture).schema_version == 2
+    fixture["transactions"][0]["classification_revision"] = 1.5
+    with pytest.raises(ValueError):
+        RemoteSnapshotV2.model_validate(fixture)
 
 
 def test_snapshot_reuses_local_read_models_in_exact_minor_units(database) -> None:
