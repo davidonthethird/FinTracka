@@ -30,7 +30,15 @@ const assets = {
 };
 
 function env(bucket: Bucket) {
-  return { SNAPSHOTS: bucket, ASSETS: assets } as any;
+  return {
+    SNAPSHOTS: bucket,
+    ASSETS: assets,
+    ACCESS_TEAM_DOMAIN: "https://team.cloudflareaccess.com",
+    ACCESS_USER_AUD: "viewer-user-audience",
+    ACCESS_MAC_AUD: "viewer-mac-audience",
+    HOUSEHOLD_ID: "fixture-household",
+    HOUSEHOLD_NAME: "Fixture household",
+  } as any;
 }
 
 function readyBucket() {
