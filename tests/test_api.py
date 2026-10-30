@@ -549,6 +549,53 @@ def test_remote_settings_publish_and_purge_are_local_csrf_protected_and_redacted
         assert purged == [path]
 
 
+def test_mobile_command_settings_endpoint_is_read_only_and_redacted(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection.execute(
+        """
+        UPDATE mobile_command_settings
+        SET enabled = 1, gateway_url = 'https://viewer.example.test',
+            access_client_id_ref = 'private-id-ref',
+            access_client_secret_ref = 'private-secret-ref',
+            last_checked_at = '2026-10-30T12:00:00Z', last_error_code = 'MOBILE_TIMEOUT'
+        WHERE id = 1
+        """
+    )
+    connection.close()
+    app = create_app(
+        path,
+        bootstrap_token="bootstrap",
+        mobile_command_schedule_status_reader=lambda destination: {
+            "installed": True, "loaded": True,
+        },
+    )
+    with TestClient(app) as client:
+        assert client.get("/api/v1/settings/mobile-commands").status_code == 401
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        response = client.get("/api/v1/settings/mobile-commands")
+        assert response.status_code == 200
+        assert response.json() == {
+            "enabled": True,
+            "configured": True,
+            "schedule_installed": True,
+            "schedule_loaded": True,
+            "last_checked_at": "2026-10-30T12:00:00Z",
+            "last_error_code": "MOBILE_TIMEOUT",
+        }
+        assert "private" not in response.text and "viewer.example" not in response.text
+        csrf = client.get("/api/v1/session/csrf").json()["csrf_token"]
+        assert (
+            client.post(
+                "/api/v1/settings/mobile-commands",
+                json={},
+                headers={"origin": "http://testserver", "x-csrf-token": csrf},
+            ).status_code
+            == 405
+        )
+
+
 def test_each_startup_queues_sync_for_live_connection(tmp_path: Path) -> None:
     path = tmp_path / "ledger.sqlite3"
     connection = connect(path)

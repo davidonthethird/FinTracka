@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import stat
+from types import SimpleNamespace
 
 import fintracka.cli as cli_module
 from fintracka.cli import main
@@ -14,6 +15,7 @@ from fintracka.plaid_service import complete_plaid_connection, load_plaid_config
 from fintracka.providers import NormalizedAccount, NormalizedTransaction, SyncBatch
 from fintracka.remote_client import PublishResult
 from fintracka.remote_config import load_remote_settings
+from fintracka.mobile_command_config import load_mobile_command_settings
 
 
 def test_configure_plaid_profiles_and_sync_routes_every_connection(
@@ -234,6 +236,76 @@ def test_remote_cli_configure_preview_status_publish_and_purge(
     connection = connect(tmp_path / "fintracka.sqlite3")
     assert load_remote_settings(connection).enabled is False
     connection.close()
+
+
+def test_mobile_commands_cli_configure_process_schedule_status_and_member(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    backend = FakeKeyring()
+    secrets = KeychainSecrets(backend)
+    monkeypatch.setattr(cli_module, "KeychainSecrets", lambda: secrets)
+    monkeypatch.setattr(cli_module.sys, "stdin", io.StringIO("command-secret\n"))
+
+    assert main([
+        "configure", "mobile-commands", "--gateway-url", "https://viewer.example.test",
+        "--client-id", "command-client.access", "--secret-stdin",
+        "--data-dir", str(tmp_path),
+    ]) == 0
+    output = capsys.readouterr().out
+    assert "configured" in output.lower()
+    assert "command-secret" not in output and "command-client" not in output
+
+    processed = []
+    monkeypatch.setattr(
+        cli_module, "process_mobile_commands",
+        lambda path, keychain: processed.append(path) or SimpleNamespace(
+            claimed=1, applied=1, conflicts=0, rejected=0, failed=0,
+            acknowledged=1, published=True, skipped=False, error_code=None,
+        ),
+    )
+    schedules: list[str] = []
+    monkeypatch.setattr(
+        cli_module, "install_mobile_commands_schedule",
+        lambda destination, python, data: schedules.append("install"),
+    )
+    monkeypatch.setattr(
+        cli_module, "mobile_commands_schedule_status",
+        lambda destination: {"installed": True, "loaded": True},
+    )
+    monkeypatch.setattr(
+        cli_module, "remove_mobile_commands_schedule",
+        lambda destination: schedules.append("remove"),
+    )
+    members = []
+    class CommandClient:
+        @classmethod
+        def from_settings(cls, settings, keychain):
+            return cls()
+        def upsert_member(self, member_id, display_name, email, *, active):
+            members.append((member_id, display_name, email, active))
+    monkeypatch.setattr(cli_module, "MobileCommandClient", CommandClient)
+
+    assert main(["remote", "commands", "enable", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "commands", "process", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "commands", "schedule", "install", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "commands", "schedule", "status", "--data-dir", str(tmp_path)]) == 0
+    monkeypatch.setattr(cli_module.sys, "stdin", io.StringIO("david@example.test\n"))
+    assert main([
+        "remote", "commands", "member", "upsert", "--member-id", "member-david",
+        "--display-name", "David", "--email-stdin", "--data-dir", str(tmp_path),
+    ]) == 0
+    assert main(["remote", "commands", "status", "--data-dir", str(tmp_path)]) == 0
+    status_output = capsys.readouterr().out
+    assert "example.test" not in status_output and "command-secret" not in status_output
+    assert main(["remote", "commands", "schedule", "remove", "--data-dir", str(tmp_path)]) == 0
+    assert main(["remote", "commands", "disable", "--data-dir", str(tmp_path)]) == 0
+
+    connection = connect(tmp_path / "fintracka.sqlite3")
+    assert load_mobile_command_settings(connection).enabled is False
+    connection.close()
+    assert processed == [tmp_path.resolve() / "fintracka.sqlite3"]
+    assert schedules == ["install", "remove"]
+    assert members == [("member-david", "David", "david@example.test", True)]
 
 
 class FakeKeyring:

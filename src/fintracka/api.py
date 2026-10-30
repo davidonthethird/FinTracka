@@ -45,11 +45,13 @@ from fintracka.manual_cash import (
 from fintracka.launchd import (
     install_remote_schedule,
     install_schedule,
+    mobile_commands_schedule_status,
     remote_schedule_status,
     remove_remote_schedule,
     remove_schedule,
     schedule_status,
 )
+from fintracka.mobile_command_config import load_mobile_command_settings
 from fintracka.ledger import (
     ConflictError,
     IntegrityError,
@@ -500,6 +502,7 @@ def create_app(
     remote_schedule_installer: Callable[[Path, Path, Path, int], Any] = install_remote_schedule,
     remote_schedule_remover: Callable[[Path], Any] = remove_remote_schedule,
     remote_schedule_status_reader: Callable[[Path], dict[str, bool]] = remote_schedule_status,
+    mobile_command_schedule_status_reader: Callable[[Path], dict[str, bool]] = mobile_commands_schedule_status,
     filevault_checker: Callable[[], bool] = filevault_enabled,
     remote_secrets_factory: Callable[[], KeychainSecrets] = KeychainSecrets,
 ) -> FastAPI:
@@ -513,6 +516,7 @@ def create_app(
     jobs = JobRunner(path)
     launch_agent = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.sync.plist"
     remote_launch_agent = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.remote-publish.plist"
+    mobile_command_launch_agent = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.mobile-commands.plist"
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):  # type: ignore[no-untyped-def]
@@ -680,6 +684,23 @@ def create_app(
             "last_published_at": settings.last_published_at,
             "last_error_code": settings.last_error_code,
             "publication_count": publication_count,
+        }
+
+    @app.get("/api/v1/settings/mobile-commands")
+    def mobile_command_settings(database: Database) -> dict[str, object]:
+        settings = load_mobile_command_settings(database)
+        scheduler = mobile_command_schedule_status_reader(mobile_command_launch_agent)
+        return {
+            "enabled": settings.enabled,
+            "configured": bool(
+                settings.gateway_url
+                and settings.access_client_id_ref
+                and settings.access_client_secret_ref
+            ),
+            "schedule_installed": scheduler["installed"],
+            "schedule_loaded": scheduler["loaded"],
+            "last_checked_at": settings.last_checked_at,
+            "last_error_code": settings.last_error_code,
         }
 
     @app.post("/api/v1/settings/remote/publish", status_code=202)
