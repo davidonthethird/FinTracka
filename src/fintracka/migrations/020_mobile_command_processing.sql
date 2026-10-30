@@ -16,8 +16,8 @@ VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 
 CREATE TABLE mobile_command_receipts (
     command_id TEXT PRIMARY KEY,
-    command_type TEXT NOT NULL CHECK (command_type = 'transaction.set_classification'),
-    command_version INTEGER NOT NULL CHECK (command_version = 1),
+    command_type TEXT NOT NULL CHECK (length(command_type) BETWEEN 1 AND 80),
+    command_version INTEGER NOT NULL CHECK (command_version > 0),
     payload_digest TEXT NOT NULL CHECK (length(payload_digest) = 64),
     actor_member_id TEXT NOT NULL CHECK (length(actor_member_id) BETWEEN 1 AND 128),
     status TEXT NOT NULL CHECK (status IN ('applied', 'conflict', 'rejected')),

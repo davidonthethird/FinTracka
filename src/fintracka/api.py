@@ -75,6 +75,7 @@ from fintracka.reports import (
     spending_by_owner,
 )
 from fintracka.readiness import filevault_enabled, readiness_report
+from fintracka.financial_mutations import reconcile_financial_mutations
 from fintracka.remote_client import RemotePublishError
 from fintracka.remote_config import load_remote_settings
 from fintracka.remote_service import publish_remote_snapshot, purge_remote_snapshots
@@ -103,8 +104,6 @@ from fintracka.savings_goals import (
     ignore_month_review,
     initialization_preview,
     initialize_goal_ledger,
-    reconcile_savings_draws,
-    reconcile_savings_transactions,
     savings_goal_detail,
     savings_goal_overview,
     set_allocation_plan,
@@ -2155,18 +2154,7 @@ def _planning_category(
 def _reconcile_savings_after_mutation(
     connection: sqlite3.Connection, transaction_ids: list[str] | None = None
 ) -> None:
-    settings = connection.execute(
-        "SELECT activation_month FROM savings_settings WHERE id = 1"
-    ).fetchone()
-    if settings is None:
-        return
-    through_month = connection.execute(
-        "SELECT COALESCE(MAX(substr(local_date, 1, 7)), ?) FROM transactions",
-        (settings["activation_month"],),
-    ).fetchone()[0]
-    reconcile_savings_draws(connection, max(settings["activation_month"], through_month))
-    if transaction_ids:
-        reconcile_savings_transactions(connection, transaction_ids)
+    reconcile_financial_mutations(connection, transaction_ids)
 
 
 def _savings_goal_status(error: SavingsGoalError) -> int:
