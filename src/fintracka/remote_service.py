@@ -8,6 +8,7 @@ from typing import Literal
 from fintracka.db import connect, migrate
 from fintracka.keychain import KeychainSecrets
 from fintracka.locks import ProcessLock, ProcessLockError
+from fintracka.mobile_command_config import load_mobile_command_settings
 from fintracka.remote_client import PublishResult, RemotePublishError, RemotePublisherClient
 from fintracka.remote_config import (
     RemoteSettings,
@@ -60,6 +61,7 @@ def _publish_remote_snapshot_locked(
         try:
             migrate(connection)
             settings = load_remote_settings(connection)
+            mobile_command_settings = load_mobile_command_settings(connection)
             configured = all((
                 settings.publisher_url,
                 settings.access_client_id_ref,
@@ -77,6 +79,7 @@ def _publish_remote_snapshot_locked(
                     source_sequence=sequence,
                     history_months=settings.history_months,
                     now=captured_at,
+                    mobile_commands_enabled=mobile_command_settings.enabled,
                 )
                 payload = serialize_remote_snapshot(snapshot)
                 result = client_factory(settings, secrets).publish(payload, snapshot_digest(payload))
