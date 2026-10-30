@@ -44,7 +44,7 @@
   },
   "capabilities": {
     "commands": {
-      "transaction.set_classification": [1]
+      "transaction.set_classification": [1, 2]
     }
   },
   "taxonomy": {

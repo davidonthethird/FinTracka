@@ -276,7 +276,7 @@ class RemoteCapabilities(RemoteReadModel):
     ) -> dict[str, tuple[int, ...]]:
         if set(value) - {"transaction.set_classification"}:
             raise ValueError("unsupported remote command capability")
-        if value.get("transaction.set_classification") not in (None, (1,)):
+        if value.get("transaction.set_classification") not in (None, (1,), (1, 2)):
             raise ValueError("unsupported transaction classification command version")
         return value
 

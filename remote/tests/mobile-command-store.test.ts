@@ -3,7 +3,11 @@ import { applyD1Migrations } from "cloudflare:test";
 import type { D1Migration } from "@cloudflare/vitest-plugin";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import type { CreateClassificationCommand } from "../src/mobileCommandModel";
+import {
+  canonicalClassificationPayload,
+  sha256Hex,
+  type CreateClassificationCommand,
+} from "../src/mobileCommandModel";
 import { MobileCommandStore } from "../src/mobileCommandStore";
 
 declare global {
@@ -35,6 +39,35 @@ beforeEach(async () => {
 });
 
 describe("mobile command store", () => {
+  it("keeps the v1 digest stable and binds v2 scope into its digest", async () => {
+    const v1 = canonicalClassificationPayload(1, "category-fun", null, "one_time");
+    const past = canonicalClassificationPayload(2, "category-fun", null, "past_and_future");
+    const future = canonicalClassificationPayload(2, "category-fun", null, "future");
+
+    expect(v1).toBe('{"category_id":"category-fun","subcategory_id":null}');
+    expect(past).toBe('{"category_id":"category-fun","subcategory_id":null,"scope":"past_and_future"}');
+    expect(await sha256Hex(past)).not.toBe(await sha256Hex(future));
+  });
+
+  it("normalizes v1 as one-time and carries v2 scope through create and claim", async () => {
+    const store = makeStore();
+    await provision(store);
+    const v1 = await store.createOrReplace(HOUSEHOLD, MEMBER, command("version-one-0001", "transaction-1"));
+    expect(v1.command).toMatchObject({ command_version: 1, scope: "one_time" });
+    await store.cancel(HOUSEHOLD, v1.command.id, MEMBER);
+
+    const v2 = await store.createOrReplace(HOUSEHOLD, MEMBER, {
+      ...command("version-two-0001", "transaction-2"),
+      command_version: 2,
+      scope: "past_and_future",
+    } as CreateClassificationCommand);
+    expect(v2.command).toMatchObject({ command_version: 2, scope: "past_and_future" });
+    expect(await store.claim("processor-1", 1)).toMatchObject([
+      { id: v2.command.id, command_version: 2, scope: "past_and_future" },
+    ]);
+    expect(JSON.stringify(v2.command)).not.toMatch(/merchant|description|amount_minor|account_name/);
+  });
+
   it("provisions and resolves one active member by normalized email", async () => {
     const store = makeStore();
     await provision(store);

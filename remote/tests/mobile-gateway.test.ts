@@ -45,9 +45,50 @@ describe("mobile gateway", () => {
     const body = await response.json() as Record<string, unknown>;
     expect(body).toMatchObject({
       member: { id: "member-david", display_name: "David" },
-      capabilities: { "transaction.set_classification": [1] },
+      capabilities: { "transaction.set_classification": [1, 2] },
     });
     expect(JSON.stringify(body)).not.toContain("david@example.test");
+  });
+
+  it("negotiates v2 scope and rejects malformed versioned commands", async () => {
+    const gateway = makeGateway();
+    await provision(gateway);
+    const document = structuredClone(snapshotV2) as any;
+    document.capabilities.commands["transaction.set_classification"] = [1, 2];
+    const testEnv = gatewayEnv(document);
+
+    const session = await gateway.fetch(userRequest("/api/v1/mobile/session"), testEnv);
+    expect(await session.json()).toMatchObject({
+      capabilities: { "transaction.set_classification": [1, 2] },
+    });
+    const created = await gateway.fetch(userRequest("/api/v1/mobile/commands", json(command({
+      command_version: 2,
+      scope: "past_and_future",
+    }))), testEnv);
+    expect(created.status).toBe(201);
+    expect((await created.json() as any).command).toMatchObject({
+      command_version: 2,
+      scope: "past_and_future",
+    });
+    const claimed = await gateway.fetch(macRequest(
+      "/api/v1/mobile/mac/commands/claim", json({ limit: 1 }),
+    ), testEnv);
+    expect((await claimed.json() as any).commands[0]).toMatchObject({
+      command_version: 2,
+      scope: "past_and_future",
+    });
+
+    for (const malformed of [
+      command({ command_version: 2 }),
+      command({ command_version: 2, scope: "everywhere" }),
+      command({ command_version: 1, scope: "past_and_future" }),
+    ]) {
+      await expectError(
+        await gateway.fetch(userRequest("/api/v1/mobile/commands", json(malformed)), testEnv),
+        400,
+        "INVALID_COMMAND",
+      );
+    }
   });
 
   it("rejects missing, spoofed, unknown, and inactive browser identities", async () => {
@@ -330,6 +371,39 @@ describe("mobile gateway", () => {
     ), gatewayEnv());
     expect(completed.status).toBe(200);
     expect((await completed.json() as any).command.status).toBe("applied");
+  });
+
+  it("accepts the safe scoped result only for a v2 command", async () => {
+    const gateway = makeGateway();
+    await provision(gateway);
+    const created = await gateway.fetch(userRequest(
+      "/api/v1/mobile/commands",
+      json(command({ command_version: 2, scope: "past_and_future" })),
+    ), gatewayEnv());
+    expect(created.status).toBe(201);
+    const claimed = await gateway.fetch(macRequest(
+      "/api/v1/mobile/mac/commands/claim", json({ limit: 1 }),
+    ), gatewayEnv());
+    const item = (await claimed.json() as any).commands[0];
+
+    const completed = await gateway.fetch(macRequest(
+      `/api/v1/mobile/mac/commands/${item.id}/complete`,
+      json({ claim_token: item.claim_token, result: {
+        status: "applied",
+        category_id: "category-fun",
+        subcategory_id: "subcategory-games",
+        classification_revision: 1,
+        requested_scope: "past_and_future",
+        effective_scope: "past_and_future",
+        affected_count: 3,
+      } }),
+    ), gatewayEnv());
+
+    expect(completed.status).toBe(200);
+    expect((await completed.json() as any).command.result).toMatchObject({
+      requested_scope: "past_and_future", effective_scope: "past_and_future",
+      affected_count: 3,
+    });
   });
 
   it("returns safe errors without storage or verification details", async () => {

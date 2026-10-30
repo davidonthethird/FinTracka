@@ -125,7 +125,7 @@ def build_remote_snapshot(
             reports=reports_models,
             capabilities=RemoteCapabilities(
                 commands=(
-                    {"transaction.set_classification": (1,)}
+                    {"transaction.set_classification": (1, 2)}
                     if mobile_commands_enabled
                     else {}
                 )

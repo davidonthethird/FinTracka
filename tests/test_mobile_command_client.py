@@ -74,6 +74,7 @@ def test_claim_sends_dedicated_service_token_and_parses_strict_commands() -> Non
             "observed_revision": 2,
             "category_id": "category-1",
             "subcategory_id": None,
+            "scope": "one_time",
             "payload_digest": "a" * 64,
             "claim_token": "claim-token",
             "expires_at": "2026-11-30T12:00:00Z",
@@ -93,6 +94,61 @@ def test_claim_sends_dedicated_service_token_and_parses_strict_commands() -> Non
     assert timeout == 10
     assert commands[0].target_id == "transaction-1"
     assert commands[0].payload_digest == "a" * 64
+    assert commands[0].scope == "one_time"
+
+
+def test_claim_parses_v2_scope_and_normalizes_v1_to_one_time() -> None:
+    def command(version: int, scope: str) -> dict[str, object]:
+        return {
+            "id": f"command-{version}",
+            "actor_member_id": "member-david",
+            "command_type": "transaction.set_classification",
+            "command_version": version,
+            "target_id": "transaction-1",
+            "observed_revision": 2,
+            "category_id": "category-1",
+            "subcategory_id": None,
+            "scope": scope,
+            "payload_digest": "a" * 64,
+            "claim_token": "claim-token",
+            "expires_at": "2026-11-30T12:00:00Z",
+        }
+
+    client = MobileCommandClient(
+        "https://viewer.example.test", "id", "secret",
+        opener=lambda *_: Response({"commands": [
+            command(1, "one_time"), command(2, "past_and_future"),
+        ]}),
+        sleep=lambda _: None,
+    )
+
+    commands = client.claim(2)
+
+    assert [(item.command_version, item.scope) for item in commands] == [
+        (1, "one_time"), (2, "past_and_future"),
+    ]
+
+
+@pytest.mark.parametrize("version,scope", [(1, "future"), (2, "everywhere")])
+def test_claim_rejects_invalid_versioned_scope(version: int, scope: str) -> None:
+    body = {
+        "commands": [{
+            "id": "command-1", "actor_member_id": "member-david",
+            "command_type": "transaction.set_classification",
+            "command_version": version, "target_id": "transaction-1",
+            "observed_revision": 2, "category_id": "category-1",
+            "subcategory_id": None, "scope": scope,
+            "payload_digest": "a" * 64, "claim_token": "claim-token",
+            "expires_at": "2026-11-30T12:00:00Z",
+        }],
+    }
+    client = MobileCommandClient(
+        "https://viewer.example.test", "id", "secret",
+        opener=lambda *_: Response(body), sleep=lambda _: None,
+    )
+
+    with pytest.raises(MobileCommandClientError, match="MOBILE_INVALID_RESPONSE"):
+        client.claim(1)
 
 
 def test_complete_and_member_provisioning_use_bounded_exact_json() -> None:
@@ -211,6 +267,7 @@ def terminal_command() -> dict[str, object]:
         "observed_revision": 2,
         "category_id": "category-1",
         "subcategory_id": None,
+        "scope": "one_time",
         "status": "applied",
         "supersedes_command_id": None,
         "result": {

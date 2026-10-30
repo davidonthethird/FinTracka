@@ -5,19 +5,21 @@ import { supportsMobileClassification } from "./model";
 import { MobileCommandApiError, mobileJson } from "./api";
 
 export type MobileCommandStatus = "pending" | "processing" | "applied" | "conflict" | "rejected" | "cancelled" | "expired" | "superseded";
+export type CategorizationScope = "one_time" | "future" | "past_and_future";
 export type MobileCommandResult =
-  | { status: "applied" | "conflict"; category_id: string | null; subcategory_id: string | null; classification_revision: number }
+  | { status: "applied" | "conflict"; category_id: string | null; subcategory_id: string | null; classification_revision: number; requested_scope?: CategorizationScope; effective_scope?: CategorizationScope; affected_count?: number }
   | { status: "rejected"; error_code: string };
 
 export interface MobileCommand {
   id: string;
   actor_member_id: string;
   command_type: "transaction.set_classification";
-  command_version: 1;
+  command_version: 1 | 2;
   target_id: string;
   observed_revision: number;
   category_id: string | null;
   subcategory_id: string | null;
+  scope: CategorizationScope;
   status: MobileCommandStatus;
   supersedes_command_id: string | null;
   result: MobileCommandResult | null;
@@ -30,14 +32,15 @@ export interface MobileCommand {
 
 interface MobileSession {
   member: { id: string; display_name: string };
-  capabilities: { "transaction.set_classification"?: [1] };
+  capabilities: { "transaction.set_classification"?: [1] | [1, 2] };
   server_time: string;
 }
 
-interface ClassificationInput {
+export interface ClassificationInput {
   transaction: RemoteTransaction;
   categoryId: string | null;
   subcategoryId: string | null;
+  scope: CategorizationScope;
   replaceCommandId?: string | null;
   observedRevision?: number;
 }
@@ -105,16 +108,7 @@ export function MobileCommandProvider({ snapshot, onSnapshotRefresh, children }:
 
   const save = useCallback(async (input: ClassificationInput) => {
     const idempotencyKey = crypto.randomUUID();
-    const body = {
-      command_type: "transaction.set_classification" as const,
-      command_version: 1 as const,
-      target_id: input.transaction.id,
-      observed_revision: input.observedRevision ?? input.transaction.classification_revision ?? 0,
-      category_id: input.categoryId,
-      subcategory_id: input.subcategoryId,
-      idempotency_key: idempotencyKey,
-      replace_command_id: input.replaceCommandId ?? null,
-    };
+    const body = buildClassificationCommandBody(input, idempotencyKey);
     let response: { command: MobileCommand };
     try {
       response = await mobileJson<{ command: MobileCommand }>("/api/v1/mobile/commands", { method: "POST", body: JSON.stringify(body) });
@@ -137,7 +131,7 @@ export function MobileCommandProvider({ snapshot, onSnapshotRefresh, children }:
   }, []);
 
   const value = useMemo<MobileCommandContextValue>(() => ({
-    available: supported && session?.capabilities["transaction.set_classification"]?.[0] === 1,
+    available: supported && session?.capabilities["transaction.set_classification"]?.[1] === 2,
     loading, memberName: session?.member.display_name, commands, error, refresh, save, cancel,
   }), [cancel, commands, error, loading, refresh, save, session, supported]);
   return createElement(MobileCommandContext.Provider, { value }, children);
@@ -172,7 +166,7 @@ export function appliedCommandMatchesSnapshot(
 }
 
 export function proposedClassification(command: MobileCommand, taxonomy: ClassificationTaxonomy | null): {
-  category: string; subcategory: string | null; pending: boolean;
+  category: string; subcategory: string | null; pending: boolean; scope: CategorizationScope;
 } {
   const category = command.category_id === null
     ? "Uncategorized"
@@ -180,7 +174,24 @@ export function proposedClassification(command: MobileCommand, taxonomy: Classif
   const subcategory = command.subcategory_id === null
     ? null
     : taxonomy?.subcategories.find((item) => item.id === command.subcategory_id)?.name ?? "Unavailable subcategory";
-  return { category, subcategory, pending: command.status === "pending" || command.status === "processing" };
+  return { category, subcategory, scope: command.scope, pending: command.status === "pending" || command.status === "processing" };
+}
+
+export function buildClassificationCommandBody(
+  input: ClassificationInput,
+  idempotencyKey: string,
+) {
+  return {
+    command_type: "transaction.set_classification" as const,
+    command_version: 2 as const,
+    target_id: input.transaction.id,
+    observed_revision: input.observedRevision ?? input.transaction.classification_revision ?? 0,
+    category_id: input.categoryId,
+    subcategory_id: input.subcategoryId,
+    scope: input.scope,
+    idempotency_key: idempotencyKey,
+    replace_command_id: input.replaceCommandId ?? null,
+  };
 }
 
 export function statusLabel(status: MobileCommandStatus): string {

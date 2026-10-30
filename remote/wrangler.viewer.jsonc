@@ -25,7 +25,7 @@
       "vars": {
         "ACCESS_TEAM_DOMAIN": "https://hidden-silence-257f.cloudflareaccess.com",
         "ACCESS_USER_AUD": "25b2f01ecff268bc527f6dce6b2cec9cbbdd216dd6a4d8208eaa03d31f65fe39",
-        "ACCESS_MAC_AUD": "UNCONFIGURED_DENY_ALL",
+        "ACCESS_MAC_AUD": "0bdc62491b666aee9f39710c9b69b17cbdeccae87951fc3515a7c637da32d386",
         "HOUSEHOLD_ID": "fintracka-household-v1",
         "HOUSEHOLD_NAME": "FinTracka household"
       }
@@ -43,7 +43,7 @@
       "vars": {
         "ACCESS_TEAM_DOMAIN": "https://hidden-silence-257f.cloudflareaccess.com",
         "ACCESS_USER_AUD": "bf71b0fdb9bf64128200c065a58d67aea7047052d35da159a4a0631256c772d7",
-        "ACCESS_MAC_AUD": "UNCONFIGURED_DENY_ALL",
+        "ACCESS_MAC_AUD": "550252d3098e4d0bf22259cf9f98b71149433a565fae23bd6fd541199e9c20c5",
         "HOUSEHOLD_ID": "fintracka-household-v1",
         "HOUSEHOLD_NAME": "FinTracka household"
       }

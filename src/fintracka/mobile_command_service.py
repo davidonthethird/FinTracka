@@ -11,6 +11,7 @@ from pathlib import Path
 from fintracka.classification import (
     ClassificationConflict,
     ClassificationError,
+    apply_scoped_classification,
     set_transaction_classification_once,
 )
 from fintracka.db import connect, migrate
@@ -195,22 +196,42 @@ def _process_one(
 
     connection.execute("BEGIN IMMEDIATE")
     try:
-        change = set_transaction_classification_once(
-            connection,
-            command.target_id,
-            command.category_id,
-            command.subcategory_id,
-            command.observed_revision,
-            actor=f"member:{command.actor_member_id}",
-            command_id=command.id,
-        )
-        reconcile_financial_mutations(connection, [change.transaction_id])
+        if command.command_version == 1:
+            change = set_transaction_classification_once(
+                connection,
+                command.target_id,
+                command.category_id,
+                command.subcategory_id,
+                command.observed_revision,
+                actor=f"member:{command.actor_member_id}",
+                command_id=command.id,
+            )
+            affected_ids = (change.transaction_id,)
+        else:
+            change = apply_scoped_classification(
+                connection,
+                command.target_id,
+                command.category_id,
+                command.subcategory_id,
+                command.observed_revision,
+                command.scope,
+                actor=f"member:{command.actor_member_id}",
+                command_id=command.id,
+            )
+            affected_ids = change.affected_transaction_ids
+        reconcile_financial_mutations(connection, affected_ids)
         result = {
             "status": "applied",
             "category_id": change.category_id,
             "subcategory_id": change.subcategory_id,
             "classification_revision": change.classification_revision,
         }
+        if command.command_version == 2:
+            result.update({
+                "requested_scope": change.requested_scope,
+                "effective_scope": change.effective_scope,
+                "affected_count": len(affected_ids),
+            })
         _insert_receipt(connection, command, result, processed_at)
         connection.commit()
         return result, True
@@ -298,12 +319,18 @@ def _receipt_matches(row: sqlite3.Row, command: ClaimedMobileCommand) -> bool:
 
 
 def _validate_claim(command: ClaimedMobileCommand) -> str | None:
-    if command.command_type != "transaction.set_classification" or command.command_version != 1:
+    if (
+        command.command_type != "transaction.set_classification"
+        or command.command_version not in {1, 2}
+    ):
         return "UNSUPPORTED_COMMAND"
-    payload = json.dumps(
-        {"category_id": command.category_id, "subcategory_id": command.subcategory_id},
-        separators=(",", ":"),
-    ).encode()
+    value: dict[str, object] = {
+        "category_id": command.category_id,
+        "subcategory_id": command.subcategory_id,
+    }
+    if command.command_version == 2:
+        value["scope"] = command.scope
+    payload = json.dumps(value, separators=(",", ":")).encode()
     if hashlib.sha256(payload).hexdigest() != command.payload_digest:
         return "INVALID_PAYLOAD_DIGEST"
     return None

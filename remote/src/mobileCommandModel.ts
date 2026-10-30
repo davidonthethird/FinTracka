@@ -7,16 +7,27 @@ export const commandStatuses = [
 
 export type MobileCommandStatus = typeof commandStatuses[number];
 
-export const CreateClassificationCommandSchema = z.object({
+export const categorizationScopes = ["one_time", "future", "past_and_future"] as const;
+export type CategorizationScope = typeof categorizationScopes[number];
+
+const classificationCommandFields = {
   command_type: z.literal("transaction.set_classification"),
-  command_version: z.literal(1),
   target_id: z.string().min(1).max(128),
   observed_revision: z.int().nonnegative(),
   category_id: z.string().min(1).max(128).nullable(),
   subcategory_id: z.string().min(1).max(128).nullable(),
   idempotency_key: z.string().min(8).max(128),
   replace_command_id: z.string().min(1).max(128).nullable(),
-}).strict().superRefine((value, context) => {
+};
+
+export const CreateClassificationCommandSchema = z.discriminatedUnion("command_version", [
+  z.object({ ...classificationCommandFields, command_version: z.literal(1) }).strict(),
+  z.object({
+    ...classificationCommandFields,
+    command_version: z.literal(2),
+    scope: z.enum(categorizationScopes),
+  }).strict(),
+]).superRefine((value, context) => {
   if (value.category_id === null && value.subcategory_id !== null) {
     context.addIssue({
       code: "custom",
@@ -28,12 +39,22 @@ export const CreateClassificationCommandSchema = z.object({
 
 export type CreateClassificationCommand = z.infer<typeof CreateClassificationCommandSchema>;
 
-export const CommandResultSchema = z.discriminatedUnion("status", [
+const appliedResultFields = {
+  status: z.literal("applied"),
+  category_id: z.string().min(1).max(128).nullable(),
+  subcategory_id: z.string().min(1).max(128).nullable(),
+  classification_revision: z.int().nonnegative(),
+};
+
+export const CommandResultSchema = z.union([
   z.object({
-    status: z.literal("applied"),
-    category_id: z.string().min(1).max(128).nullable(),
-    subcategory_id: z.string().min(1).max(128).nullable(),
-    classification_revision: z.int().nonnegative(),
+    ...appliedResultFields,
+    requested_scope: z.enum(categorizationScopes),
+    effective_scope: z.enum(categorizationScopes),
+    affected_count: z.int().nonnegative(),
+  }).strict(),
+  z.object({
+    ...appliedResultFields,
   }).strict(),
   z.object({
     status: z.literal("conflict"),
@@ -60,11 +81,12 @@ export interface PublicMobileCommand {
   id: string;
   actor_member_id: string;
   command_type: "transaction.set_classification";
-  command_version: 1;
+  command_version: 1 | 2;
   target_id: string;
   observed_revision: number;
   category_id: string | null;
   subcategory_id: string | null;
+  scope: CategorizationScope;
   status: MobileCommandStatus;
   supersedes_command_id: string | null;
   result: CommandResult | null;
@@ -79,11 +101,12 @@ export interface ClaimedCommand {
   id: string;
   actor_member_id: string;
   command_type: "transaction.set_classification";
-  command_version: 1;
+  command_version: 1 | 2;
   target_id: string;
   observed_revision: number;
   category_id: string | null;
   subcategory_id: string | null;
+  scope: CategorizationScope;
   payload_digest: string;
   claim_token: string;
   expires_at: string;
@@ -97,10 +120,14 @@ export class MobileCommandStoreError extends Error {
 }
 
 export function canonicalClassificationPayload(
+  version: 1 | 2,
   categoryId: string | null,
   subcategoryId: string | null,
+  scope: CategorizationScope,
 ): string {
-  return JSON.stringify({ category_id: categoryId, subcategory_id: subcategoryId });
+  return version === 1
+    ? JSON.stringify({ category_id: categoryId, subcategory_id: subcategoryId })
+    : JSON.stringify({ category_id: categoryId, subcategory_id: subcategoryId, scope });
 }
 
 export async function sha256Hex(value: string): Promise<string> {

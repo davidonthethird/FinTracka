@@ -281,7 +281,7 @@ def test_publish_advertises_mobile_editing_only_after_explicit_enable(tmp_path) 
     )
 
     assert captured["capabilities"]["commands"] == {
-        "transaction.set_classification": [1],
+        "transaction.set_classification": [1, 2],
     }
 
 

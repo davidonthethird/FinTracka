@@ -197,13 +197,14 @@ test("remote viewer shows stale and unavailable states without leaking server de
   await expect(page.getByText("private_detail")).toHaveCount(0);
 });
 
-test("authorized household members can propose, replace, and cancel a one-time classification", async ({ page }) => {
+test("authorized household members can choose a scope, replace, and cancel a classification", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 });
   await page.goto(`${viewer}/transactions`);
   await expect(page.getByRole("heading", { name: "Transactions", exact: true })).toBeVisible();
   await page.getByLabel("Search transactions").fill("LOWE");
   await page.locator(".transaction-entry").click();
   await page.getByRole("button", { name: "Edit classification" }).click();
+  await expect(page.getByRole("button", { name: "Past + future" })).toHaveAttribute("aria-pressed", "true");
   await page.getByLabel("Search categories").fill("Grocer");
   await page.getByRole("listbox", { name: "Category" }).getByRole("option", { name: "Groceries", exact: true }).click();
   await expect(page.locator(".classification-preview")).toContainText("Shopping / Home improvement → Groceries");
@@ -212,16 +213,19 @@ test("authorized household members can propose, replace, and cancel a one-time c
   await expect(drawer.getByText("Pending", { exact: true })).toBeVisible();
   await expect(drawer.getByText("Proposed classification")).toBeVisible();
   await expect(drawer.locator(".proposal-row")).toContainText("Groceries");
+  await expect(drawer.locator(".proposal-row")).toContainText("Past + future");
   await page.getByRole("button", { name: "Close transaction details" }).click();
   await expect(page.locator(".transaction-entry")).toContainText("Pending proposal");
 
   await page.locator(".transaction-entry").click();
   await page.getByRole("button", { name: "Replace proposal" }).click();
+  await page.getByRole("button", { name: "One time" }).click();
   await page.getByLabel("Search categories").fill("Other");
   await page.getByRole("listbox", { name: "Category" }).getByRole("option", { name: "Other", exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Replace proposal" }).click();
   await expect(page.getByRole("dialog").locator(".proposal-row")).toContainText("Other");
+  await expect(page.getByRole("dialog").locator(".proposal-row")).toContainText("One time");
 
   await page.getByRole("button", { name: "Close transaction details" }).click();
   await page.getByRole("button", { name: "Planning", exact: true }).click();

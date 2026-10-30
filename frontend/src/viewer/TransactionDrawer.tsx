@@ -2,7 +2,7 @@ import { X } from "lucide-react";
 import { formatMoney } from "../format";
 import type { RemoteTransaction } from "./model";
 import type { ClassificationTaxonomy } from "./model";
-import type { MobileCommand } from "./mobileCommands";
+import type { CategorizationScope, MobileCommand } from "./mobileCommands";
 import { TransactionClassificationEditor } from "./TransactionClassificationEditor";
 
 export function TransactionDrawer({ transaction, taxonomy, command, editingAvailable, onSave, onCancel, onClose }: {
@@ -10,7 +10,7 @@ export function TransactionDrawer({ transaction, taxonomy, command, editingAvail
   taxonomy: ClassificationTaxonomy | null;
   command?: MobileCommand;
   editingAvailable: boolean;
-  onSave: (input: { categoryId: string | null; subcategoryId: string | null; replaceCommandId: string | null; observedRevision?: number }) => Promise<void>;
+  onSave: (input: { categoryId: string | null; subcategoryId: string | null; replaceCommandId: string | null; observedRevision?: number; scope: CategorizationScope }) => Promise<void>;
   onCancel: (commandId: string) => Promise<void>;
   onClose: () => void;
 }) {
