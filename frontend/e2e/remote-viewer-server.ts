@@ -14,7 +14,7 @@ const subcategories = [...new Map(document.transactions.filter((item: any) => it
   id: item.subcategory_id, category_id: item.category_id, name: item.subcategory, sort_order: 0,
 }])).values()];
 document.schema_version = 2;
-document.capabilities = { commands: { "transaction.set_classification": [1] } };
+document.capabilities = { commands: { "transaction.set_classification": [1, 2] } };
 document.taxonomy = { categories, subcategories };
 document.transactions = document.transactions.map((item: any) => ({ ...item, classification_revision: 0 }));
 
@@ -31,7 +31,7 @@ createServer(async (request, response) => {
   if (url.pathname === "/api/v1/status") return json(response, 200, { available: true, published_at: "2026-10-27T12:01:00Z", stale: false });
   if (url.pathname === "/api/v1/mobile/session") return json(response, 200, {
     member: { id: "member-fixture", display_name: "Fixture member" },
-    capabilities: { "transaction.set_classification": [1] }, server_time: new Date().toISOString(),
+    capabilities: { "transaction.set_classification": [1, 2] }, server_time: new Date().toISOString(),
   });
   if (url.pathname === "/api/v1/mobile/commands" && request.method === "GET") return json(response, 200, { commands });
   if (url.pathname === "/api/v1/mobile/commands" && request.method === "POST") {
@@ -42,9 +42,9 @@ createServer(async (request, response) => {
     const timestamp = new Date().toISOString();
     const command = {
       id: `command-${++commandSequence}`, actor_member_id: "member-fixture",
-      command_type: "transaction.set_classification", command_version: 1,
+      command_type: "transaction.set_classification", command_version: 2,
       target_id: body.target_id, observed_revision: body.observed_revision,
-      category_id: body.category_id, subcategory_id: body.subcategory_id,
+      category_id: body.category_id, subcategory_id: body.subcategory_id, scope: body.scope,
       status: "pending", supersedes_command_id: active?.id ?? null, result: null,
       error_code: null, created_at: timestamp, updated_at: timestamp,
       expires_at: "2026-11-30T12:00:00Z", finished_at: null,

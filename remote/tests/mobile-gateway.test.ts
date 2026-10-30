@@ -45,7 +45,7 @@ describe("mobile gateway", () => {
     const body = await response.json() as Record<string, unknown>;
     expect(body).toMatchObject({
       member: { id: "member-david", display_name: "David" },
-      capabilities: { "transaction.set_classification": [1] },
+      capabilities: { "transaction.set_classification": [1, 2] },
     });
     expect(JSON.stringify(body)).not.toContain("david@example.test");
   });

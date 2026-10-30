@@ -57,7 +57,7 @@ describe("remote viewer model", () => {
     const v2 = parseSnapshot({
       ...snapshot,
       schema_version: 2,
-      capabilities: { commands: { "transaction.set_classification": [1] } },
+      capabilities: { commands: { "transaction.set_classification": [1, 2] } },
       taxonomy: {
         categories: [{
           id: "fun", name: "Fun", category_type: "expense", reporting_behavior: "ordinary",
@@ -72,6 +72,9 @@ describe("remote viewer model", () => {
     expect(classificationTaxonomy(v2)?.subcategories[0].category_id).toBe("fun");
     expect(supportsMobileClassification(parseSnapshot({
       ...v2, capabilities: { commands: {} },
+    }))).toBe(false);
+    expect(supportsMobileClassification(parseSnapshot({
+      ...v2, capabilities: { commands: { "transaction.set_classification": [1] } },
     }))).toBe(false);
   });
 

@@ -5,11 +5,17 @@ import fixture from "../../tests/fixtures/remote_snapshot_v2.json";
 import {
   activeCommandForTransaction,
   appliedCommandMatchesSnapshot,
+  buildClassificationCommandBody,
   proposedClassification,
   statusLabel,
   type MobileCommand,
 } from "../src/viewer/mobileCommands";
-import { TransactionClassificationEditor } from "../src/viewer/TransactionClassificationEditor";
+import {
+  ClassificationScopeControl,
+  DEFAULT_CLASSIFICATION_SCOPE,
+  TransactionClassificationEditor,
+  effectiveClassificationScope,
+} from "../src/viewer/TransactionClassificationEditor";
 import { parseSnapshot } from "../src/viewer/model";
 
 const snapshot = parseSnapshot(fixture);
@@ -20,11 +26,12 @@ function command(overrides: Partial<MobileCommand> = {}): MobileCommand {
     id: "command-1",
     actor_member_id: "member-1",
     command_type: "transaction.set_classification",
-    command_version: 1,
+    command_version: 2,
     target_id: transaction.id,
     observed_revision: transaction.classification_revision ?? 0,
     category_id: snapshot.schema_version === 2 ? snapshot.taxonomy.categories[0].id : null,
     subcategory_id: null,
+    scope: "past_and_future",
     status: "pending",
     supersedes_command_id: null,
     result: null,
@@ -92,6 +99,35 @@ describe("mobile transaction classification editing", () => {
     expect(html).toContain("Proposed classification");
     expect(html).toContain("Replace proposal");
     expect(html).toContain("Cancel proposal");
+    expect(html).toContain("Past + future");
+  });
+
+  it("defaults every editor to both ways without browser persistence", () => {
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, get: () => { throw new Error("persistence used"); } });
+    Object.defineProperty(globalThis, "sessionStorage", { configurable: true, get: () => { throw new Error("persistence used"); } });
+    const html = renderToStaticMarkup(<ClassificationScopeControl
+      value={DEFAULT_CLASSIFICATION_SCOPE}
+      forcedOneTime={false}
+      onChange={() => undefined}
+    />);
+    expect(DEFAULT_CLASSIFICATION_SCOPE).toBe("past_and_future");
+    expect(html).toContain("1×");
+    expect(html).toContain("→");
+    expect(html).toContain("↔");
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain("Past + future");
+    delete (globalThis as { localStorage?: unknown }).localStorage;
+    delete (globalThis as { sessionStorage?: unknown }).sessionStorage;
+  });
+
+  it("forces withdrawals and Uncategorized to one-time and submits v2 scope", () => {
+    expect(effectiveClassificationScope("past_and_future", true, "fun")).toBe("one_time");
+    expect(effectiveClassificationScope("future", false, null)).toBe("one_time");
+    const body = buildClassificationCommandBody({
+      transaction: { ...transaction, is_cash_withdrawal: false },
+      categoryId: "fun", subcategoryId: null, scope: "future",
+    }, "key-1");
+    expect(body).toMatchObject({ command_version: 2, scope: "future" });
   });
 
   it("locks processing commands and supports conflict review without force overwrite", () => {

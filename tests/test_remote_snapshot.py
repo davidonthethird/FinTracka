@@ -68,7 +68,7 @@ def test_snapshot_v2_capability_is_default_off_and_taxonomy_is_active_only(datab
     assert isinstance(disabled, RemoteSnapshotV2)
     assert disabled.schema_version == 2
     assert disabled.capabilities.commands == {}
-    assert enabled.capabilities.commands == {"transaction.set_classification": (1,)}
+    assert enabled.capabilities.commands == {"transaction.set_classification": (1, 2)}
     assert all(item.id != archived_category for item in enabled.taxonomy.categories)
     assert all(item.id != archived_subcategory for item in enabled.taxonomy.subcategories)
     assert all(item.classification_revision >= 0 for item in enabled.transactions)

@@ -68,7 +68,7 @@ export interface RemoteSnapshotV1 extends RemoteSnapshotBase {
 
 export interface RemoteSnapshotV2 extends RemoteSnapshotBase {
   schema_version: 2;
-  capabilities: { commands: { "transaction.set_classification"?: [1] } };
+  capabilities: { commands: { "transaction.set_classification"?: [1] | [1, 2] } };
   taxonomy: ClassificationTaxonomy;
 }
 
@@ -105,7 +105,7 @@ export function parseSnapshot(value: unknown): RemoteSnapshot {
 
 export function supportsMobileClassification(snapshot: RemoteSnapshot): boolean {
   return snapshot.schema_version === 2
-    && snapshot.capabilities.commands["transaction.set_classification"]?.[0] === 1;
+    && snapshot.capabilities.commands["transaction.set_classification"]?.[1] === 2;
 }
 
 export function classificationTaxonomy(snapshot: RemoteSnapshot): ClassificationTaxonomy | null {
@@ -119,7 +119,10 @@ function validV2(snapshot: Partial<RemoteSnapshotV2>): snapshot is RemoteSnapsho
   const commandKeys = Object.keys(snapshot.capabilities.commands ?? {});
   if (commandKeys.some((key) => key !== "transaction.set_classification")) return false;
   const versions = snapshot.capabilities.commands["transaction.set_classification"];
-  if (versions && (versions.length !== 1 || versions[0] !== 1)) return false;
+  if (versions && !(
+    (versions.length === 1 && versions[0] === 1)
+    || (versions.length === 2 && versions[0] === 1 && versions[1] === 2)
+  )) return false;
   if (!snapshot.transactions?.every((item) => Number.isInteger(item.classification_revision)
     && (item.classification_revision ?? -1) >= 0)) return false;
   const parents = new Set(snapshot.taxonomy.categories.map((item) => item.id));
