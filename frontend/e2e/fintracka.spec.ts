@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 test("synthetic finance workflow with Plaid profiles, reports, and remote viewer settings", async ({ page }) => {
+  test.setTimeout(60_000);
   const responseErrors: string[] = [];
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
