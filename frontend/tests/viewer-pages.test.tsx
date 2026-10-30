@@ -33,6 +33,7 @@ describe("read-only viewer finance pages", () => {
 
   it("shows report category totals, owner shares, flow, and drill-down controls", () => {
     const html = renderToStaticMarkup(<ReportsPage snapshot={snapshot} />);
+    expect(html).toContain('class="viewer-page reports-view"');
     expect(html).toContain("Income");
     expect(html).toContain("Spending");
     expect(html).toContain("By category");

@@ -60,7 +60,7 @@ export function ReportsPage({ snapshot }: { snapshot: RemoteSnapshot }) {
   const categoryMax = Math.max(1, ...report.spending_by_category.map((item) => item.amount_minor));
   const ownerTotal = report.spending_by_owner.reduce((sum, item) => sum + item.amount_minor, 0);
   const selectedShare = selected ? selectionPercentage(selected, report.spending_by_category, report.spending_by_owner) : undefined;
-  return <div className="viewer-page">
+  return <div className="viewer-page reports-view">
     <header className="viewer-heading"><div><span>Income and outflow</span><h1>Reports</h1></div><label className="month-select">Month<select value={month} onChange={(event) => { setSelected(undefined); setMonth(event.target.value); }}>{months.map((value) => <option key={value}>{value}</option>)}</select></label></header>
     <section className="report-summary"><div><span>Income</span><strong className="positive">{formatMoney(report.cash_flow.income_minor)}</strong></div><div><span>Spending</span><strong className="negative">{formatMoney(report.cash_flow.spending_minor)}</strong></div><div><span>Net</span><strong className={report.cash_flow.net_minor >= 0 ? "positive" : "negative"}>{formatMoney(report.cash_flow.net_minor)}</strong></div></section>
     <section className="viewer-section report-flow-section"><div className="section-line"><h2>Money flow</h2><span>Tap any part to inspect it</span></div><ReportFlow key={month} report={report.cash_flow_paths} expectedCategories={report.spending_by_category} onCategory={(item: FlowSelection) => setSelected({ category_id: item.categoryId, category: item.label, amount_minor: item.amountMinor, entryIds: item.entryIds, subcategoryId: item.subcategoryId, owner: item.owner })} /></section>
