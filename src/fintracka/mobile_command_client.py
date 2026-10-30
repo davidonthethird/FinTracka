@@ -7,7 +7,7 @@ import ssl
 import time
 import urllib.request
 from dataclasses import dataclass
-from typing import Callable, Mapping
+from typing import Callable, Literal, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 
@@ -20,6 +20,8 @@ from fintracka.mobile_command_config import MobileCommandSettings
 MAX_REQUEST_BYTES = 4_096
 MAX_RESPONSE_BYTES = 64 * 1024
 HEX_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+CategorizationScope = Literal["one_time", "future", "past_and_future"]
+VALID_SCOPES = {"one_time", "future", "past_and_future"}
 
 
 class _RejectRedirects(urllib.request.HTTPRedirectHandler):
@@ -41,11 +43,12 @@ class ClaimedMobileCommand:
     id: str
     actor_member_id: str
     command_type: str
-    command_version: int
+    command_version: Literal[1, 2]
     target_id: str
     observed_revision: int
     category_id: str | None
     subcategory_id: str | None
+    scope: CategorizationScope
     payload_digest: str
     claim_token: str
     expires_at: str
@@ -195,10 +198,19 @@ def _claimed_command(value: object) -> ClaimedMobileCommand:
     expected = {
         "id", "actor_member_id", "command_type", "command_version", "target_id",
         "observed_revision", "category_id", "subcategory_id", "payload_digest",
-        "claim_token", "expires_at",
+        "scope", "claim_token", "expires_at",
     }
     item = _exact_dict(value, expected)
-    if item["command_type"] != "transaction.set_classification" or item["command_version"] != 1:
+    version = item["command_version"]
+    if (
+        item["command_type"] != "transaction.set_classification"
+        or not isinstance(version, int)
+        or isinstance(version, bool)
+        or version not in {1, 2}
+    ):
+        raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+    scope = item["scope"]
+    if scope not in VALID_SCOPES or (version == 1 and scope != "one_time"):
         raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
     if not isinstance(item["observed_revision"], int) or isinstance(item["observed_revision"], bool) or item["observed_revision"] < 0:
         raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
@@ -209,11 +221,12 @@ def _claimed_command(value: object) -> ClaimedMobileCommand:
         id=_bounded_string(item["id"], 128),
         actor_member_id=_bounded_string(item["actor_member_id"], 128),
         command_type="transaction.set_classification",
-        command_version=1,
+        command_version=version,
         target_id=_bounded_string(item["target_id"], 128),
         observed_revision=item["observed_revision"],
         category_id=_nullable_id(item["category_id"]),
         subcategory_id=_nullable_id(item["subcategory_id"]),
+        scope=scope,
         payload_digest=digest,
         claim_token=_bounded_string(item["claim_token"], 128),
         expires_at=_bounded_string(item["expires_at"], 40),
@@ -224,11 +237,14 @@ def _public_command(value: object) -> dict[str, object]:
     item = _exact_dict(value, {
         "id", "actor_member_id", "command_type", "command_version", "target_id",
         "observed_revision", "category_id", "subcategory_id", "status",
+        "scope",
         "supersedes_command_id", "result", "error_code", "created_at", "updated_at",
         "expires_at", "finished_at",
     })
     statuses = {"pending", "processing", "applied", "conflict", "rejected", "cancelled", "expired", "superseded"}
     if item["status"] not in statuses:
+        raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+    if item["scope"] not in VALID_SCOPES:
         raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
     _bounded_string(item["id"], 128)
     return item
