@@ -198,6 +198,26 @@ export class MobileCommandStore {
     return result.results.map(toPublicCommand);
   }
 
+  async countActive(householdId: string): Promise<number> {
+    const row = await this.database.prepare(`
+      SELECT COUNT(*) AS count FROM mobile_commands
+      WHERE household_id = ? AND status IN ('pending', 'processing')
+    `).bind(householdId).first<{ count: number }>();
+    return row?.count ?? 0;
+  }
+
+  async countRecentForMember(actorMemberId: string, since: string): Promise<number> {
+    const row = await this.database.prepare(`
+      SELECT COUNT(*) AS count FROM mobile_commands
+      WHERE actor_member_id = ? AND created_at >= ?
+    `).bind(actorMemberId, since).first<{ count: number }>();
+    return row?.count ?? 0;
+  }
+
+  async hasIdempotencyKey(actorMemberId: string, key: string): Promise<boolean> {
+    return (await this.findIdempotent(actorMemberId, key)) !== null;
+  }
+
   async cancel(
     householdId: string,
     commandId: string,

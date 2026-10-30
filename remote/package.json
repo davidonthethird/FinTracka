@@ -12,6 +12,7 @@
     "deploy:viewer:production": "wrangler deploy --config wrangler.viewer.jsonc --env production"
   },
   "dependencies": {
+    "jose": "^6.1.0",
     "zod": "4.6.7"
   },
   "devDependencies": {

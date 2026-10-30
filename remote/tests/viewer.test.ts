@@ -85,6 +85,15 @@ describe("viewer worker", () => {
     expect(response.status).toBe(405);
   });
 
+  it("routes mobile APIs through signed Access authentication", async () => {
+    const response = await viewer.fetch(
+      new Request("https://view.test/api/v1/mobile/session"),
+      env(readyBucket()),
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error_code: "MEMBER_NOT_AUTHORIZED" });
+  });
+
   it("rejects traversal and applies security headers", async () => {
     const response = await viewer.fetch(new Request("https://view.test/%252e%252e/private"), env(readyBucket()));
     expect(response.status).toBe(400);
