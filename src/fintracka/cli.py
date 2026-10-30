@@ -17,14 +17,24 @@ from fintracka.exports import export_excel, export_google
 from fintracka.google_sheets import build_google_gateway, configure_google
 from fintracka.keychain import KeychainSecrets
 from fintracka.launchd import (
+    install_mobile_commands_schedule,
     install_remote_schedule,
     install_schedule,
+    mobile_commands_schedule_status,
     remote_schedule_status,
+    remove_mobile_commands_schedule,
     remove_remote_schedule,
     remove_schedule,
     schedule_status,
 )
 from fintracka.locks import ProcessLock
+from fintracka.mobile_command_client import MobileCommandClient
+from fintracka.mobile_command_config import (
+    configure_mobile_commands,
+    load_mobile_command_settings,
+    set_mobile_commands_enabled,
+)
+from fintracka.mobile_command_service import process_mobile_commands
 from fintracka.plaid_service import build_plaid_adapter, configure_plaid, sync_plaid_connections
 from fintracka.remote_config import configure_remote, load_remote_settings, set_remote_enabled
 from fintracka.remote_client import RemotePublishError
@@ -125,6 +135,25 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 connection.close()
         print("Remote viewer configured; automatic publication remains disabled until remote enable.")
+        return 0
+    if args.command == "configure" and args.provider == "mobile-commands":
+        secret = sys.stdin.readline().strip()
+        if not secret:
+            parser.error("Access client secret must be provided on stdin")
+        with ProcessLock(lock_path):
+            connection = connect(database_path)
+            try:
+                migrate(connection)
+                configure_mobile_commands(
+                    connection,
+                    KeychainSecrets(),
+                    gateway_url=args.gateway_url,
+                    access_client_id=args.client_id,
+                    access_client_secret=secret,
+                )
+            finally:
+                connection.close()
+        print("Mobile commands configured; processing remains disabled until explicitly enabled.")
         return 0
     if args.command == "sync":
         with ProcessLock(lock_path):
@@ -269,6 +298,92 @@ def main(argv: list[str] | None = None) -> int:
             remove_remote_schedule(destination)
             print("Remote publication schedule removed.")
         return 0
+    if args.command == "remote" and args.remote_action == "commands":
+        destination = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.mobile-commands.plist"
+        if args.command_action == "process":
+            result = process_mobile_commands(database_path, KeychainSecrets())
+            print(json.dumps({
+                "claimed": result.claimed,
+                "applied": result.applied,
+                "conflicts": result.conflicts,
+                "rejected": result.rejected,
+                "failed": result.failed,
+                "acknowledged": result.acknowledged,
+                "published": result.published,
+                "skipped": result.skipped,
+                "error_code": result.error_code,
+            }, sort_keys=True))
+            return 0
+        if args.command_action in {"enable", "disable"}:
+            with ProcessLock(lock_path):
+                connection = connect(database_path)
+                try:
+                    migrate(connection)
+                    settings = set_mobile_commands_enabled(
+                        connection, args.command_action == "enable"
+                    )
+                finally:
+                    connection.close()
+            print("Mobile command processing enabled." if settings.enabled else "Mobile command processing disabled.")
+            return 0
+        if args.command_action == "status":
+            connection = connect(database_path)
+            try:
+                migrate(connection)
+                settings = load_mobile_command_settings(connection)
+            finally:
+                connection.close()
+            schedule = mobile_commands_schedule_status(destination)
+            print(json.dumps({
+                "enabled": settings.enabled,
+                "configured": bool(
+                    settings.gateway_url
+                    and settings.access_client_id_ref
+                    and settings.access_client_secret_ref
+                ),
+                "schedule_installed": schedule["installed"],
+                "schedule_loaded": schedule["loaded"],
+                "last_checked_at": settings.last_checked_at,
+                "last_error_code": settings.last_error_code,
+            }, sort_keys=True))
+            return 0
+        if args.command_action == "schedule":
+            if args.schedule_action == "install":
+                connection = connect(database_path)
+                try:
+                    migrate(connection)
+                    if not load_mobile_command_settings(connection).enabled:
+                        parser.error("mobile commands must be enabled before installing the schedule")
+                finally:
+                    connection.close()
+                install_mobile_commands_schedule(
+                    destination, Path(sys.executable), data_directory
+                )
+                print("Mobile command schedule installed once per minute and at login.")
+            elif args.schedule_action == "status":
+                print(json.dumps(mobile_commands_schedule_status(destination), sort_keys=True))
+            else:
+                remove_mobile_commands_schedule(destination)
+                print("Mobile command schedule removed.")
+            return 0
+        if args.command_action == "member" and args.member_action == "upsert":
+            email = sys.stdin.readline().strip()
+            if not email:
+                parser.error("member email must be provided on stdin")
+            connection = connect(database_path)
+            try:
+                migrate(connection)
+                settings = load_mobile_command_settings(connection)
+            finally:
+                connection.close()
+            MobileCommandClient.from_settings(settings, KeychainSecrets()).upsert_member(
+                args.member_id,
+                args.display_name,
+                email,
+                active=not args.inactive,
+            )
+            print("Household member mapping updated.")
+            return 0
     parser.error("unsupported command")
     return 2
 
@@ -301,6 +416,11 @@ def _parser() -> argparse.ArgumentParser:
     remote_config.add_argument("--secret-stdin", action="store_true", required=True)
     remote_config.add_argument("--history-months", type=int, choices=range(1, 7), default=6)
     remote_config.add_argument("--interval-minutes", type=int, default=60)
+    mobile_config = configure_subparsers.add_parser("mobile-commands")
+    mobile_config.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    mobile_config.add_argument("--gateway-url", required=True)
+    mobile_config.add_argument("--client-id", required=True)
+    mobile_config.add_argument("--secret-stdin", action="store_true", required=True)
     sync = subparsers.add_parser("sync")
     sync.add_argument("--data-dir", type=Path, default=_default_data_directory())
     export = subparsers.add_parser("export")
@@ -337,6 +457,22 @@ def _parser() -> argparse.ArgumentParser:
     remote_schedule = remote_subparsers.add_parser("schedule")
     remote_schedule.add_argument("schedule_action", choices=["install", "status", "remove"])
     remote_schedule.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    remote_commands = remote_subparsers.add_parser("commands")
+    command_subparsers = remote_commands.add_subparsers(dest="command_action", required=True)
+    for action in ("process", "status", "enable", "disable"):
+        command_parser = command_subparsers.add_parser(action)
+        command_parser.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    command_schedule = command_subparsers.add_parser("schedule")
+    command_schedule.add_argument("schedule_action", choices=["install", "status", "remove"])
+    command_schedule.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    command_member = command_subparsers.add_parser("member")
+    member_subparsers = command_member.add_subparsers(dest="member_action", required=True)
+    member_upsert = member_subparsers.add_parser("upsert")
+    member_upsert.add_argument("--data-dir", type=Path, default=_default_data_directory())
+    member_upsert.add_argument("--member-id", required=True)
+    member_upsert.add_argument("--display-name", required=True)
+    member_upsert.add_argument("--email-stdin", action="store_true", required=True)
+    member_upsert.add_argument("--inactive", action="store_true")
     return parser
 
 

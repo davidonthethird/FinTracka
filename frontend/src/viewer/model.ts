@@ -21,6 +21,7 @@ export interface RemoteTransaction {
   manual_cash: boolean;
   is_cash_withdrawal: boolean;
   updated_at: string;
+  classification_revision?: number;
 }
 
 export interface RemoteOverview {
@@ -36,8 +37,7 @@ export interface RemoteOverview {
   off_bank_cash_spending_minor: number;
 }
 
-export interface RemoteSnapshot {
-  schema_version: 1;
+interface RemoteSnapshotBase {
   snapshot_id: string;
   source_sequence: number;
   captured_at: string;
@@ -53,6 +53,27 @@ export interface RemoteSnapshot {
   counts: { transactions: number; sources: number; aggregate_months: number; detailed_months: number };
 }
 
+export interface ClassificationTaxonomy {
+  categories: {
+    id: string; name: string; category_type: "income" | "expense" | "transfer";
+    reporting_behavior: "ordinary" | "expense_offset" | "excluded" | "income";
+    group_id: string | null; group: string | null; sort_order: number;
+  }[];
+  subcategories: { id: string; category_id: string; name: string; sort_order: number }[];
+}
+
+export interface RemoteSnapshotV1 extends RemoteSnapshotBase {
+  schema_version: 1;
+}
+
+export interface RemoteSnapshotV2 extends RemoteSnapshotBase {
+  schema_version: 2;
+  capabilities: { commands: { "transaction.set_classification"?: [1] } };
+  taxonomy: ClassificationTaxonomy;
+}
+
+export type RemoteSnapshot = RemoteSnapshotV1 | RemoteSnapshotV2;
+
 export interface TransactionFilters {
   search?: string;
   account?: string;
@@ -65,7 +86,7 @@ export function parseSnapshot(value: unknown): RemoteSnapshot {
   if (!value || typeof value !== "object") throw new Error("The remote snapshot is invalid.");
   const candidate = value as Partial<RemoteSnapshot>;
   if (
-    candidate.schema_version !== 1 ||
+    (candidate.schema_version !== 1 && candidate.schema_version !== 2) ||
     typeof candidate.snapshot_id !== "string" ||
     !Number.isInteger(candidate.source_sequence) ||
     typeof candidate.captured_at !== "string" ||
@@ -75,7 +96,34 @@ export function parseSnapshot(value: unknown): RemoteSnapshot {
   ) {
     throw new Error("This FinTracka snapshot version is not supported.");
   }
+  if (candidate.schema_version === 2) {
+    const v2 = candidate as Partial<RemoteSnapshotV2>;
+    if (!validV2(v2)) throw new Error("This FinTracka snapshot version is not supported.");
+  }
   return candidate as RemoteSnapshot;
+}
+
+export function supportsMobileClassification(snapshot: RemoteSnapshot): boolean {
+  return snapshot.schema_version === 2
+    && snapshot.capabilities.commands["transaction.set_classification"]?.[0] === 1;
+}
+
+export function classificationTaxonomy(snapshot: RemoteSnapshot): ClassificationTaxonomy | null {
+  return snapshot.schema_version === 2 ? snapshot.taxonomy : null;
+}
+
+function validV2(snapshot: Partial<RemoteSnapshotV2>): snapshot is RemoteSnapshotV2 {
+  if (!snapshot.capabilities || !snapshot.taxonomy
+    || !Array.isArray(snapshot.taxonomy.categories)
+    || !Array.isArray(snapshot.taxonomy.subcategories)) return false;
+  const commandKeys = Object.keys(snapshot.capabilities.commands ?? {});
+  if (commandKeys.some((key) => key !== "transaction.set_classification")) return false;
+  const versions = snapshot.capabilities.commands["transaction.set_classification"];
+  if (versions && (versions.length !== 1 || versions[0] !== 1)) return false;
+  if (!snapshot.transactions?.every((item) => Number.isInteger(item.classification_revision)
+    && (item.classification_revision ?? -1) >= 0)) return false;
+  const parents = new Set(snapshot.taxonomy.categories.map((item) => item.id));
+  return snapshot.taxonomy.subcategories.every((item) => parents.has(item.category_id));
 }
 
 export function snapshotMonths(snapshot: RemoteSnapshot): string[] {

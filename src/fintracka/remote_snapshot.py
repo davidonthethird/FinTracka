@@ -17,9 +17,14 @@ from fintracka.remote_models import (
     RemotePlanningSnapshot,
     RemoteReportSnapshot,
     RemoteSavingsSnapshot,
-    RemoteSnapshotV1,
+    RemoteCapabilities,
+    RemoteSnapshot,
+    RemoteSnapshotV2,
     RemoteSourceFreshness,
-    RemoteTransaction,
+    RemoteTaxonomy,
+    RemoteTaxonomyCategory,
+    RemoteTaxonomySubcategory,
+    RemoteTransactionV2,
 )
 from fintracka.reports import cash_flow, cash_flow_paths, overview, spending_by_category, spending_by_owner
 from fintracka.savings import savings_summary
@@ -51,7 +56,8 @@ def build_remote_snapshot(
     history_months: int,
     now: datetime,
     snapshot_id: str | None = None,
-) -> RemoteSnapshotV1:
+    mobile_commands_enabled: bool = False,
+) -> RemoteSnapshotV2:
     if not 1 <= history_months <= 6:
         raise ValueError("history_months must be between 1 and 6")
     if source_sequence < 1:
@@ -103,8 +109,8 @@ def build_remote_snapshot(
             for item_month in aggregate_months
         }
         last_sync = max((source.last_success_at for source in sources if source.last_success_at), default=None)
-        return RemoteSnapshotV1(
-            schema_version=1,
+        return RemoteSnapshotV2(
+            schema_version=2,
             snapshot_id=snapshot_id or new_id(),
             source_sequence=source_sequence,
             captured_at=now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -117,6 +123,14 @@ def build_remote_snapshot(
             planning=planning_models,
             savings=savings_models,
             reports=reports_models,
+            capabilities=RemoteCapabilities(
+                commands=(
+                    {"transaction.set_classification": (1,)}
+                    if mobile_commands_enabled
+                    else {}
+                )
+            ),
+            taxonomy=_taxonomy(connection),
             counts=RemoteCounts(
                 transactions=len(transactions),
                 sources=len(sources),
@@ -132,7 +146,7 @@ def build_remote_snapshot(
             connection.rollback()
 
 
-def serialize_remote_snapshot(snapshot: RemoteSnapshotV1) -> bytes:
+def serialize_remote_snapshot(snapshot: RemoteSnapshot) -> bytes:
     payload = json.dumps(
         snapshot.model_dump(mode="json"),
         ensure_ascii=False,
@@ -169,7 +183,7 @@ def _sources(connection: sqlite3.Connection) -> tuple[RemoteSourceFreshness, ...
 
 def _transactions(
     connection: sqlite3.Connection, start: str, end: str
-) -> tuple[RemoteTransaction, ...]:
+) -> tuple[RemoteTransactionV2, ...]:
     rows = connection.execute(
         """
         SELECT t.id, t.local_date, t.amount_minor, t.currency,
@@ -180,7 +194,7 @@ def _transactions(
                COALESCE(NULLIF(a.nickname, ''), a.name) account_name,
                a.type account_type, a.subtype account_subtype, a.mask account_mask,
                i.name institution_name, t.pending, pc.provider = 'manual' manual_cash,
-               t.is_cash_withdrawal, t.updated_at
+               t.is_cash_withdrawal, t.updated_at, t.classification_revision
         FROM transactions t
         JOIN accounts a ON a.id = t.account_id
         JOIN provider_connections pc ON pc.id = a.connection_id
@@ -208,7 +222,7 @@ def _transactions(
         (start, end),
     )
     return tuple(
-        RemoteTransaction(
+        RemoteTransactionV2(
             **{
                 **dict(row),
                 "pending": bool(row["pending"]),
@@ -218,6 +232,39 @@ def _transactions(
         )
         for row in rows
     )
+
+
+def _taxonomy(connection: sqlite3.Connection) -> RemoteTaxonomy:
+    categories = tuple(
+        RemoteTaxonomyCategory(**dict(row))
+        for row in connection.execute(
+            """
+            SELECT c.id, c.name, c.category_type, c.reporting_behavior,
+                   c.group_id, g.name AS 'group', c.sort_order
+            FROM categories c
+            LEFT JOIN category_groups g ON g.id = c.group_id
+            WHERE c.archived = 0
+            ORDER BY COALESCE(g.sort_order, 2147483647), c.sort_order, c.name, c.id
+            """
+        )
+    )
+    category_ids = {item.id for item in categories}
+    if not category_ids:
+        return RemoteTaxonomy(categories=(), subcategories=())
+    placeholders = ",".join("?" for _ in category_ids)
+    subcategories = tuple(
+        RemoteTaxonomySubcategory(**dict(row))
+        for row in connection.execute(
+            f"""
+            SELECT id, category_id, name, sort_order
+            FROM subcategories
+            WHERE archived = 0 AND category_id IN ({placeholders})
+            ORDER BY category_id, sort_order, name, id
+            """,
+            tuple(sorted(category_ids)),
+        )
+    )
+    return RemoteTaxonomy(categories=categories, subcategories=subcategories)
 
 
 def _savings_model(

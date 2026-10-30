@@ -1,4 +1,6 @@
-interface Env {
+import mobileGateway, { type MobileGatewayEnv } from "./mobileGateway";
+
+interface Env extends MobileGatewayEnv {
   SNAPSHOTS: R2Bucket;
   ASSETS: Fetcher;
 }
@@ -21,13 +23,16 @@ const securityHeaders = {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (hasTraversal(request.url)) return errorResponse(400, "INVALID_PATH");
+    const pathname = new URL(request.url).pathname;
+    if (pathname.startsWith("/api/v1/mobile/")) {
+      return mobileGateway.fetch(request, env);
+    }
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: secureHeaders({ Allow: "GET, HEAD, OPTIONS" }) });
     }
     if (!['GET', 'HEAD'].includes(request.method)) {
       return errorResponse(405, "METHOD_NOT_ALLOWED", { Allow: "GET, HEAD, OPTIONS" });
     }
-    const pathname = new URL(request.url).pathname;
     try {
       if (pathname === "/api/v1/snapshot") {
         const active = await readActive(env.SNAPSHOTS);

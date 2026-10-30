@@ -15,6 +15,10 @@ from e2e.server import seed_database
 from fintracka.db import connect
 from fintracka.keychain import KeychainSecrets, SecretStoreUnavailable
 from fintracka.locks import ProcessLock
+from fintracka.mobile_command_config import (
+    configure_mobile_commands,
+    set_mobile_commands_enabled,
+)
 from fintracka.remote_client import RemotePublishError, RemotePublisherClient
 from fintracka.remote_config import configure_remote, load_remote_settings
 from fintracka.remote_service import publish_remote_snapshot
@@ -237,10 +241,48 @@ def test_publish_service_records_success_and_preserves_financial_rows(tmp_path) 
     connection.close()
 
     assert result is not None and result.source_sequence == 1
-    assert captured["schema_version"] == 1
+    assert captured["schema_version"] == 2
+    assert captured["capabilities"]["commands"] == {}
     assert settings.last_snapshot_id == result.snapshot_id
     assert run["status"] == "succeeded"
     assert after == before
+
+
+def test_publish_advertises_mobile_editing_only_after_explicit_enable(tmp_path) -> None:
+    path, secrets = _configured_database(tmp_path)
+    connection = connect(path)
+    configure_mobile_commands(
+        connection,
+        secrets,
+        gateway_url="https://view.example.test",
+        access_client_id="mobile-client-id",
+        access_client_secret="mobile-client-secret",
+    )
+    set_mobile_commands_enabled(connection, True)
+    connection.close()
+    captured = {}
+
+    class Client:
+        def publish(self, payload, digest):
+            document = json.loads(payload)
+            captured.update(document)
+            from fintracka.remote_client import PublishResult
+            return PublishResult(
+                document["snapshot_id"], document["source_sequence"],
+                "2026-10-30T12:00:01Z", False,
+            )
+
+    publish_remote_snapshot(
+        path,
+        secrets,
+        reason="manual",
+        client_factory=lambda settings, keychain: Client(),
+        now=lambda: datetime(2026, 10, 30, 12, tzinfo=timezone.utc),
+    )
+
+    assert captured["capabilities"]["commands"] == {
+        "transaction.set_classification": [1],
+    }
 
 
 def test_manual_publish_is_allowed_before_automatic_publication_is_enabled(tmp_path) -> None:

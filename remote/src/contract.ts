@@ -47,6 +47,10 @@ const transaction = z.object({
   updated_at: timestamp,
 }).strict();
 
+const transactionV2 = transaction.extend({
+  classification_revision: z.int().nonnegative(),
+}).strict();
+
 const counts = z.object({
   transactions: z.int().nonnegative(),
   sources: z.int().nonnegative(),
@@ -148,8 +152,7 @@ const forbiddenKeys = new Set([
   "notes", "provider_account_id", "raw_payload", "sanitized_json",
 ]);
 
-export const RemoteSnapshotV1Schema = z.object({
-  schema_version: z.literal(1),
+const snapshotFields = {
   snapshot_id: z.string().min(1),
   source_sequence: z.int().positive(),
   captured_at: timestamp,
@@ -158,17 +161,85 @@ export const RemoteSnapshotV1Schema = z.object({
   history_start: date,
   history_end: date,
   overview: z.record(z.string(), overview),
-  transactions: z.array(transaction),
   planning: z.record(z.string(), planning),
   savings: z.record(z.string(), savings),
   reports: z.record(z.string(), report),
   counts,
-}).strict().superRefine((value, context) => scan(value, context, []));
+};
+
+const RemoteSnapshotV1Object = z.object({
+  schema_version: z.literal(1),
+  ...snapshotFields,
+  transactions: z.array(transaction),
+}).strict();
+
+const capabilities = z.object({
+  commands: z.object({
+    "transaction.set_classification": z.tuple([z.literal(1)]).optional(),
+  }).strict(),
+}).strict();
+
+const taxonomyCategory = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  category_type: z.enum(["income", "expense", "transfer"]),
+  reporting_behavior: z.enum(["ordinary", "expense_offset", "excluded", "income"]),
+  group_id: z.string().nullable(),
+  group: z.string().nullable(),
+  sort_order: z.int(),
+}).strict();
+
+const taxonomySubcategory = z.object({
+  id: z.string().min(1),
+  category_id: z.string().min(1),
+  name: z.string().min(1),
+  sort_order: z.int(),
+}).strict();
+
+const RemoteSnapshotV2Object = z.object({
+  schema_version: z.literal(2),
+  ...snapshotFields,
+  transactions: z.array(transactionV2),
+  capabilities,
+  taxonomy: z.object({
+    categories: z.array(taxonomyCategory),
+    subcategories: z.array(taxonomySubcategory),
+  }).strict(),
+}).strict();
+
+function validateV2Taxonomy(value: z.infer<typeof RemoteSnapshotV2Object>, context: z.RefinementCtx): void {
+  const categoryIds = new Set(value.taxonomy.categories.map((item) => item.id));
+  value.taxonomy.subcategories.forEach((item, index) => {
+    if (!categoryIds.has(item.category_id)) {
+      context.addIssue({
+        code: "custom",
+        message: "subcategory references an unpublished category",
+        path: ["taxonomy", "subcategories", index, "category_id"],
+      });
+    }
+  });
+}
+
+export const RemoteSnapshotV1Schema = RemoteSnapshotV1Object
+  .superRefine((value, context) => scan(value, context, []));
+export const RemoteSnapshotV2Schema = RemoteSnapshotV2Object.superRefine((value, context) => {
+  scan(value, context, []);
+  validateV2Taxonomy(value, context);
+});
+export const RemoteSnapshotSchema = z.discriminatedUnion("schema_version", [
+  RemoteSnapshotV1Object,
+  RemoteSnapshotV2Object,
+]).superRefine((value, context) => {
+  scan(value, context, []);
+  if (value.schema_version === 2) validateV2Taxonomy(value, context);
+});
 
 export type RemoteSnapshotV1 = z.infer<typeof RemoteSnapshotV1Schema>;
+export type RemoteSnapshotV2 = z.infer<typeof RemoteSnapshotV2Schema>;
+export type RemoteSnapshot = z.infer<typeof RemoteSnapshotSchema>;
 
-export function parseRemoteSnapshot(value: unknown): RemoteSnapshotV1 {
-  return RemoteSnapshotV1Schema.parse(value);
+export function parseRemoteSnapshot(value: unknown): RemoteSnapshot {
+  return RemoteSnapshotSchema.parse(value);
 }
 
 function scan(value: unknown, context: z.RefinementCtx, path: PropertyKey[]): void {

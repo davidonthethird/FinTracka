@@ -1,0 +1,71 @@
+{
+  "schema_version": 2,
+  "snapshot_id": "snapshot-v2-fixture",
+  "source_sequence": 2,
+  "captured_at": "2026-10-30T12:00:00Z",
+  "source_last_sync_at": null,
+  "sources": [],
+  "history_start": "2026-10-01",
+  "history_end": "2026-10-31",
+  "overview": {},
+  "transactions": [
+    {
+      "id": "transaction-fixture",
+      "local_date": "2026-10-30",
+      "amount_minor": -1200,
+      "currency": "USD",
+      "description": "Fixture merchant",
+      "merchant": "Fixture merchant",
+      "category_id": "category-fun",
+      "category": "Fun",
+      "subcategory_id": "subcategory-games",
+      "subcategory": "Games",
+      "spending_owner": "Shared",
+      "account_name": "Fixture checking",
+      "account_type": "depository",
+      "account_subtype": "checking",
+      "account_mask": "0000",
+      "institution_name": "Fixture bank",
+      "pending": false,
+      "manual_cash": false,
+      "is_cash_withdrawal": false,
+      "updated_at": "2026-10-30T12:00:00Z",
+      "classification_revision": 0
+    }
+  ],
+  "planning": {},
+  "savings": {},
+  "reports": {},
+  "counts": {
+    "transactions": 1,
+    "sources": 0,
+    "aggregate_months": 1,
+    "detailed_months": 1
+  },
+  "capabilities": {
+    "commands": {
+      "transaction.set_classification": [1]
+    }
+  },
+  "taxonomy": {
+    "categories": [
+      {
+        "id": "category-fun",
+        "name": "Fun",
+        "category_type": "expense",
+        "reporting_behavior": "ordinary",
+        "group_id": "group-lifestyle",
+        "group": "Lifestyle",
+        "sort_order": 10
+      }
+    ],
+    "subcategories": [
+      {
+        "id": "subcategory-games",
+        "category_id": "category-fun",
+        "name": "Games",
+        "sort_order": 10
+      }
+    ]
+  }
+}

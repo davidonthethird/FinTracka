@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StrictInt, field_validator, model_validator
 
 
 class RemoteReadModel(BaseModel):
@@ -227,6 +227,17 @@ class RemoteTransaction(BaseModel):
     updated_at: str
 
 
+class RemoteTransactionV2(RemoteTransaction):
+    classification_revision: StrictInt
+
+    @field_validator("classification_revision")
+    @classmethod
+    def revision_is_non_negative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("classification revision must be non-negative")
+        return value
+
+
 class RemoteCounts(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -253,3 +264,57 @@ class RemoteSnapshotV1(BaseModel):
     savings: dict[str, RemoteSavingsSnapshot]
     reports: dict[str, RemoteReportSnapshot]
     counts: RemoteCounts
+
+
+class RemoteCapabilities(RemoteReadModel):
+    commands: dict[str, tuple[StrictInt, ...]]
+
+    @field_validator("commands")
+    @classmethod
+    def supported_commands_only(
+        cls, value: dict[str, tuple[int, ...]]
+    ) -> dict[str, tuple[int, ...]]:
+        if set(value) - {"transaction.set_classification"}:
+            raise ValueError("unsupported remote command capability")
+        if value.get("transaction.set_classification") not in (None, (1,)):
+            raise ValueError("unsupported transaction classification command version")
+        return value
+
+
+class RemoteTaxonomyCategory(RemoteReadModel):
+    id: str
+    name: str
+    category_type: Literal["income", "expense", "transfer"]
+    reporting_behavior: Literal["ordinary", "expense_offset", "excluded", "income"]
+    group_id: str | None
+    group: str | None
+    sort_order: int
+
+
+class RemoteTaxonomySubcategory(RemoteReadModel):
+    id: str
+    category_id: str
+    name: str
+    sort_order: int
+
+
+class RemoteTaxonomy(RemoteReadModel):
+    categories: tuple[RemoteTaxonomyCategory, ...]
+    subcategories: tuple[RemoteTaxonomySubcategory, ...]
+
+    @model_validator(mode="after")
+    def children_reference_published_parents(self) -> "RemoteTaxonomy":
+        category_ids = {item.id for item in self.categories}
+        if any(item.category_id not in category_ids for item in self.subcategories):
+            raise ValueError("subcategory references an unpublished category")
+        return self
+
+
+class RemoteSnapshotV2(RemoteSnapshotV1):
+    schema_version: Literal[2]
+    transactions: tuple[RemoteTransactionV2, ...]
+    capabilities: RemoteCapabilities
+    taxonomy: RemoteTaxonomy
+
+
+RemoteSnapshot = RemoteSnapshotV1 | RemoteSnapshotV2

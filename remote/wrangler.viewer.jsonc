@@ -15,12 +15,38 @@
     "staging": {
       "name": "fintracka-viewer-staging",
       "workers_dev": true,
-      "r2_buckets": [{ "binding": "SNAPSHOTS", "bucket_name": "fintracka-snapshots-staging" }]
+      "r2_buckets": [{ "binding": "SNAPSHOTS", "bucket_name": "fintracka-snapshots-staging" }],
+      "d1_databases": [{
+        "binding": "COMMANDS",
+        "database_name": "fintracka-mobile-commands-staging",
+        "database_id": "70d7630f-8a2c-46d2-a797-e946031e5fac",
+        "migrations_dir": "migrations"
+      }],
+      "vars": {
+        "ACCESS_TEAM_DOMAIN": "https://hidden-silence-257f.cloudflareaccess.com",
+        "ACCESS_USER_AUD": "25b2f01ecff268bc527f6dce6b2cec9cbbdd216dd6a4d8208eaa03d31f65fe39",
+        "ACCESS_MAC_AUD": "UNCONFIGURED_DENY_ALL",
+        "HOUSEHOLD_ID": "fintracka-household-v1",
+        "HOUSEHOLD_NAME": "FinTracka household"
+      }
     },
     "production": {
       "name": "fintracka-viewer-production",
       "workers_dev": true,
-      "r2_buckets": [{ "binding": "SNAPSHOTS", "bucket_name": "fintracka-snapshots-production" }]
+      "r2_buckets": [{ "binding": "SNAPSHOTS", "bucket_name": "fintracka-snapshots-production" }],
+      "d1_databases": [{
+        "binding": "COMMANDS",
+        "database_name": "fintracka-mobile-commands-production",
+        "database_id": "edc2f4f4-9ec5-403a-8e2d-44dd42bacd07",
+        "migrations_dir": "migrations"
+      }],
+      "vars": {
+        "ACCESS_TEAM_DOMAIN": "https://hidden-silence-257f.cloudflareaccess.com",
+        "ACCESS_USER_AUD": "bf71b0fdb9bf64128200c065a58d67aea7047052d35da159a4a0631256c772d7",
+        "ACCESS_MAC_AUD": "UNCONFIGURED_DENY_ALL",
+        "HOUSEHOLD_ID": "fintracka-household-v1",
+        "HOUSEHOLD_NAME": "FinTracka household"
+      }
     }
   }
 }
