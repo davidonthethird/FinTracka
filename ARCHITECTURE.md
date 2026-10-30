@@ -4,7 +4,7 @@
 
 ```mermaid
 flowchart LR
-    U["Browser"] --> A["FastAPI localhost"]
+    U["Desktop browser"] --> A["FastAPI localhost"]
     A --> S["Finance services"]
     S --> D["SQLite ledger"]
     S --> K["macOS Keychain"]
@@ -13,6 +13,10 @@ flowchart LR
     S --> X["Excel files"]
     L["launchd"] --> C["FinTracka CLI"]
     C --> S
+    S --> W["Authenticated snapshot publisher"]
+    W --> R["Private R2 snapshots"]
+    M["Mobile viewer"] --> V["Cloudflare Access + viewer Worker"]
+    V --> R
 ```
 
 - `fintracka serve` binds to `127.0.0.1` and serves the API plus the built React application.
@@ -20,6 +24,16 @@ flowchart LR
 - SQLite uses WAL, foreign keys, a busy timeout, and explicit transactions.
 - A macOS `fcntl` lock serializes sync, import, export, backup, and restore writes across CLI and server processes.
 - A single in-process executor handles user-started jobs. Persisted job rows make interruption observable and retryable.
+- The Mac publishes a sanitized, immutable snapshot outward to Cloudflare. The viewer cannot connect inward to the Mac or mutate the ledger.
+
+## Long-term authority boundary
+
+The durable rules for future mobile editing, receipts, shopping lists, AI, and backups are defined in [ARCHITECTURE_GUARDRAILS.md](ARCHITECTURE_GUARDRAILS.md).
+
+- Mac SQLite remains authoritative for committed financial records.
+- A future cloud command service may own the lifecycle of proposed mobile financial edits until the Mac validates them.
+- Cloud storage may be authoritative for explicitly non-financial collaboration data such as shopping lists and unmatched receipt drafts.
+- The remote snapshot remains a read replica, never a command queue or backup.
 
 ## Backend boundaries
 
@@ -63,5 +77,5 @@ React Router provides persistent left navigation. TanStack Table powers the tran
 
 ## Deployment
 
-Release use is one local Python process. No Docker, reverse proxy, public listener, cloud database, Redis, queue, or webhook receiver is introduced.
+The authoritative application remains one local Python process bound to localhost. Optional Cloudflare Workers provide the authenticated snapshot publisher and private read-only mobile viewer backed by R2. No public listener connects to the Mac. Any future cloud command database or collaborative-data service requires a separately approved design that follows the architecture guardrails.
 
