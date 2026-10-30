@@ -4,7 +4,7 @@ The remote viewer is a sanitized copy of the local ledger. SQLite on the Mac rem
 
 ## Scoped mobile editing rollout — 2026-10-30
 
-- Worker command protocol v2 is deployed to staging and production. Worker versions: staging `c53cee49-f182-4387-8eb3-9530b7b4bb9b`; production `66cbdce1-e4c0-4846-ad09-5fd3b96ac878`.
+- Worker command protocol v2 is deployed to staging and production. Worker versions: staging `74dc7d54-7ea2-4ff2-8492-4f2b37e78bb8`; production `ee9ec644-fc02-44e4-a411-467e74558b88`.
 - D1 migration `0002_mobile_command_v2.sql` was applied once and its second application reported no pending migrations in both environments.
 - A fresh production snapshot advertising command versions `[1, 2]` was published after deployment.
 - Missing and deliberately invalid Mac credentials return `401` on both Viewer origins. Unauthenticated human Viewer requests still redirect to the interactive Access login. Valid production machine authentication reached the Mac API and found no queued command.
