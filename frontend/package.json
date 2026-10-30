@@ -14,7 +14,7 @@
     "typecheck:viewer": "tsc --noEmit -p tsconfig.app.json --pretty false"
   },
   "dependencies": {
-    "@tanstack/react-table": "8.21.3",
+    "@tanstack/react-table": "9.3.1",
     "lucide-react": "1.61.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
