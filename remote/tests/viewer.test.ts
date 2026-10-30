@@ -1,10 +1,9 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import viewer from "../src/viewer";
+import document from "../../tests/fixtures/remote_snapshot_v1.json";
 
-const fixture = readFileSync("../tests/fixtures/remote_snapshot_v1.json");
-const document = JSON.parse(fixture.toString());
+const fixture = new TextEncoder().encode(JSON.stringify(document));
 
 class Bucket {
   active: Record<string, unknown> | null = null;
@@ -59,7 +58,7 @@ describe("viewer worker", () => {
   it("serves the exact active snapshot and metadata-only status", async () => {
     const bucket = readyBucket();
     const snapshot = await viewer.fetch(new Request("https://view.test/api/v1/snapshot"), env(bucket));
-    expect(new Uint8Array(await snapshot.arrayBuffer())).toEqual(new Uint8Array(fixture));
+    expect(new Uint8Array(await snapshot.arrayBuffer())).toEqual(fixture);
     const status = await viewer.fetch(new Request("https://view.test/api/v1/status"), env(bucket));
     const body = await status.json() as Record<string, unknown>;
     expect(body).toMatchObject({

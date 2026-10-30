@@ -1,14 +1,11 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { parseRemoteSnapshot } from "../src/contract";
+import fixtureDocument from "../../tests/fixtures/remote_snapshot_v1.json";
+import fixtureV2Document from "../../tests/fixtures/remote_snapshot_v2.json";
 
-const fixture = JSON.parse(
-  readFileSync("../tests/fixtures/remote_snapshot_v1.json", "utf8"),
-);
-const fixtureV2 = JSON.parse(
-  readFileSync("../tests/fixtures/remote_snapshot_v2.json", "utf8"),
-);
+const fixture: any = fixtureDocument;
+const fixtureV2: any = fixtureV2Document;
 
 describe("remote snapshot contract", () => {
   it("accepts the shared Python fixture", () => {
