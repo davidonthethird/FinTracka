@@ -39,12 +39,22 @@ export const CreateClassificationCommandSchema = z.discriminatedUnion("command_v
 
 export type CreateClassificationCommand = z.infer<typeof CreateClassificationCommandSchema>;
 
-export const CommandResultSchema = z.discriminatedUnion("status", [
+const appliedResultFields = {
+  status: z.literal("applied"),
+  category_id: z.string().min(1).max(128).nullable(),
+  subcategory_id: z.string().min(1).max(128).nullable(),
+  classification_revision: z.int().nonnegative(),
+};
+
+export const CommandResultSchema = z.union([
   z.object({
-    status: z.literal("applied"),
-    category_id: z.string().min(1).max(128).nullable(),
-    subcategory_id: z.string().min(1).max(128).nullable(),
-    classification_revision: z.int().nonnegative(),
+    ...appliedResultFields,
+    requested_scope: z.enum(categorizationScopes),
+    effective_scope: z.enum(categorizationScopes),
+    affected_count: z.int().nonnegative(),
+  }).strict(),
+  z.object({
+    ...appliedResultFields,
   }).strict(),
   z.object({
     status: z.literal("conflict"),

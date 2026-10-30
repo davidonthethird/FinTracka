@@ -210,7 +210,11 @@ def _claimed_command(value: object) -> ClaimedMobileCommand:
     ):
         raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
     scope = item["scope"]
-    if scope not in VALID_SCOPES or (version == 1 and scope != "one_time"):
+    if (
+        not isinstance(scope, str)
+        or scope not in VALID_SCOPES
+        or (version == 1 and scope != "one_time")
+    ):
         raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
     if not isinstance(item["observed_revision"], int) or isinstance(item["observed_revision"], bool) or item["observed_revision"] < 0:
         raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
@@ -244,7 +248,7 @@ def _public_command(value: object) -> dict[str, object]:
     statuses = {"pending", "processing", "applied", "conflict", "rejected", "cancelled", "expired", "superseded"}
     if item["status"] not in statuses:
         raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
-    if item["scope"] not in VALID_SCOPES:
+    if not isinstance(item["scope"], str) or item["scope"] not in VALID_SCOPES:
         raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
     _bounded_string(item["id"], 128)
     return item

@@ -373,6 +373,39 @@ describe("mobile gateway", () => {
     expect((await completed.json() as any).command.status).toBe("applied");
   });
 
+  it("accepts the safe scoped result only for a v2 command", async () => {
+    const gateway = makeGateway();
+    await provision(gateway);
+    const created = await gateway.fetch(userRequest(
+      "/api/v1/mobile/commands",
+      json(command({ command_version: 2, scope: "past_and_future" })),
+    ), gatewayEnv());
+    expect(created.status).toBe(201);
+    const claimed = await gateway.fetch(macRequest(
+      "/api/v1/mobile/mac/commands/claim", json({ limit: 1 }),
+    ), gatewayEnv());
+    const item = (await claimed.json() as any).commands[0];
+
+    const completed = await gateway.fetch(macRequest(
+      `/api/v1/mobile/mac/commands/${item.id}/complete`,
+      json({ claim_token: item.claim_token, result: {
+        status: "applied",
+        category_id: "category-fun",
+        subcategory_id: "subcategory-games",
+        classification_revision: 1,
+        requested_scope: "past_and_future",
+        effective_scope: "past_and_future",
+        affected_count: 3,
+      } }),
+    ), gatewayEnv());
+
+    expect(completed.status).toBe(200);
+    expect((await completed.json() as any).command.result).toMatchObject({
+      requested_scope: "past_and_future", effective_scope: "past_and_future",
+      affected_count: 3,
+    });
+  });
+
   it("returns safe errors without storage or verification details", async () => {
     const verifier: AccessTokenVerifier = async () => { throw new Error("private cert detail"); };
     const gateway = createMobileGateway({ verifyAccessToken: verifier });

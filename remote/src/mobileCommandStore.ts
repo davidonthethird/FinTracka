@@ -325,6 +325,12 @@ export class MobileCommandStore {
     if (resultJson.length > 512) throw new MobileCommandStoreError("INVALID_RESULT");
     const existing = await this.commandRow(commandId);
     if (!existing) throw new MobileCommandStoreError("COMMAND_NOT_FOUND");
+    const isScopedApplied = parsed.data.status === "applied"
+      && "requested_scope" in parsed.data;
+    if (parsed.data.status === "applied"
+        && ((existing.command_version === 2) !== isScopedApplied)) {
+      throw new MobileCommandStoreError("INVALID_RESULT");
+    }
     if (["applied", "conflict", "rejected"].includes(existing.status)) {
       if (existing.claim_token === claimToken && existing.result_json === resultJson) {
         return toPublicCommand(existing);

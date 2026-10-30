@@ -365,7 +365,10 @@ def test_receipt_insert_failure_rolls_back_classification(tmp_path) -> None:
         """
     )
     connection.close()
-    command = claimed("command-rollback", "claim-1", transaction_id, category_id)
+    command = claimed(
+        "command-rollback", "claim-1", transaction_id, category_id,
+        version=2, scope="future",
+    )
     client = Client(((command,),))
 
     result = process_mobile_commands(
@@ -378,6 +381,9 @@ def test_receipt_insert_failure_rolls_back_classification(tmp_path) -> None:
         "SELECT classification_revision FROM transactions WHERE id = ?", (transaction_id,),
     ).fetchone()[0] == 0
     assert connection.execute("SELECT COUNT(*) FROM mobile_command_receipts").fetchone()[0] == 0
+    assert connection.execute(
+        "SELECT COUNT(*) FROM categorization_rules WHERE name LIKE 'Learned: %'"
+    ).fetchone()[0] == 0
     connection.close()
     assert result.failed == 1
     assert client.completions == []
