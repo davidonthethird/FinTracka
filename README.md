@@ -124,9 +124,11 @@ Data and corrections persist in the local SQLite ledger when the browser or appl
 
 Scheduled work runs only while the Mac is awake. Local backups are retained according to FinTracka's backup policy; an encrypted off-device backup remains recommended.
 
-### Mobile classification corrections
+### Mobile classification corrections and receipts
 
-The private phone viewer can edit only a transaction's category and optional subcategory, and every mobile edit is one-time. It cannot create learning rules, recategorize historical/future matches, change amounts or accounts, or edit Planning/Reports totals. A pending proposal is shown only as an overlay in Transactions; financial totals continue using the last committed snapshot until the Mac applies the command and publishes a newer revision.
+The private phone viewer can edit a transaction's category and optional subcategory with one-time, current-and-future, or past-and-future scope. Cash withdrawals and Uncategorized changes remain one-time. It cannot change amounts or accounts or directly edit Planning/Reports totals. A pending proposal is shown only as an overlay; financial totals continue using the last committed snapshot until the Mac applies the command and publishes a newer revision.
+
+The optional receipt flow performs OCR on the phone, keeps original photos in that browser, and uploads only the reviewed structured draft. A receipt affects the ledger only after the user explicitly selects an exact posted bank transaction. The Mac verifies its immutable digest, total, currency, date window, and split revision, then commits detailed A/D/S and category splits exactly once. See [docs/receipt-processing-runbook.md](docs/receipt-processing-runbook.md) before enabling receipt flags.
 
 Cloudflare D1 stores command identifiers, revision guards, taxonomy identifiers, state, and retention timestamps—not merchant text, account names, descriptions, or amounts. Pending commands expire after 30 days and terminal command records after 90 days; permanent redacted receipts remain locally on the Mac for exact-once processing. The command processor uses a dedicated Cloudflare Access service token and a separate, path-specific Mac Access application. Do not reuse the snapshot Publisher token or enable command processing before the runbook's Mac-auth gate passes.
 

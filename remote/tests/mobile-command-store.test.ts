@@ -5,6 +5,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
   canonicalClassificationPayload,
+  canonicalReceiptSplitPayload,
   sha256Hex,
   type CreateClassificationCommand,
 } from "../src/mobileCommandModel";
@@ -31,6 +32,10 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await env.COMMANDS.batch([
+    env.COMMANDS.prepare("DELETE FROM receipt_events"),
+    env.COMMANDS.prepare("DELETE FROM receipt_lines"),
+    env.COMMANDS.prepare("DELETE FROM receipt_revisions"),
+    env.COMMANDS.prepare("DELETE FROM receipt_drafts"),
     env.COMMANDS.prepare("DELETE FROM command_events"),
     env.COMMANDS.prepare("DELETE FROM mobile_commands"),
     env.COMMANDS.prepare("DELETE FROM household_members"),
@@ -47,6 +52,52 @@ describe("mobile command store", () => {
     expect(v1).toBe('{"category_id":"category-fun","subcategory_id":null}');
     expect(past).toBe('{"category_id":"category-fun","subcategory_id":null,"scope":"past_and_future"}');
     expect(await sha256Hex(past)).not.toBe(await sha256Hex(future));
+  });
+
+  it("creates, claims, and completes a bounded receipt split command", async () => {
+    const store = makeStore();
+    await provision(store);
+    const digest = "a".repeat(64);
+    expect(canonicalReceiptSplitPayload("draft-1", 3, digest)).toBe(
+      `{"receipt_draft_id":"draft-1","receipt_revision":3,"allocation_digest":"${digest}"}`,
+    );
+    const created = await store.createOrReplace(HOUSEHOLD, MEMBER, {
+      command_type: "transaction.apply_receipt_split",
+      command_version: 1,
+      target_id: "transaction-receipt",
+      observed_revision: 2,
+      receipt_draft_id: "draft-1",
+      receipt_revision: 3,
+      allocation_digest: digest,
+      idempotency_key: "receipt-command-0001",
+      replace_command_id: null,
+    });
+    expect(created.command).toMatchObject({
+      command_type: "transaction.apply_receipt_split", receipt_draft_id: "draft-1",
+      receipt_revision: 3, allocation_digest: digest,
+    });
+    const [claimed] = await store.claim("processor-1", 1);
+    expect(claimed).toMatchObject({ command_type: "transaction.apply_receipt_split", receipt_draft_id: "draft-1" });
+    const completed = await store.complete(claimed.id, claimed.claim_token, {
+      status: "applied", receipt_id: "receipt-local-1", split_revision: 3, split_count: 2,
+    });
+    expect(completed.status).toBe("applied");
+  });
+
+  it("rejects command/result type mismatches", async () => {
+    const store = makeStore();
+    await provision(store);
+    await store.createOrReplace(HOUSEHOLD, MEMBER, {
+      command_type: "transaction.apply_receipt_split", command_version: 1,
+      target_id: "transaction-receipt", observed_revision: 0,
+      receipt_draft_id: "draft-1", receipt_revision: 1, allocation_digest: "b".repeat(64),
+      idempotency_key: "receipt-command-0002", replace_command_id: null,
+    });
+    const [claimed] = await store.claim("processor-1", 1);
+    await expect(store.complete(claimed.id, claimed.claim_token, {
+      status: "applied", category_id: "category-fun", subcategory_id: null,
+      classification_revision: 1,
+    })).rejects.toMatchObject({ code: "INVALID_RESULT" });
   });
 
   it("normalizes v1 as one-time and carries v2 scope through create and claim", async () => {

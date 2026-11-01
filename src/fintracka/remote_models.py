@@ -238,6 +238,17 @@ class RemoteTransactionV2(RemoteTransaction):
         return value
 
 
+class RemoteTransactionV3(RemoteTransactionV2):
+    split_revision: StrictInt
+
+    @field_validator("split_revision")
+    @classmethod
+    def split_revision_is_non_negative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("split revision must be non-negative")
+        return value
+
+
 class RemoteCounts(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -268,16 +279,26 @@ class RemoteSnapshotV1(BaseModel):
 
 class RemoteCapabilities(RemoteReadModel):
     commands: dict[str, tuple[StrictInt, ...]]
+    receipts: dict[str, tuple[StrictInt, ...]] = {}
 
     @field_validator("commands")
     @classmethod
     def supported_commands_only(
         cls, value: dict[str, tuple[int, ...]]
     ) -> dict[str, tuple[int, ...]]:
-        if set(value) - {"transaction.set_classification"}:
+        if set(value) - {"transaction.set_classification", "transaction.apply_receipt_split"}:
             raise ValueError("unsupported remote command capability")
         if value.get("transaction.set_classification") not in (None, (1,), (1, 2)):
             raise ValueError("unsupported transaction classification command version")
+        if value.get("transaction.apply_receipt_split") not in (None, (1,)):
+            raise ValueError("unsupported receipt command version")
+        return value
+
+    @field_validator("receipts")
+    @classmethod
+    def supported_receipts_only(cls, value: dict[str, tuple[int, ...]]) -> dict[str, tuple[int, ...]]:
+        if set(value) - {"matching"} or value.get("matching") not in (None, (1,)):
+            raise ValueError("unsupported receipt capability")
         return value
 
 
@@ -317,4 +338,17 @@ class RemoteSnapshotV2(RemoteSnapshotV1):
     taxonomy: RemoteTaxonomy
 
 
-RemoteSnapshot = RemoteSnapshotV1 | RemoteSnapshotV2
+class RemoteSnapshotV3(RemoteSnapshotV2):
+    schema_version: Literal[3]
+    transactions: tuple[RemoteTransactionV3, ...]
+
+    @model_validator(mode="after")
+    def matching_capabilities_are_paired(self) -> "RemoteSnapshotV3":
+        if self.capabilities.commands.get("transaction.apply_receipt_split") != (1,):
+            raise ValueError("receipt split command capability is required")
+        if self.capabilities.receipts.get("matching") != (1,):
+            raise ValueError("receipt matching capability is required")
+        return self
+
+
+RemoteSnapshot = RemoteSnapshotV1 | RemoteSnapshotV2 | RemoteSnapshotV3

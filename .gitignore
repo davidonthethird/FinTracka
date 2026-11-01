@@ -9,6 +9,7 @@
 node_modules/
 dist/
 dist-viewer/
+/frontend/public/receipt-ocr/
 __pycache__/
 *.egg-info/
 .pytest_cache/

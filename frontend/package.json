@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:viewer": "vite --config vite.viewer.config.ts --open /viewer.html",
+    "copy:receipt-ocr-assets": "node scripts/copy-receipt-ocr-assets.mjs",
+    "dev:viewer": "npm run copy:receipt-ocr-assets && vite --config vite.viewer.config.ts --open /viewer.html",
     "build": "tsc -b && vite build",
-    "build:viewer": "tsc --noEmit -p tsconfig.app.json && vite build --config vite.viewer.config.ts",
+    "build:viewer": "tsc --noEmit -p tsconfig.app.json && npm run copy:receipt-ocr-assets && vite build --config vite.viewer.config.ts",
     "test:e2e": "playwright test",
     "test": "vitest run",
     "typecheck": "tsc -b --pretty false",
@@ -15,18 +16,23 @@
   },
   "dependencies": {
     "@tanstack/react-table": "8.21.3",
+    "@tesseract.js-data/eng": "1.0.0",
     "lucide-react": "1.61.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-plaid-link": "5.0.0",
     "react-router-dom": "7.18.4",
-    "recharts": "3.10.1"
+    "recharts": "3.10.1",
+    "tesseract.js": "7.0.0"
   },
   "devDependencies": {
     "@playwright/test": "1.64.0",
+    "@types/node": "24.10.0",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
+    "fake-indexeddb": "6.2.5",
+    "tesseract.js-core": "6.1.2",
     "typescript": "7.0.2",
     "vite": "8.3.4",
     "vitest": "5.0.3"

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { BarChart3, Landmark, List, PiggyBank, WalletCards } from "lucide-react";
+import { BarChart3, Landmark, List, PiggyBank, ReceiptText, WalletCards } from "lucide-react";
 import { loadRemoteData, type ViewerStatus } from "./api";
 import type { RemoteSnapshot } from "./model";
 import { OverviewPage } from "./OverviewPage";
@@ -8,10 +8,16 @@ import { ReportsPage } from "./ReportsPage";
 import { SavingsPage } from "./SavingsPage";
 import { TransactionsPage } from "./TransactionsPage";
 import { MobileCommandProvider } from "./mobileCommands";
+import { ReceiptCapturePage } from "./receipts/ReceiptCapturePage";
+import { ReceiptInboxPage } from "./receipts/ReceiptInboxPage";
+import { ReceiptProvider } from "./receipts/ReceiptProvider";
+import { ReceiptReviewPage } from "./receipts/ReceiptReviewPage";
+import { classificationTaxonomy } from "./model";
 
 const navigation = [
   ["/", "Overview", Landmark],
   ["/transactions", "Transactions", List],
+  ["/receipts", "Receipts", ReceiptText],
   ["/planning", "Planning", WalletCards],
   ["/savings", "Savings", PiggyBank],
   ["/reports", "Reports", BarChart3],
@@ -50,19 +56,24 @@ export function ViewerApp() {
   }
   if (error) return <main className="viewer-state"><span className="viewer-mark">F</span><h1>Viewer unavailable</h1><p>{error}</p><button onClick={() => window.location.reload()}>Try again</button></main>;
   if (!snapshot) return <main className="viewer-state"><span className="viewer-mark">F</span><h1>Opening your private ledger</h1><p>Reading the latest published snapshot…</p></main>;
-  return <MobileCommandProvider snapshot={snapshot} onSnapshotRefresh={refreshSnapshot}><div className="remote-shell">
+  const receiptId = route.match(/^\/receipts\/([^/]+)$/)?.[1];
+  const receiptRoute = route === "/receipts" || route === "/receipts/new" || Boolean(receiptId);
+  return <MobileCommandProvider snapshot={snapshot} onSnapshotRefresh={refreshSnapshot}><ReceiptProvider><div className="remote-shell">
     <header className="viewer-topbar"><button className="viewer-brand" onClick={() => navigate("/")}><span>F</span><strong>FinTracka</strong><small>Remote viewer</small></button><a href="/cdn-cgi/access/logout">Sign out</a></header>
     {status?.stale && <div className="stale-banner"><strong>Data may be out of date.</strong> Your Mac has not published a fresh snapshot recently.</div>}
     <main className="viewer-workspace">
       {route === "/" && <OverviewPage snapshot={snapshot} publishedAt={status?.published_at} />}
       {route === "/transactions" && <TransactionsPage snapshot={snapshot} />}
+      {route === "/receipts" && <ReceiptInboxPage navigate={navigate} />}
+      {route === "/receipts/new" && <ReceiptCapturePage navigate={navigate} />}
+      {receiptId && <ReceiptReviewPage id={decodeURIComponent(receiptId)} taxonomy={classificationTaxonomy(snapshot)} transactions={snapshot.transactions} navigate={navigate} />}
       {route === "/planning" && <PlanningPage snapshot={snapshot} />}
       {route === "/savings" && <SavingsPage snapshot={snapshot} />}
       {route === "/reports" && <ReportsPage snapshot={snapshot} />}
-      {!navigation.some(([path]) => path === route) && <Placeholder title="Page not found" text="Choose a section below." />}
+      {!navigation.some(([path]) => path === route) && !receiptRoute && <Placeholder title="Page not found" text="Choose a section below." />}
     </main>
-    <nav className="viewer-nav" aria-label="Viewer sections">{navigation.map(([path, label, Icon]) => <button key={path} className={route === path ? "active" : ""} onClick={() => navigate(path)}><Icon aria-hidden="true" /><span>{label}</span></button>)}</nav>
-  </div></MobileCommandProvider>;
+    <nav className="viewer-nav" aria-label="Viewer sections">{navigation.map(([path, label, Icon]) => <button key={path} className={route === path || (path === "/receipts" && route.startsWith("/receipts/")) ? "active" : ""} onClick={() => navigate(path)}><Icon aria-hidden="true" /><span>{label}</span></button>)}</nav>
+  </div></ReceiptProvider></MobileCommandProvider>;
 }
 
 function Placeholder({ title, text }: { title: string; text: string }) {

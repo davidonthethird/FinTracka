@@ -198,6 +198,25 @@ class BulkTransactionRequest(StrictModel):
     items: list[BulkTransactionPatch] = Field(min_length=1, max_length=500)
 
 
+class ReceiptLineResponse(StrictModel):
+    id: str
+    description: str
+    amount_minor: int
+    spending_owner: str
+    category: str | None
+    subcategory: str | None
+
+
+class ReceiptDetailResponse(StrictModel):
+    id: str
+    merchant: str
+    purchase_date: str | None
+    currency: str
+    total_minor: int
+    cloud_revision: int
+    lines: list[ReceiptLineResponse]
+
+
 class TransactionResponse(StrictModel):
     id: str
     account_id: str
@@ -232,6 +251,7 @@ class TransactionResponse(StrictModel):
     is_cash_withdrawal: bool
     archived: bool
     updated_at: str
+    receipt: ReceiptDetailResponse | None = None
 
 
 class TransactionPage(StrictModel):
@@ -2115,7 +2135,24 @@ def _transaction(connection: sqlite3.Connection, transaction_id: str) -> sqlite3
 
 def _transaction_response(connection: sqlite3.Connection, transaction_id: str) -> TransactionResponse:
     row = _transaction(connection, transaction_id)
-    return TransactionResponse(**{**dict(row), "pending": bool(row["pending"]), "archived": bool(row["archived"])})
+    receipt = connection.execute(
+        "SELECT id, merchant, purchase_date, currency, total_minor, cloud_revision "
+        "FROM receipts WHERE transaction_id = ?", (transaction_id,),
+    ).fetchone()
+    detail = None
+    if receipt is not None:
+        lines = connection.execute(
+            """SELECT rl.id, rl.description, rl.amount_minor, rl.spending_owner,
+                      c.name category, s.name subcategory
+               FROM receipt_lines rl
+               LEFT JOIN categories c ON c.id = rl.category_id
+               LEFT JOIN subcategories s ON s.id = rl.subcategory_id
+               WHERE rl.receipt_id = ? ORDER BY rl.line_order, rl.id""",
+            (receipt["id"],),
+        ).fetchall()
+        detail = ReceiptDetailResponse(**dict(receipt), lines=[ReceiptLineResponse(**dict(line)) for line in lines])
+    return TransactionResponse(**{**dict(row), "pending": bool(row["pending"]),
+        "archived": bool(row["archived"]), "receipt": detail})
 
 
 def _manual_cash_status(error: ManualCashError) -> int:

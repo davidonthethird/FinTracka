@@ -11,8 +11,11 @@ from fintracka.keychain import KeychainSecrets
 from fintracka.locks import ProcessLock
 from fintracka.mobile_command_client import (
     ClaimedMobileCommand,
+    ClaimedReceiptSplitCommand,
+    ImmutableReceiptRevision,
     MobileCommandClientError,
 )
+from fintracka.receipts import receipt_digest
 from fintracka.mobile_command_config import (
     configure_mobile_commands,
     set_mobile_commands_enabled,
@@ -36,10 +39,11 @@ class FakeKeyring:
 
 
 class Client:
-    def __init__(self, batches=(), fail_completions: int = 0) -> None:
+    def __init__(self, batches=(), fail_completions: int = 0, receipt=None) -> None:
         self.batches = list(batches)
         self.fail_completions = fail_completions
         self.completions: list[tuple[str, str, dict[str, object]]] = []
+        self.receipt = receipt
 
     def claim(self, limit=10):
         return tuple(self.batches.pop(0)) if self.batches else ()
@@ -50,6 +54,14 @@ class Client:
             raise MobileCommandClientError("MOBILE_TIMEOUT")
         self.completions.append((command_id, claim_token, dict(result)))
         return SimpleNamespace(id=command_id, status=result["status"])
+
+    def get_receipt_revision(self, draft_id, revision, expected_digest):
+        if self.receipt is None:
+            raise MobileCommandClientError("MOBILE_NOT_FOUND")
+        assert (draft_id, revision, expected_digest) == (
+            self.receipt.id, self.receipt.revision, self.receipt.digest,
+        )
+        return self.receipt
 
 
 def test_empty_poll_is_safe_and_does_not_publish(tmp_path) -> None:
@@ -297,6 +309,49 @@ def test_invalid_digest_is_rejected_without_touching_financial_data(tmp_path) ->
     }
 
 
+def test_receipt_split_applies_exactly_once_and_replays_after_completion_failure(tmp_path) -> None:
+    path, secrets, transaction_id, _category_id = configured_ledger(tmp_path)
+    connection = connect(path)
+    transaction = connection.execute(
+        "SELECT amount_minor, currency, split_revision, local_date FROM transactions WHERE id = ?", (transaction_id,)
+    ).fetchone()
+    connection.close()
+    draft = receipt_for_amount(abs(transaction["amount_minor"]), transaction["currency"], transaction["local_date"])
+    allocation_digest = receipt_digest(draft)
+    payload = json.dumps({"receipt_draft_id": "draft-1", "receipt_revision": 1,
+        "allocation_digest": allocation_digest}, separators=(",", ":")).encode()
+    command = ClaimedReceiptSplitCommand(
+        id="receipt-command-1", actor_member_id="member-david",
+        command_type="transaction.apply_receipt_split", command_version=1,
+        target_id=transaction_id, observed_revision=transaction["split_revision"],
+        receipt_draft_id="draft-1", receipt_revision=1, allocation_digest=allocation_digest,
+        payload_digest=hashlib.sha256(payload).hexdigest(), claim_token="claim-1",
+        expires_at="2026-11-30T12:00:00Z",
+    )
+    revision = ImmutableReceiptRevision("draft-1", 1, allocation_digest, draft,
+        "2026-11-01T12:00:00Z")
+    client = Client(((command,),), fail_completions=1, receipt=revision)
+    first = process_mobile_commands(path, secrets, client_factory=lambda *_: client,
+        publisher=lambda *_a, **_k: SimpleNamespace(published_at="2026-11-01T12:01:00Z"))
+    client.batches.append((ClaimedReceiptSplitCommand(
+        **{**command.__dict__, "claim_token": "claim-2"}),))
+    second = process_mobile_commands(path, secrets, client_factory=lambda *_: client,
+        publisher=lambda *_a, **_k: None)
+    connection = connect(path)
+    counts = tuple(connection.execute(
+        "SELECT (SELECT COUNT(*) FROM receipts), (SELECT COUNT(*) FROM receipt_applications), "
+        "(SELECT COUNT(*) FROM mobile_command_receipts WHERE command_id = ?)", (command.id,)
+    ).fetchone())
+    split_revision = connection.execute(
+        "SELECT split_revision FROM transactions WHERE id = ?", (transaction_id,)
+    ).fetchone()[0]
+    connection.close()
+    assert (first.applied, first.acknowledged) == (1, 0)
+    assert (second.applied, second.acknowledged) == (0, 1)
+    assert counts == (1, 1, 1) and split_revision == transaction["split_revision"] + 1
+    assert client.completions[-1][2]["status"] == "applied"
+
+
 def test_unsupported_command_is_permanently_rejected(tmp_path) -> None:
     path, secrets, transaction_id, category_id = configured_ledger(tmp_path)
     original = claimed("command-unsupported", "claim-1", transaction_id, category_id)
@@ -496,6 +551,21 @@ def claimed(
         claim_token=claim_token,
         expires_at="2026-11-30T12:00:00Z",
     )
+
+
+def receipt_for_amount(amount_minor: int, currency: str, purchase_date: str = "2026-10-01") -> dict[str, object]:
+    return {
+        "contract": "receipt_draft/v1", "status": "waiting_for_bank", "merchant": "Fixture",
+        "purchase_date": purchase_date, "currency": currency, "masked_payment_hint": None,
+        "page_count": 1, "subtotal_minor": amount_minor, "discount_minor": 0,
+        "tax_minor": 0, "tip_minor": 0, "fees_minor": 0, "total_minor": amount_minor,
+        "lines": [{"id": "line-1", "order": 0, "source_page": 0,
+            "description": "Receipt item", "quantity": "1", "unit_amount_minor": amount_minor,
+            "item_total_minor": amount_minor, "line_discount_minor": 0, "tax_minor": 0,
+            "tip_minor": 0, "fees_minor": 0, "taxable": True, "owner": "Shared",
+            "category_id": None, "subcategory_id": None, "confidence_basis_points": 9500,
+            "review_flags": []}],
+    }
 
 
 def matching_history(path, transaction_id: str, category_id: str):

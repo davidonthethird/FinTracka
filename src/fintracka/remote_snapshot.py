@@ -20,11 +20,13 @@ from fintracka.remote_models import (
     RemoteCapabilities,
     RemoteSnapshot,
     RemoteSnapshotV2,
+    RemoteSnapshotV3,
     RemoteSourceFreshness,
     RemoteTaxonomy,
     RemoteTaxonomyCategory,
     RemoteTaxonomySubcategory,
     RemoteTransactionV2,
+    RemoteTransactionV3,
 )
 from fintracka.reports import cash_flow, cash_flow_paths, overview, spending_by_category, spending_by_owner
 from fintracka.savings import savings_summary
@@ -57,7 +59,8 @@ def build_remote_snapshot(
     now: datetime,
     snapshot_id: str | None = None,
     mobile_commands_enabled: bool = False,
-) -> RemoteSnapshotV2:
+    receipt_matching_enabled: bool = False,
+) -> RemoteSnapshotV2 | RemoteSnapshotV3:
     if not 1 <= history_months <= 6:
         raise ValueError("history_months must be between 1 and 6")
     if source_sequence < 1:
@@ -78,7 +81,9 @@ def build_remote_snapshot(
         history_end = f"{detail_months[-1]}-{calendar.monthrange(year, number)[1]:02d}"
 
         sources = _sources(connection)
-        transactions = _transactions(connection, history_start, history_end)
+        transactions = _transactions(
+            connection, history_start, history_end, include_split_revision=receipt_matching_enabled,
+        )
         overview_models = {
             item_month: RemoteOverview(**asdict(overview(connection, item_month)))
             for item_month in aggregate_months
@@ -109,8 +114,9 @@ def build_remote_snapshot(
             for item_month in aggregate_months
         }
         last_sync = max((source.last_success_at for source in sources if source.last_success_at), default=None)
-        return RemoteSnapshotV2(
-            schema_version=2,
+        snapshot_class = RemoteSnapshotV3 if receipt_matching_enabled else RemoteSnapshotV2
+        return snapshot_class(
+            schema_version=3 if receipt_matching_enabled else 2,
             snapshot_id=snapshot_id or new_id(),
             source_sequence=source_sequence,
             captured_at=now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -124,11 +130,11 @@ def build_remote_snapshot(
             savings=savings_models,
             reports=reports_models,
             capabilities=RemoteCapabilities(
-                commands=(
-                    {"transaction.set_classification": (1, 2)}
-                    if mobile_commands_enabled
-                    else {}
-                )
+                commands={
+                    **({"transaction.set_classification": (1, 2)} if mobile_commands_enabled else {}),
+                    **({"transaction.apply_receipt_split": (1,)} if receipt_matching_enabled else {}),
+                },
+                receipts={"matching": (1,)} if receipt_matching_enabled else {},
             ),
             taxonomy=_taxonomy(connection),
             counts=RemoteCounts(
@@ -182,8 +188,8 @@ def _sources(connection: sqlite3.Connection) -> tuple[RemoteSourceFreshness, ...
 
 
 def _transactions(
-    connection: sqlite3.Connection, start: str, end: str
-) -> tuple[RemoteTransactionV2, ...]:
+    connection: sqlite3.Connection, start: str, end: str, *, include_split_revision: bool
+) -> tuple[RemoteTransactionV2 | RemoteTransactionV3, ...]:
     rows = connection.execute(
         """
         SELECT t.id, t.local_date, t.amount_minor, t.currency,
@@ -194,7 +200,7 @@ def _transactions(
                COALESCE(NULLIF(a.nickname, ''), a.name) account_name,
                a.type account_type, a.subtype account_subtype, a.mask account_mask,
                i.name institution_name, t.pending, pc.provider = 'manual' manual_cash,
-               t.is_cash_withdrawal, t.updated_at, t.classification_revision
+               t.is_cash_withdrawal, t.updated_at, t.classification_revision, t.split_revision
         FROM transactions t
         JOIN accounts a ON a.id = t.account_id
         JOIN provider_connections pc ON pc.id = a.connection_id
@@ -221,10 +227,13 @@ def _transactions(
         """,
         (start, end),
     )
+    model = RemoteTransactionV3 if include_split_revision else RemoteTransactionV2
     return tuple(
-        RemoteTransactionV2(
+        model(
             **{
-                **dict(row),
+                **({**dict(row)} if include_split_revision else {
+                    key: value for key, value in dict(row).items() if key != "split_revision"
+                }),
                 "pending": bool(row["pending"]),
                 "manual_cash": bool(row["manual_cash"]),
                 "is_cash_withdrawal": bool(row["is_cash_withdrawal"]),

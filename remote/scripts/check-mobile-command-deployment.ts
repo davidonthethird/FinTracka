@@ -16,6 +16,7 @@ for (const environment of ["staging", "production"]) {
   if (!/^[a-f0-9]{64}$/.test(entry?.vars?.ACCESS_USER_AUD ?? "")) failures.push(`${environment}: invalid user Access audience`);
   if ((entry?.vars?.ACCESS_USER_AUD ?? "").trim() === (entry?.vars?.ACCESS_MAC_AUD ?? "").trim()) failures.push(`${environment}: browser and Mac Access audiences must be different`);
   if (!entry?.vars?.HOUSEHOLD_ID || !entry?.vars?.HOUSEHOLD_NAME) failures.push(`${environment}: missing household binding`);
+  if (!['true', 'false'].includes(entry?.vars?.FEATURE_RECEIPT_DRAFTS)) failures.push(`${environment}: invalid receipt-draft feature flag`);
   if (entry?.preview_urls !== undefined && entry.preview_urls !== false) failures.push(`${environment}: preview URLs must remain disabled`);
 }
 

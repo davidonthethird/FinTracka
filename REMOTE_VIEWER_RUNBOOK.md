@@ -1,5 +1,7 @@
 # FinTracka remote viewer runbook
 
+Receipt capture and item-level transaction splitting use the additional release gate in [docs/receipt-processing-runbook.md](docs/receipt-processing-runbook.md). Keep `FEATURE_RECEIPT_DRAFTS` and `FEATURE_RECEIPT_MATCHING` false in production until that gate is recorded; receipt matching reuses the dedicated Mac Access identity but has its own typed command and immutable revision checks.
+
 The remote viewer is a sanitized copy of the local ledger. SQLite on the Mac remains authoritative. Financial views are read-only and the viewer is not a backup. An authenticated household member may submit one narrowly typed category/subcategory proposal with a one-time, current-and-future, or eligible-past-and-future scope; only the Mac can validate and apply it to the ledger. The remote service cannot sync banks, change amounts/accounts/owners, bulk-edit arbitrary fields, or recover local data.
 
 ## Scoped mobile editing rollout — 2026-10-30

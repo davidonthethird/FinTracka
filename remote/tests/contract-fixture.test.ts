@@ -3,14 +3,27 @@ import { describe, expect, it } from "vitest";
 import { parseRemoteSnapshot } from "../src/contract";
 import fixtureDocument from "../../tests/fixtures/remote_snapshot_v1.json";
 import fixtureV2Document from "../../tests/fixtures/remote_snapshot_v2.json";
+import fixtureV3Document from "../../tests/fixtures/remote_snapshot_v3.json";
 
 const fixture: any = fixtureDocument;
 const fixtureV2: any = fixtureV2Document;
+const fixtureV3: any = fixtureV3Document;
 
 describe("remote snapshot contract", () => {
   it("accepts the shared Python fixture", () => {
     expect(parseRemoteSnapshot(fixture).schema_version).toBe(1);
     expect(parseRemoteSnapshot(fixtureV2).schema_version).toBe(2);
+    expect(parseRemoteSnapshot(fixtureV3).schema_version).toBe(3);
+  });
+
+  it("requires split revisions and the paired receipt matching capabilities in v3", () => {
+    expect(parseRemoteSnapshot(fixtureV3).schema_version).toBe(3);
+    expect(() => parseRemoteSnapshot({ ...fixtureV3, transactions: fixtureV3.transactions.map(
+      ({ split_revision: _split, ...transaction }: any) => transaction,
+    ) })).toThrow();
+    expect(() => parseRemoteSnapshot({ ...fixtureV3, capabilities: {
+      ...fixtureV3.capabilities, receipts: {},
+    } })).toThrow();
   });
 
   it("requires strict v2 revisions, taxonomy parents, and capability versions", () => {

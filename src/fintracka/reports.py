@@ -352,7 +352,7 @@ def ledger_entries(
               )
             UNION ALL
             SELECT t.id, t.local_date, s.amount_minor, COALESCE(s.category_id, t.category_id),
-                   COALESCE(t.spending_owner, a.spending_owner)
+                   COALESCE(s.spending_owner, t.spending_owner, a.spending_owner)
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
             JOIN transaction_splits s ON s.parent_transaction_id = t.id

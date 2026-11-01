@@ -50,6 +50,7 @@ const transaction = z.object({
 const transactionV2 = transaction.extend({
   classification_revision: z.int().nonnegative(),
 }).strict();
+const transactionV3 = transactionV2.extend({ split_revision: z.int().nonnegative() }).strict();
 
 const counts = z.object({
   transactions: z.int().nonnegative(),
@@ -180,6 +181,17 @@ const capabilities = z.object({
       z.tuple([z.literal(1), z.literal(2)]),
     ]).optional(),
   }).strict(),
+  receipts: z.object({}).strict().optional(),
+}).strict();
+
+const capabilitiesV3 = z.object({
+  commands: z.object({
+    "transaction.set_classification": z.union([
+      z.tuple([z.literal(1)]), z.tuple([z.literal(1), z.literal(2)]),
+    ]).optional(),
+    "transaction.apply_receipt_split": z.tuple([z.literal(1)]),
+  }).strict(),
+  receipts: z.object({ matching: z.tuple([z.literal(1)]) }).strict(),
 }).strict();
 
 const taxonomyCategory = z.object({
@@ -210,7 +222,21 @@ const RemoteSnapshotV2Object = z.object({
   }).strict(),
 }).strict();
 
-function validateV2Taxonomy(value: z.infer<typeof RemoteSnapshotV2Object>, context: z.RefinementCtx): void {
+const RemoteSnapshotV3Object = z.object({
+  schema_version: z.literal(3),
+  ...snapshotFields,
+  transactions: z.array(transactionV3),
+  capabilities: capabilitiesV3,
+  taxonomy: z.object({
+    categories: z.array(taxonomyCategory),
+    subcategories: z.array(taxonomySubcategory),
+  }).strict(),
+}).strict();
+
+function validateV2Taxonomy(
+  value: z.infer<typeof RemoteSnapshotV2Object> | z.infer<typeof RemoteSnapshotV3Object>,
+  context: z.RefinementCtx,
+): void {
   const categoryIds = new Set(value.taxonomy.categories.map((item) => item.id));
   value.taxonomy.subcategories.forEach((item, index) => {
     if (!categoryIds.has(item.category_id)) {
@@ -229,16 +255,22 @@ export const RemoteSnapshotV2Schema = RemoteSnapshotV2Object.superRefine((value,
   scan(value, context, []);
   validateV2Taxonomy(value, context);
 });
+export const RemoteSnapshotV3Schema = RemoteSnapshotV3Object.superRefine((value, context) => {
+  scan(value, context, []);
+  validateV2Taxonomy(value, context);
+});
 export const RemoteSnapshotSchema = z.discriminatedUnion("schema_version", [
   RemoteSnapshotV1Object,
   RemoteSnapshotV2Object,
+  RemoteSnapshotV3Object,
 ]).superRefine((value, context) => {
   scan(value, context, []);
-  if (value.schema_version === 2) validateV2Taxonomy(value, context);
+  if (value.schema_version === 2 || value.schema_version === 3) validateV2Taxonomy(value, context);
 });
 
 export type RemoteSnapshotV1 = z.infer<typeof RemoteSnapshotV1Schema>;
 export type RemoteSnapshotV2 = z.infer<typeof RemoteSnapshotV2Schema>;
+export type RemoteSnapshotV3 = z.infer<typeof RemoteSnapshotV3Schema>;
 export type RemoteSnapshot = z.infer<typeof RemoteSnapshotSchema>;
 
 export function parseRemoteSnapshot(value: unknown): RemoteSnapshot {

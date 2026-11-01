@@ -7,6 +7,7 @@ import snapshotV1 from "../../tests/fixtures/remote_snapshot_v1.json";
 import snapshotV2 from "../../tests/fixtures/remote_snapshot_v2.json";
 import { createMobileGateway, type MobileGatewayEnv } from "../src/mobileGateway";
 import type { AccessClaims, AccessTokenVerifier } from "../src/mobileIdentity";
+import { draft as receiptDraft } from "./receipt-model.test";
 
 declare global {
   namespace Cloudflare {
@@ -28,6 +29,10 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await env.COMMANDS.batch([
+    env.COMMANDS.prepare("DELETE FROM receipt_events"),
+    env.COMMANDS.prepare("DELETE FROM receipt_lines"),
+    env.COMMANDS.prepare("DELETE FROM receipt_revisions"),
+    env.COMMANDS.prepare("DELETE FROM receipt_drafts"),
     env.COMMANDS.prepare("DELETE FROM command_events"),
     env.COMMANDS.prepare("DELETE FROM mobile_commands"),
     env.COMMANDS.prepare("DELETE FROM household_members"),
@@ -413,7 +418,160 @@ describe("mobile gateway", () => {
     expect(response.status).toBe(403);
     expect(await response.text()).not.toContain("private cert detail");
   });
+
+  it("keeps receipt drafts disabled by default and advertises them only when enabled", async () => {
+    const gateway = makeGateway();
+    await provision(gateway);
+    const disabled = gatewayEnv();
+    expect(await (await gateway.fetch(userRequest("/api/v1/mobile/session"), disabled)).json())
+      .toMatchObject({ capabilities: { "transaction.set_classification": [1, 2] } });
+    await expectError(
+      await gateway.fetch(userRequest("/api/v1/mobile/receipts"), disabled),
+      404, "NOT_FOUND",
+    );
+
+    const enabled = gatewayEnv();
+    enabled.FEATURE_RECEIPT_DRAFTS = "true";
+    expect(await (await gateway.fetch(userRequest("/api/v1/mobile/session"), enabled)).json())
+      .toMatchObject({ capabilities: { "receipts.drafts": [1] } });
+  });
+
+  it("creates, reads, replaces, lists, and dismisses household receipt drafts", async () => {
+    const gateway = makeGateway();
+    await provision(gateway);
+    const testEnv = gatewayEnv();
+    testEnv.FEATURE_RECEIPT_DRAFTS = "true";
+    const createdResponse = await gateway.fetch(userRequest(
+      "/api/v1/mobile/receipts",
+      json({ idempotency_key: "gateway-receipt-001", draft: receiptDraft() }),
+    ), testEnv);
+    expect(createdResponse.status).toBe(201);
+    const created = await createdResponse.json() as any;
+
+    expect((await (await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipts/${created.draft.id}`,
+    ), testEnv)).json() as any).draft).toMatchObject({ merchant: "Synthetic Market", revision: 1 });
+    const replaced = await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipts/${created.draft.id}`,
+      { ...json({ expected_revision: 1, idempotency_key: "gateway-receipt-002",
+        draft: { ...receiptDraft(), merchant: "Corrected" } }), method: "PUT" },
+    ), testEnv);
+    expect(replaced.status).toBe(200);
+    expect((await replaced.json() as any).draft).toMatchObject({ merchant: "Corrected", revision: 2 });
+    const listed = await gateway.fetch(userRequest("/api/v1/mobile/receipts"), testEnv);
+    expect((await listed.json() as any).drafts).toHaveLength(1);
+    const dismissed = await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipts/${created.draft.id}/dismiss`, json({ expected_revision: 2 }),
+    ), testEnv);
+    expect((await dismissed.json() as any).draft.status).toBe("dismissed");
+  });
+
+  it("rejects receipt image fields, cross-origin writes, oversized bodies, and browser access to immutable revisions", async () => {
+    const gateway = makeGateway();
+    await provision(gateway);
+    const testEnv = gatewayEnv(); testEnv.FEATURE_RECEIPT_DRAFTS = "true";
+    for (const request of [
+      userRequest("/api/v1/mobile/receipts", json({ idempotency_key: "receipt-invalid-1",
+        draft: { ...receiptDraft(), image: "bytes" } })),
+      userRequest("/api/v1/mobile/receipts", json({ idempotency_key: "receipt-invalid-2",
+        draft: receiptDraft() }, { Origin: "https://evil.test" })),
+      userRequest("/api/v1/mobile/receipts", json({ padding: "x".repeat(263_000) })),
+    ]) expect((await gateway.fetch(request, testEnv)).status).toBeGreaterThanOrEqual(400);
+
+    const created = await gateway.fetch(userRequest("/api/v1/mobile/receipts", json({
+      idempotency_key: "receipt-valid-001", draft: receiptDraft(),
+    })), testEnv);
+    const id = (await created.json() as any).draft.id;
+    await expectError(await gateway.fetch(userRequest(
+      `/api/v1/mobile/mac/receipts/${id}?revision=1`,
+    ), testEnv), 403, "PROCESSOR_NOT_AUTHORIZED");
+    const mac = await gateway.fetch(macRequest(`/api/v1/mobile/mac/receipts/${id}?revision=1`), testEnv);
+    expect(mac.status).toBe(200);
+    expect((await mac.json() as any).revision).toMatchObject({ id, revision: 1 });
+    expect(mac.headers.has("Access-Control-Allow-Origin")).toBe(false);
+  });
+
+  it("requires an explicit exact candidate and queues an immutable receipt split command", async () => {
+    const gateway = makeGateway();
+    await provision(gateway);
+    const document = receiptSnapshot();
+    const testEnv = gatewayEnv(document);
+    testEnv.FEATURE_RECEIPT_DRAFTS = "true";
+    testEnv.FEATURE_RECEIPT_MATCHING = "true";
+    const created = await gateway.fetch(userRequest("/api/v1/mobile/receipts", json({
+      idempotency_key: "receipt-match-create", draft: receiptDraft(),
+    })), testEnv);
+    const draft = (await created.json() as any).draft;
+    const matched = await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipts/${draft.id}/match`,
+      json({ expected_revision: 1, target_id: "transaction-fixture",
+        observed_split_revision: 0, idempotency_key: "receipt-match-submit", replace_command_id: null }),
+    ), testEnv);
+    expect(matched.status).toBe(201);
+    expect(await matched.json()).toMatchObject({
+      command: { command_type: "transaction.apply_receipt_split", target_id: "transaction-fixture",
+        receipt_draft_id: draft.id, receipt_revision: 1, allocation_digest: draft.digest },
+      draft: { status: "match_pending" },
+    });
+    const claimed = await gateway.fetch(macRequest(
+      "/api/v1/mobile/mac/commands/claim", json({ limit: 1 }),
+    ), testEnv);
+    const receiptCommand = (await claimed.json() as any).commands[0];
+    expect(receiptCommand).toMatchObject({
+      command_type: "transaction.apply_receipt_split", receipt_draft_id: draft.id,
+    });
+    const completed = await gateway.fetch(macRequest(
+      `/api/v1/mobile/mac/commands/${receiptCommand.id}/complete`,
+      json({ claim_token: receiptCommand.claim_token, result: { status: "applied",
+        receipt_id: "local-receipt-1", split_revision: 1, split_count: 1 } }),
+    ), testEnv);
+    expect(completed.status).toBe(200);
+    const refreshed = await gateway.fetch(userRequest(`/api/v1/mobile/receipts/${draft.id}`), testEnv);
+    expect((await refreshed.json() as any).draft.status).toBe("matched");
+  });
+
+  it("fails receipt matching closed on amount, date, pending, and split revision", async () => {
+    for (const [change, code] of [
+      [{ amount_minor: -999 }, "RECEIPT_TOTAL_MISMATCH"],
+      [{ local_date: "2026-10-01" }, "RECEIPT_DATE_MISMATCH"],
+      [{ pending: true }, "TARGET_PENDING"],
+      [{ split_revision: 2 }, "STALE_SPLIT_REVISION"],
+    ] as const) {
+      await env.COMMANDS.batch([
+        env.COMMANDS.prepare("DELETE FROM receipt_events"), env.COMMANDS.prepare("DELETE FROM receipt_lines"),
+        env.COMMANDS.prepare("DELETE FROM receipt_revisions"), env.COMMANDS.prepare("DELETE FROM receipt_drafts"),
+        env.COMMANDS.prepare("DELETE FROM command_events"), env.COMMANDS.prepare("DELETE FROM mobile_commands"),
+        env.COMMANDS.prepare("DELETE FROM household_members"), env.COMMANDS.prepare("DELETE FROM households"),
+      ]);
+      const gateway = makeGateway(); await provision(gateway);
+      const document = receiptSnapshot(change);
+      const testEnv = gatewayEnv(document); testEnv.FEATURE_RECEIPT_DRAFTS = "true";
+      testEnv.FEATURE_RECEIPT_MATCHING = "true";
+      const response = await gateway.fetch(userRequest("/api/v1/mobile/receipts", json({
+        idempotency_key: `create-${code}`, draft: receiptDraft(),
+      })), testEnv);
+      const draft = (await response.json() as any).draft;
+      await expectError(await gateway.fetch(userRequest(`/api/v1/mobile/receipts/${draft.id}/match`, json({
+        expected_revision: 1, target_id: "transaction-fixture", observed_split_revision: 0,
+        idempotency_key: `submit-${code}`, replace_command_id: null,
+      })), testEnv), 409, code);
+    }
+  });
 });
+
+function receiptSnapshot(transactionChange: Record<string, unknown> = {}) {
+  const document = structuredClone(snapshotV2) as any;
+  document.schema_version = 3;
+  document.capabilities = {
+    commands: { "transaction.set_classification": [1, 2], "transaction.apply_receipt_split": [1] },
+    receipts: { matching: [1] },
+  };
+  document.transactions = document.transactions.map((item: any) => ({
+    ...item, amount_minor: -1_000, local_date: "2026-11-01", split_revision: 0,
+    ...transactionChange,
+  }));
+  return document;
+}
 
 function makeGateway(options: { recentLimit?: number } = {}) {
   const verifyAccessToken: AccessTokenVerifier = async (token, expected) => {
@@ -448,6 +606,7 @@ function gatewayEnv(document: unknown = snapshotV2): MobileGatewayEnv {
     ACCESS_MAC_AUD: MAC_AUD,
     HOUSEHOLD_ID: HOUSEHOLD,
     HOUSEHOLD_NAME: "Test household",
+    FEATURE_RECEIPT_DRAFTS: "false",
   };
 }
 

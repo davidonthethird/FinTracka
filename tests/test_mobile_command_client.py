@@ -9,10 +9,12 @@ from urllib.error import HTTPError
 import pytest
 
 from fintracka.mobile_command_client import (
+    ClaimedReceiptSplitCommand,
     MobileCommandClient,
     MobileCommandClientError,
     _native_urlopen,
 )
+from fintracka.receipts import receipt_digest
 from fintracka.mobile_command_config import MobileCommandSettings
 
 
@@ -127,6 +129,35 @@ def test_claim_parses_v2_scope_and_normalizes_v1_to_one_time() -> None:
     assert [(item.command_version, item.scope) for item in commands] == [
         (1, "one_time"), (2, "past_and_future"),
     ]
+
+
+def test_claim_parses_receipt_union_and_fetches_digest_bound_revision() -> None:
+    draft = receipt_document()
+    digest = receipt_digest(draft)
+    requests = []
+
+    def opener(request, _timeout):
+        requests.append(request)
+        if request.get_method() == "GET":
+            return Response({"revision": {"id": "draft-1", "revision": 2,
+                "digest": digest, "draft": draft, "created_at": "2026-11-01T12:00:00Z"}})
+        return Response({"commands": [{
+            "id": "command-r", "actor_member_id": "member-david",
+            "command_type": "transaction.apply_receipt_split", "command_version": 1,
+            "target_id": "transaction-1", "observed_revision": 0,
+            "receipt_draft_id": "draft-1", "receipt_revision": 2,
+            "allocation_digest": digest, "payload_digest": "a" * 64,
+            "claim_token": "claim-token", "expires_at": "2026-11-30T12:00:00Z",
+        }]})
+
+    client = MobileCommandClient("https://viewer.example.test", "id", "secret",
+        opener=opener, sleep=lambda _: None)
+    command = client.claim(1)[0]
+    assert isinstance(command, ClaimedReceiptSplitCommand)
+    revision = client.get_receipt_revision("draft-1", 2, digest)
+    assert revision.draft == draft
+    assert requests[-1].get_method() == "GET"
+    assert requests[-1].full_url.endswith("/api/v1/mobile/mac/receipts/draft-1?revision=2")
 
 
 @pytest.mark.parametrize("version,scope", [(1, "future"), (2, "everywhere")])
@@ -279,4 +310,20 @@ def terminal_command() -> dict[str, object]:
         "updated_at": "2026-10-30T12:01:00Z",
         "expires_at": "2026-11-30T12:00:00Z",
         "finished_at": "2026-10-30T12:01:00Z",
+    }
+
+
+def receipt_document() -> dict[str, object]:
+    return {
+        "contract": "receipt_draft/v1", "status": "waiting_for_bank",
+        "merchant": "Synthetic Market", "purchase_date": "2026-11-01", "currency": "USD",
+        "masked_payment_hint": None, "page_count": 1, "subtotal_minor": 1000,
+        "discount_minor": 0, "tax_minor": 0, "tip_minor": 0, "fees_minor": 0,
+        "total_minor": 1000, "lines": [{
+            "id": "line-1", "order": 0, "source_page": 0, "description": "Item",
+            "quantity": "1", "unit_amount_minor": 1000, "item_total_minor": 1000,
+            "line_discount_minor": 0, "tax_minor": 0, "tip_minor": 0, "fees_minor": 0,
+            "taxable": True, "owner": "Shared", "category_id": None, "subcategory_id": None,
+            "confidence_basis_points": 9500, "review_flags": [],
+        }],
     }

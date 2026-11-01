@@ -39,6 +39,26 @@ export const CreateClassificationCommandSchema = z.discriminatedUnion("command_v
 
 export type CreateClassificationCommand = z.infer<typeof CreateClassificationCommandSchema>;
 
+const receiptSplitCommandFields = {
+  command_type: z.literal("transaction.apply_receipt_split"),
+  command_version: z.literal(1),
+  target_id: z.string().min(1).max(128),
+  observed_revision: z.int().nonnegative(),
+  receipt_draft_id: z.string().min(1).max(128),
+  receipt_revision: z.int().min(1),
+  allocation_digest: z.string().regex(/^[a-f0-9]{64}$/),
+  idempotency_key: z.string().min(8).max(128),
+  replace_command_id: z.string().min(1).max(128).nullable(),
+};
+
+export const CreateReceiptSplitCommandSchema = z.object(receiptSplitCommandFields).strict();
+export type CreateReceiptSplitCommand = z.infer<typeof CreateReceiptSplitCommandSchema>;
+export const CreateMobileCommandSchema = z.union([
+  CreateClassificationCommandSchema,
+  CreateReceiptSplitCommandSchema,
+]);
+export type CreateMobileCommand = z.infer<typeof CreateMobileCommandSchema>;
+
 const appliedResultFields = {
   status: z.literal("applied"),
   category_id: z.string().min(1).max(128).nullable(),
@@ -46,7 +66,7 @@ const appliedResultFields = {
   classification_revision: z.int().nonnegative(),
 };
 
-export const CommandResultSchema = z.union([
+export const ClassificationCommandResultSchema = z.union([
   z.object({
     ...appliedResultFields,
     requested_scope: z.enum(categorizationScopes),
@@ -68,6 +88,22 @@ export const CommandResultSchema = z.union([
   }).strict(),
 ]);
 
+export const ReceiptCommandResultSchema = z.union([
+  z.object({
+    status: z.literal("applied"),
+    receipt_id: z.string().min(1).max(128),
+    split_revision: z.int().nonnegative(),
+    split_count: z.int().positive(),
+  }).strict(),
+  z.object({ status: z.literal("conflict"), split_revision: z.int().nonnegative() }).strict(),
+  z.object({ status: z.literal("rejected"), error_code: z.string().min(1).max(80) }).strict(),
+]);
+
+export const CommandResultSchema = z.union([
+  ClassificationCommandResultSchema,
+  ReceiptCommandResultSchema,
+]);
+
 export type CommandResult = z.infer<typeof CommandResultSchema>;
 
 export interface HouseholdMember {
@@ -77,16 +113,11 @@ export interface HouseholdMember {
   role: "member";
 }
 
-export interface PublicMobileCommand {
+interface PublicMobileCommandBase {
   id: string;
   actor_member_id: string;
-  command_type: "transaction.set_classification";
-  command_version: 1 | 2;
   target_id: string;
   observed_revision: number;
-  category_id: string | null;
-  subcategory_id: string | null;
-  scope: CategorizationScope;
   status: MobileCommandStatus;
   supersedes_command_id: string | null;
   result: CommandResult | null;
@@ -97,20 +128,43 @@ export interface PublicMobileCommand {
   finished_at: string | null;
 }
 
-export interface ClaimedCommand {
-  id: string;
-  actor_member_id: string;
+export type PublicMobileCommand = PublicMobileCommandBase & ({
   command_type: "transaction.set_classification";
   command_version: 1 | 2;
-  target_id: string;
-  observed_revision: number;
   category_id: string | null;
   subcategory_id: string | null;
   scope: CategorizationScope;
+} | {
+  command_type: "transaction.apply_receipt_split";
+  command_version: 1;
+  receipt_draft_id: string;
+  receipt_revision: number;
+  allocation_digest: string;
+});
+
+interface ClaimedCommandBase {
+  id: string;
+  actor_member_id: string;
+  target_id: string;
+  observed_revision: number;
   payload_digest: string;
   claim_token: string;
   expires_at: string;
 }
+
+export type ClaimedCommand = ClaimedCommandBase & ({
+  command_type: "transaction.set_classification";
+  command_version: 1 | 2;
+  category_id: string | null;
+  subcategory_id: string | null;
+  scope: CategorizationScope;
+} | {
+  command_type: "transaction.apply_receipt_split";
+  command_version: 1;
+  receipt_draft_id: string;
+  receipt_revision: number;
+  allocation_digest: string;
+});
 
 export class MobileCommandStoreError extends Error {
   constructor(public readonly code: string, message = code) {
@@ -128,6 +182,18 @@ export function canonicalClassificationPayload(
   return version === 1
     ? JSON.stringify({ category_id: categoryId, subcategory_id: subcategoryId })
     : JSON.stringify({ category_id: categoryId, subcategory_id: subcategoryId, scope });
+}
+
+export function canonicalReceiptSplitPayload(
+  receiptDraftId: string,
+  receiptRevision: number,
+  allocationDigest: string,
+): string {
+  return JSON.stringify({
+    receipt_draft_id: receiptDraftId,
+    receipt_revision: receiptRevision,
+    allocation_digest: allocationDigest,
+  });
 }
 
 export async function sha256Hex(value: string): Promise<string> {

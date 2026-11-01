@@ -1512,7 +1512,12 @@ def test_manual_cash_api_defaults_edits_deletes_and_protects_provider_rows(tmp_p
 
         split_cash = client.post(
             "/api/v1/transactions/manual-cash",
-            json={"title": "Split cash", "amount_minor": 10_000, "category_id": shopping},
+            json={
+                "title": "Split cash",
+                "amount_minor": 10_000,
+                "category_id": shopping,
+                "local_date": "2026-10-12",
+            },
             headers=headers,
         ).json()
         assert client.post(
