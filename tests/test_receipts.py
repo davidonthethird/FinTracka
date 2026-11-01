@@ -12,6 +12,7 @@ from fintracka.receipts import ReceiptConflict, ReceiptError, apply_receipt_spli
 from fintracka.reports import ledger_entries
 from fintracka.synthetic import create_synthetic_ledger, synthetic_batches
 from fintracka.sync import apply_batch
+from fintracka.api import _transaction_response
 
 
 @pytest.fixture
@@ -66,6 +67,12 @@ def test_applies_exact_signed_detailed_splits_once_and_preserves_line_ownership(
     )
                if entry.transaction_id == transaction["id"]]
     assert {entry.spending_owner for entry in entries} == {"David", "Shared"}
+    detail = _transaction_response(ledger, transaction["id"])
+    assert detail.receipt is not None
+    assert detail.receipt.total_minor == abs(transaction["amount_minor"])
+    assert [(line.description, line.spending_owner) for line in detail.receipt.lines] == [
+        ("Synthetic 0", "David"), ("Synthetic 1", "Shared")
+    ]
 
 
 def test_rejects_stale_revision_amount_mismatch_and_manual_split_without_mutation(
