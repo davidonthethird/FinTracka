@@ -9,7 +9,7 @@ description = "Local-first personal finance ledger"
 readme = "PROJECT_SPEC.md"
 requires-python = ">=3.14,<3.15"
 dependencies = [
-    "fastapi>=0.143,<0.144",
+    "fastapi>=0.143,<0.163",
     "openpyxl==3.1.5",
     "truststore==0.10.5",
 ]
