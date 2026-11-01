@@ -19,7 +19,9 @@ from fintracka.financial_mutations import reconcile_financial_mutations
 from fintracka.keychain import KeychainSecrets
 from fintracka.locks import ProcessLock, ProcessLockError
 from fintracka.mobile_command_client import (
+    ClaimedCommand,
     ClaimedMobileCommand,
+    ClaimedReceiptSplitCommand,
     MobileCommandClient,
     MobileCommandClientError,
 )
@@ -29,6 +31,7 @@ from fintracka.mobile_command_config import (
 )
 from fintracka.remote_client import RemotePublishError
 from fintracka.remote_service import publish_remote_snapshot
+from fintracka.receipts import ReceiptConflict, ReceiptError, apply_receipt_split
 
 
 @dataclass(frozen=True)
@@ -94,7 +97,7 @@ def _process_locked(
         error_code: str | None = None
         for command in commands:
             try:
-                result, newly_applied = _process_one(connection, command, now())
+                result, newly_applied = _process_one(connection, command, now(), client)
                 applied += int(newly_applied)
                 conflicts += int(result["status"] == "conflict")
                 rejected += int(result["status"] == "rejected")
@@ -176,8 +179,9 @@ def publish_unpublished_mobile_results(
 
 def _process_one(
     connection: sqlite3.Connection,
-    command: ClaimedMobileCommand,
+    command: ClaimedCommand,
     processed_at: datetime,
+    client: MobileCommandClient,
 ) -> tuple[dict[str, object], bool]:
     existing = connection.execute(
         "SELECT * FROM mobile_command_receipts WHERE command_id = ?",
@@ -196,6 +200,24 @@ def _process_one(
 
     connection.execute("BEGIN IMMEDIATE")
     try:
+        if command.command_type == "transaction.apply_receipt_split":
+            receipt = client.get_receipt_revision(
+                command.receipt_draft_id, command.receipt_revision, command.allocation_digest,
+            )
+            change = apply_receipt_split(
+                connection, command.target_id, command.observed_revision,
+                command.receipt_draft_id, command.receipt_revision,
+                command.allocation_digest, receipt.draft,
+                command_id=command.id, actor_member_id=command.actor_member_id,
+            )
+            reconcile_financial_mutations(connection, (command.target_id,))
+            result = {
+                "status": "applied", "receipt_id": change.receipt_id,
+                "split_revision": change.split_revision, "split_count": change.split_count,
+            }
+            _insert_receipt(connection, command, result, processed_at)
+            connection.commit()
+            return result, True
         if command.command_version == 1:
             change = set_transaction_classification_once(
                 connection,
@@ -253,6 +275,19 @@ def _process_one(
         }
         _store_terminal_receipt(connection, command, result, processed_at)
         return result, False
+    except ReceiptConflict:
+        connection.rollback()
+        row = connection.execute(
+            "SELECT split_revision FROM transactions WHERE id = ?", (command.target_id,)
+        ).fetchone()
+        result = {"status": "conflict", "split_revision": int(row[0]) if row else 0}
+        _store_terminal_receipt(connection, command, result, processed_at)
+        return result, False
+    except ReceiptError as error:
+        connection.rollback()
+        result = {"status": "rejected", "error_code": _receipt_error_code(error)}
+        _store_terminal_receipt(connection, command, result, processed_at)
+        return result, False
     except Exception:
         connection.rollback()
         raise
@@ -260,7 +295,7 @@ def _process_one(
 
 def _store_terminal_receipt(
     connection: sqlite3.Connection,
-    command: ClaimedMobileCommand,
+    command: ClaimedCommand,
     result: Mapping[str, object],
     processed_at: datetime,
 ) -> None:
@@ -275,7 +310,7 @@ def _store_terminal_receipt(
 
 def _insert_receipt(
     connection: sqlite3.Connection,
-    command: ClaimedMobileCommand,
+    command: ClaimedCommand,
     result: Mapping[str, object],
     processed_at: datetime,
 ) -> None:
@@ -283,7 +318,7 @@ def _insert_receipt(
     result_json = json.dumps(result, sort_keys=True, separators=(",", ":"))
     error_code = result.get("error_code") if status == "rejected" else None
     applied_revision = (
-        result.get("classification_revision")
+        result.get("classification_revision", result.get("split_revision"))
         if status == "applied"
         else None
     )
@@ -309,7 +344,7 @@ def _insert_receipt(
     )
 
 
-def _receipt_matches(row: sqlite3.Row, command: ClaimedMobileCommand) -> bool:
+def _receipt_matches(row: sqlite3.Row, command: ClaimedCommand) -> bool:
     return (
         row["command_type"] == command.command_type
         and row["command_version"] == command.command_version
@@ -318,7 +353,17 @@ def _receipt_matches(row: sqlite3.Row, command: ClaimedMobileCommand) -> bool:
     )
 
 
-def _validate_claim(command: ClaimedMobileCommand) -> str | None:
+def _validate_claim(command: ClaimedCommand) -> str | None:
+    if command.command_type == "transaction.apply_receipt_split":
+        if command.command_version != 1:
+            return "UNSUPPORTED_COMMAND"
+        value = {
+            "receipt_draft_id": command.receipt_draft_id,
+            "receipt_revision": command.receipt_revision,
+            "allocation_digest": command.allocation_digest,
+        }
+        payload = json.dumps(value, separators=(",", ":")).encode()
+        return None if hashlib.sha256(payload).hexdigest() == command.payload_digest else "INVALID_PAYLOAD_DIGEST"
     if (
         command.command_type != "transaction.set_classification"
         or command.command_version not in {1, 2}
@@ -341,6 +386,17 @@ def _classification_error_code(error: ClassificationError) -> str:
     if "not found" in message or "not active" in message:
         return "TARGET_NOT_ACTIVE"
     return "INVALID_CLASSIFICATION"
+
+
+def _receipt_error_code(error: ReceiptError) -> str:
+    message = str(error)
+    if "not found" in message or "not eligible" in message:
+        return "TARGET_NOT_ACTIVE"
+    if "currency" in message or "amount" in message or "sum" in message:
+        return "RECEIPT_TRANSACTION_MISMATCH"
+    if "taxonomy" in message or "category" in message or "subcategory" in message:
+        return "INVALID_CLASSIFICATION"
+    return "INVALID_RECEIPT"
 
 
 def _record_check(

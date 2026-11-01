@@ -15,6 +15,7 @@ import truststore
 
 from fintracka.keychain import KeychainSecrets, SecretStoreUnavailable
 from fintracka.mobile_command_config import MobileCommandSettings
+from fintracka.receipts import ReceiptError, receipt_digest
 
 
 MAX_REQUEST_BYTES = 4_096
@@ -52,6 +53,34 @@ class ClaimedMobileCommand:
     payload_digest: str
     claim_token: str
     expires_at: str
+
+
+@dataclass(frozen=True)
+class ClaimedReceiptSplitCommand:
+    id: str
+    actor_member_id: str
+    command_type: Literal["transaction.apply_receipt_split"]
+    command_version: Literal[1]
+    target_id: str
+    observed_revision: int
+    receipt_draft_id: str
+    receipt_revision: int
+    allocation_digest: str
+    payload_digest: str
+    claim_token: str
+    expires_at: str
+
+
+ClaimedCommand = ClaimedMobileCommand | ClaimedReceiptSplitCommand
+
+
+@dataclass(frozen=True)
+class ImmutableReceiptRevision:
+    id: str
+    revision: int
+    digest: str
+    draft: dict[str, object]
+    created_at: str
 
 
 @dataclass(frozen=True)
@@ -105,7 +134,7 @@ class MobileCommandClient:
             raise MobileCommandClientError("MOBILE_CREDENTIALS_UNAVAILABLE")
         return cls(settings.gateway_url, client_id, client_secret)  # type: ignore[arg-type]
 
-    def claim(self, limit: int = 10) -> tuple[ClaimedMobileCommand, ...]:
+    def claim(self, limit: int = 10) -> tuple[ClaimedCommand, ...]:
         if not 1 <= limit <= 10:
             raise ValueError("claim limit must be between 1 and 10")
         value = self._request("/api/v1/mobile/mac/commands/claim", {"limit": limit})
@@ -114,6 +143,36 @@ class MobileCommandClient:
         if not isinstance(commands, list) or len(commands) > 10:
             raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
         return tuple(_claimed_command(item) for item in commands)
+
+    def get_receipt_revision(
+        self, draft_id: str, revision: int, expected_digest: str,
+    ) -> ImmutableReceiptRevision:
+        _bounded_string(draft_id, 128)
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+            raise ValueError("receipt revision must be positive")
+        if HEX_DIGEST.fullmatch(expected_digest) is None:
+            raise ValueError("invalid expected receipt digest")
+        value = self._get(
+            f"/api/v1/mobile/mac/receipts/{quote(draft_id, safe='')}?revision={revision}",
+            maximum=300 * 1024,
+        )
+        root = _exact_dict(value, {"revision"})
+        item = _exact_dict(root["revision"], {"id", "revision", "digest", "draft", "created_at"})
+        digest = _bounded_string(item["digest"], 64)
+        if item["id"] != draft_id or item["revision"] != revision or digest != expected_digest:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        if not isinstance(item["draft"], dict):
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        try:
+            actual = receipt_digest(item["draft"])
+        except ReceiptError as error:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE") from error
+        if actual != digest:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        return ImmutableReceiptRevision(
+            id=draft_id, revision=revision, digest=digest, draft=item["draft"],
+            created_at=_bounded_string(item["created_at"], 40),
+        )
 
     def complete(
         self,
@@ -193,8 +252,61 @@ class MobileCommandClient:
                 raise MobileCommandClientError("MOBILE_NETWORK_ERROR") from error
         raise MobileCommandClientError("MOBILE_NETWORK_ERROR")
 
+    def _get(self, path: str, *, maximum: int) -> object:
+        request = urllib.request.Request(
+            self.gateway_url + path,
+            method="GET",
+            headers={
+                "CF-Access-Client-Id": self.client_id,
+                "CF-Access-Client-Secret": self.client_secret,
+                "Accept": "application/json",
+                "User-Agent": "FinTracka/0.1",
+            },
+        )
+        try:
+            with self.opener(request, self.timeout) as response:  # type: ignore[attr-defined]
+                body = response.read(maximum + 1)  # type: ignore[attr-defined]
+                if len(body) > maximum:
+                    raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+                return json.loads(body)
+        except MobileCommandClientError:
+            raise
+        except HTTPError as error:
+            raise MobileCommandClientError(_http_error_code(error.code)) from error
+        except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as error:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE") from error
+        except (socket.timeout, TimeoutError) as error:
+            raise MobileCommandClientError("MOBILE_TIMEOUT") from error
+        except URLError as error:
+            raise MobileCommandClientError("MOBILE_NETWORK_ERROR") from error
 
-def _claimed_command(value: object) -> ClaimedMobileCommand:
+
+def _claimed_command(value: object) -> ClaimedCommand:
+    if isinstance(value, dict) and value.get("command_type") == "transaction.apply_receipt_split":
+        expected = {
+            "id", "actor_member_id", "command_type", "command_version", "target_id",
+            "observed_revision", "receipt_draft_id", "receipt_revision", "allocation_digest",
+            "payload_digest", "claim_token", "expires_at",
+        }
+        item = _exact_dict(value, expected)
+        if item["command_version"] != 1:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        observed = _nonnegative_int(item["observed_revision"])
+        receipt_revision = _nonnegative_int(item["receipt_revision"])
+        if receipt_revision < 1:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        allocation = _digest(item["allocation_digest"])
+        return ClaimedReceiptSplitCommand(
+            id=_bounded_string(item["id"], 128),
+            actor_member_id=_bounded_string(item["actor_member_id"], 128),
+            command_type="transaction.apply_receipt_split", command_version=1,
+            target_id=_bounded_string(item["target_id"], 128), observed_revision=observed,
+            receipt_draft_id=_bounded_string(item["receipt_draft_id"], 128),
+            receipt_revision=receipt_revision, allocation_digest=allocation,
+            payload_digest=_digest(item["payload_digest"]),
+            claim_token=_bounded_string(item["claim_token"], 128),
+            expires_at=_bounded_string(item["expires_at"], 40),
+        )
     expected = {
         "id", "actor_member_id", "command_type", "command_version", "target_id",
         "observed_revision", "category_id", "subcategory_id", "payload_digest",
@@ -238,6 +350,19 @@ def _claimed_command(value: object) -> ClaimedMobileCommand:
 
 
 def _public_command(value: object) -> dict[str, object]:
+    if isinstance(value, dict) and value.get("command_type") == "transaction.apply_receipt_split":
+        item = _exact_dict(value, {
+            "id", "actor_member_id", "command_type", "command_version", "target_id",
+            "observed_revision", "receipt_draft_id", "receipt_revision", "allocation_digest",
+            "status", "supersedes_command_id", "result", "error_code", "created_at",
+            "updated_at", "expires_at", "finished_at",
+        })
+        if item["command_version"] != 1:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        _bounded_string(item["id"], 128)
+        if item["status"] not in {"pending", "processing", "applied", "conflict", "rejected", "cancelled", "expired", "superseded"}:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        return item
     item = _exact_dict(value, {
         "id", "actor_member_id", "command_type", "command_version", "target_id",
         "observed_revision", "category_id", "subcategory_id", "status",
@@ -268,6 +393,19 @@ def _bounded_string(value: object, maximum: int) -> str:
 
 def _nullable_id(value: object) -> str | None:
     return None if value is None else _bounded_string(value, 128)
+
+
+def _nonnegative_int(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+    return value
+
+
+def _digest(value: object) -> str:
+    digest = _bounded_string(value, 64)
+    if HEX_DIGEST.fullmatch(digest) is None:
+        raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+    return digest
 
 
 def _http_error_code(status: int) -> str:
