@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1400" viewBox="0 0 900 1400">
+  <rect width="900" height="1400" fill="white"/>
+  <g fill="black" font-family="Arial, sans-serif" font-size="44">
+    <text x="120" y="120" font-size="62" font-weight="700">SYNTHETIC MARKET</text>
+    <text x="120" y="210">11/01/2026</text>
+    <text x="120" y="340">APPLES</text><text x="650" y="340">4.50</text>
+    <text x="120" y="420">BREAD</text><text x="650" y="420">3.25</text>
+    <text x="120" y="500">SOAP</text><text x="650" y="500">5.00</text>
+    <text x="120" y="650">SUBTOTAL</text><text x="650" y="650">12.75</text>
+    <text x="120" y="730">TAX</text><text x="650" y="730">0.86</text>
+    <text x="120" y="830" font-weight="700">TOTAL</text><text x="650" y="830" font-weight="700">13.61</text>
+  </g>
+</svg>
