@@ -1,12 +1,13 @@
 import {
   canonicalClassificationPayload,
+  canonicalReceiptSplitPayload,
   CommandResultSchema,
-  CreateClassificationCommandSchema,
+  CreateMobileCommandSchema,
   MobileCommandStoreError,
   sha256Hex,
   type ClaimedCommand,
   type CommandResult,
-  type CreateClassificationCommand,
+  type CreateMobileCommand,
   type CategorizationScope,
   type HouseholdMember,
   type PublicMobileCommand,
@@ -25,7 +26,7 @@ interface CommandRow {
   id: string;
   household_id: string;
   actor_member_id: string;
-  command_type: "transaction.set_classification";
+  command_type: "transaction.set_classification" | "transaction.apply_receipt_split";
   command_version: 1 | 2;
   target_id: string;
   observed_revision: number;
@@ -47,6 +48,12 @@ interface ClassificationPayload {
   category_id: string | null;
   subcategory_id: string | null;
   scope?: CategorizationScope;
+}
+
+interface ReceiptPayload {
+  receipt_draft_id: string;
+  receipt_revision: number;
+  allocation_digest: string;
 }
 
 export class MobileCommandStore {
@@ -103,18 +110,13 @@ export class MobileCommandStore {
   async createOrReplace(
     householdId: string,
     actorMemberId: string,
-    untrustedInput: CreateClassificationCommand,
+    untrustedInput: CreateMobileCommand,
   ): Promise<{ command: PublicMobileCommand; replayed: boolean }> {
-    const parsed = CreateClassificationCommandSchema.safeParse(untrustedInput);
+    const parsed = CreateMobileCommandSchema.safeParse(untrustedInput);
     if (!parsed.success) throw new MobileCommandStoreError("INVALID_COMMAND");
     const input = parsed.data;
     await this.ensureActiveMember(householdId, actorMemberId);
-    const payloadJson = canonicalClassificationPayload(
-      input.command_version,
-      input.category_id,
-      input.subcategory_id,
-      input.command_version === 2 ? input.scope : "one_time",
-    );
+    const payloadJson = canonicalPayload(input);
     const payloadDigest = await sha256Hex(payloadJson);
 
     const replay = await this.findIdempotent(actorMemberId, input.idempotency_key);
@@ -195,20 +197,13 @@ export class MobileCommandStore {
   async replayExisting(
     householdId: string,
     actorMemberId: string,
-    untrustedInput: CreateClassificationCommand,
+    untrustedInput: CreateMobileCommand,
   ): Promise<{ command: PublicMobileCommand; replayed: true } | null> {
-    const parsed = CreateClassificationCommandSchema.safeParse(untrustedInput);
+    const parsed = CreateMobileCommandSchema.safeParse(untrustedInput);
     if (!parsed.success) throw new MobileCommandStoreError("INVALID_COMMAND");
     await this.ensureActiveMember(householdId, actorMemberId);
     const input = parsed.data;
-    const payloadDigest = await sha256Hex(
-      canonicalClassificationPayload(
-        input.command_version,
-        input.category_id,
-        input.subcategory_id,
-        input.command_version === 2 ? input.scope : "one_time",
-      ),
-    );
+    const payloadDigest = await sha256Hex(canonicalPayload(input));
     const existing = await this.findIdempotent(actorMemberId, input.idempotency_key);
     if (!existing) return null;
     if (!sameCommand(existing, input, payloadDigest)) {
@@ -325,10 +320,7 @@ export class MobileCommandStore {
     if (resultJson.length > 512) throw new MobileCommandStoreError("INVALID_RESULT");
     const existing = await this.commandRow(commandId);
     if (!existing) throw new MobileCommandStoreError("COMMAND_NOT_FOUND");
-    const isScopedApplied = parsed.data.status === "applied"
-      && "requested_scope" in parsed.data;
-    if (parsed.data.status === "applied"
-        && ((existing.command_version === 2) !== isScopedApplied)) {
+    if (!resultMatchesCommand(existing, parsed.data)) {
       throw new MobileCommandStoreError("INVALID_RESULT");
     }
     if (["applied", "conflict", "rejected"].includes(existing.status)) {
@@ -463,7 +455,7 @@ export class MobileCommandStore {
     id: string;
     householdId: string;
     actorMemberId: string;
-    input: CreateClassificationCommand;
+    input: CreateMobileCommand;
     payloadJson: string;
     payloadDigest: string;
     now: string;
@@ -474,12 +466,13 @@ export class MobileCommandStore {
         (id, household_id, actor_member_id, command_type, command_version,
          target_type, target_id, observed_revision, payload_json, payload_digest,
          idempotency_key, status, supersedes_command_id, created_at, updated_at, expires_at)
-      VALUES (?, ?, ?, 'transaction.set_classification', ?, 'transaction', ?, ?, ?, ?, ?,
+      VALUES (?, ?, ?, ?, ?, 'transaction', ?, ?, ?, ?, ?,
               'pending', ?, ?, ?, ?)
     `).bind(
       input.id,
       input.householdId,
       input.actorMemberId,
+      input.input.command_type,
       input.input.command_version,
       input.input.target_id,
       input.input.observed_revision,
@@ -535,7 +528,7 @@ function normalizeEmail(value: string): string | null {
 
 function sameCommand(
   row: CommandRow,
-  input: CreateClassificationCommand,
+  input: CreateMobileCommand,
   payloadDigest: string,
 ): boolean {
   return row.command_type === input.command_type
@@ -546,7 +539,7 @@ function sameCommand(
     && row.supersedes_command_id === input.replace_command_id;
 }
 
-function parsePayload(row: CommandRow): ClassificationPayload {
+function parseClassificationPayload(row: CommandRow): ClassificationPayload {
   const value = JSON.parse(row.payload_json) as ClassificationPayload;
   const scope = row.command_version === 1 ? "one_time" : value.scope;
   if (!scope || !(["one_time", "future", "past_and_future"] as const).includes(scope)) {
@@ -555,18 +548,21 @@ function parsePayload(row: CommandRow): ClassificationPayload {
   return { category_id: value.category_id, subcategory_id: value.subcategory_id, scope };
 }
 
+function parseReceiptPayload(row: CommandRow): ReceiptPayload {
+  const value = JSON.parse(row.payload_json) as ReceiptPayload;
+  if (!value.receipt_draft_id || !Number.isSafeInteger(value.receipt_revision)
+      || value.receipt_revision < 1 || !/^[a-f0-9]{64}$/.test(value.allocation_digest)) {
+    throw new MobileCommandStoreError("INVALID_COMMAND");
+  }
+  return value;
+}
+
 function toPublicCommand(row: CommandRow): PublicMobileCommand {
-  const payload = parsePayload(row);
-  return {
+  const common = {
     id: row.id,
     actor_member_id: row.actor_member_id,
-    command_type: row.command_type,
-    command_version: row.command_version,
     target_id: row.target_id,
     observed_revision: row.observed_revision,
-    category_id: payload.category_id,
-    subcategory_id: payload.subcategory_id,
-    scope: payload.scope!,
     status: row.status,
     supersedes_command_id: row.supersedes_command_id,
     result: row.result_json ? CommandResultSchema.parse(JSON.parse(row.result_json)) : null,
@@ -576,23 +572,52 @@ function toPublicCommand(row: CommandRow): PublicMobileCommand {
     expires_at: row.expires_at,
     finished_at: row.finished_at,
   };
+  if (row.command_type === "transaction.apply_receipt_split") {
+    const payload = parseReceiptPayload(row);
+    return { ...common, command_type: row.command_type, command_version: 1,
+      receipt_draft_id: payload.receipt_draft_id, receipt_revision: payload.receipt_revision,
+      allocation_digest: payload.allocation_digest };
+  }
+  const payload = parseClassificationPayload(row);
+  return { ...common, command_type: row.command_type, command_version: row.command_version,
+    category_id: payload.category_id, subcategory_id: payload.subcategory_id, scope: payload.scope! };
 }
 
 function toClaimedCommand(row: CommandRow): ClaimedCommand {
   if (!row.claim_token) throw new MobileCommandStoreError("STALE_CLAIM");
-  const payload = parsePayload(row);
-  return {
+  const common = {
     id: row.id,
     actor_member_id: row.actor_member_id,
-    command_type: row.command_type,
-    command_version: row.command_version,
     target_id: row.target_id,
     observed_revision: row.observed_revision,
-    category_id: payload.category_id,
-    subcategory_id: payload.subcategory_id,
-    scope: payload.scope!,
     payload_digest: row.payload_digest,
     claim_token: row.claim_token,
     expires_at: row.expires_at,
   };
+  if (row.command_type === "transaction.apply_receipt_split") {
+    const payload = parseReceiptPayload(row);
+    return { ...common, command_type: row.command_type, command_version: 1,
+      receipt_draft_id: payload.receipt_draft_id, receipt_revision: payload.receipt_revision,
+      allocation_digest: payload.allocation_digest };
+  }
+  const payload = parseClassificationPayload(row);
+  return { ...common, command_type: row.command_type, command_version: row.command_version,
+    category_id: payload.category_id, subcategory_id: payload.subcategory_id, scope: payload.scope! };
+}
+
+function canonicalPayload(input: CreateMobileCommand): string {
+  return input.command_type === "transaction.apply_receipt_split"
+    ? canonicalReceiptSplitPayload(input.receipt_draft_id, input.receipt_revision, input.allocation_digest)
+    : canonicalClassificationPayload(input.command_version, input.category_id, input.subcategory_id,
+      input.command_version === 2 ? input.scope : "one_time");
+}
+
+function resultMatchesCommand(row: CommandRow, result: CommandResult): boolean {
+  if (result.status === "rejected") return true;
+  if (row.command_type === "transaction.apply_receipt_split") {
+    return result.status === "conflict" ? "split_revision" in result : "receipt_id" in result;
+  }
+  if (result.status === "conflict") return "classification_revision" in result;
+  const scoped = "requested_scope" in result;
+  return "category_id" in result && ((row.command_version === 2) === scoped);
 }

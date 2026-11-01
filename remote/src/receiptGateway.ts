@@ -4,6 +4,14 @@ import { ReceiptStore, ReceiptStoreError } from "./receiptStore";
 
 const BODY_LIMIT = 256 * 1024;
 const dismissSchema = z.object({ expected_revision: z.int().min(1) }).strict();
+export const receiptMatchSchema = z.object({
+  expected_revision: z.int().min(1),
+  target_id: z.string().min(1).max(128),
+  observed_split_revision: z.int().nonnegative(),
+  idempotency_key: z.string().min(8).max(128),
+  replace_command_id: z.string().min(1).max(128).nullable(),
+}).strict();
+export type ReceiptMatchInput = z.infer<typeof receiptMatchSchema>;
 
 export class ReceiptGatewayError extends Error {
   constructor(readonly status: number, readonly code: string) { super(code); }
@@ -18,6 +26,7 @@ export async function handleReceiptBrowser(
   url: URL,
   store: ReceiptStore,
   member: { id: string; household_id: string },
+  submitMatch?: (draftId: string, input: ReceiptMatchInput) => Promise<unknown>,
 ): Promise<Response | null> {
   if (!url.pathname.startsWith("/api/v1/mobile/receipts")) return null;
   if (url.pathname === "/api/v1/mobile/receipts") {
@@ -34,6 +43,14 @@ export async function handleReceiptBrowser(
     const draft = await store.dismiss(member.household_id, member.id,
       decodeURIComponent(dismiss[1]), input.data.expected_revision);
     return json(200, { draft });
+  }
+  const match = url.pathname.match(/^\/api\/v1\/mobile\/receipts\/([^/]+)\/match$/);
+  if (match) {
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    if (!submitMatch) return jsonError(409, "RECEIPT_MATCHING_UNAVAILABLE");
+    const input = receiptMatchSchema.safeParse(await readBrowserJson(request));
+    if (!input.success) throw new ReceiptGatewayError(400, "INVALID_RECEIPT_MATCH");
+    return json(201, await submitMatch(decodeURIComponent(match[1]), input.data));
   }
   const item = url.pathname.match(/^\/api\/v1\/mobile\/receipts\/([^/]+)$/);
   if (!item) return jsonError(404, "NOT_FOUND");

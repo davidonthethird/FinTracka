@@ -21,6 +21,7 @@ export interface PublicReceiptDraft extends ReceiptDraftV1 {
 interface DraftRow {
   id: string;
   revision: number;
+  status: ReceiptDraftV1["status"];
   body_json: string;
   body_digest: string;
   created_at: string;
@@ -133,7 +134,7 @@ export class ReceiptStore {
 
   async list(householdId: string): Promise<PublicReceiptDraft[]> {
     await this.expireAndPrune();
-    const result = await this.database.prepare(`SELECT id, revision, body_json, body_digest,
+    const result = await this.database.prepare(`SELECT id, revision, status, body_json, body_digest,
       created_at, updated_at, retention_at FROM receipt_drafts WHERE household_id = ?
       ORDER BY updated_at DESC, id DESC LIMIT 100`).bind(householdId).all<DraftRow>();
     return result.results.map(toPublic);
@@ -171,6 +172,32 @@ export class ReceiptStore {
       draft: ReceiptDraftV1Schema.parse(JSON.parse(row.body_json)), created_at: row.created_at };
   }
 
+  async markMatchPending(
+    householdId: string,
+    memberId: string,
+    id: string,
+    expectedRevision: number,
+    targetId: string,
+    splitRevision: number,
+    commandId: string,
+  ): Promise<PublicReceiptDraft> {
+    await this.ensureMember(householdId, memberId);
+    const now = this.clock().toISOString();
+    const result = await this.database.prepare(`UPDATE receipt_drafts
+      SET status = 'match_pending', selected_transaction_id = ?, selected_split_revision = ?,
+          active_command_id = ?, updated_at = ?, last_activity_at = ?
+      WHERE id = ? AND household_id = ? AND revision = ?
+        AND status IN ('waiting_for_bank', 'conflict')`)
+      .bind(targetId, splitRevision, commandId, now, now, id, householdId, expectedRevision).run();
+    if ((result.meta.changes ?? 0) !== 1) throw new ReceiptStoreError("RECEIPT_MATCH_CONFLICT");
+    await this.database.prepare(`INSERT INTO receipt_events
+      (id, draft_id, actor_type, actor_id, event_type, safe_detail_json, occurred_at)
+      VALUES (?, ?, 'member', ?, 'match_submitted', ?, ?)`)
+      .bind(crypto.randomUUID(), id, memberId,
+        JSON.stringify({ transaction_id: targetId, command_id: commandId }), now).run();
+    return this.get(householdId, id);
+  }
+
   async expireAndPrune() {
     const now = this.clock().toISOString();
     const count = await this.database.prepare("SELECT COUNT(*) AS count FROM receipt_drafts WHERE retention_at <= ?")
@@ -201,7 +228,7 @@ export class ReceiptStore {
   }
 
   private async requireRow(householdId: string, id: string): Promise<DraftRow> {
-    const row = await this.database.prepare(`SELECT id, revision, body_json, body_digest,
+    const row = await this.database.prepare(`SELECT id, revision, status, body_json, body_digest,
       created_at, updated_at, retention_at FROM receipt_drafts WHERE household_id = ? AND id = ?`)
       .bind(householdId, id).first<DraftRow>();
     if (!row) throw new ReceiptStoreError("RECEIPT_NOT_FOUND");
@@ -238,6 +265,7 @@ export class ReceiptStore {
 function toPublic(row: DraftRow): PublicReceiptDraft {
   return {
     ...ReceiptDraftV1Schema.parse(JSON.parse(row.body_json)),
+    status: row.status,
     id: row.id,
     revision: row.revision,
     digest: row.body_digest,

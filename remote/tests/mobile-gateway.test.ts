@@ -490,7 +490,79 @@ describe("mobile gateway", () => {
     expect((await mac.json() as any).revision).toMatchObject({ id, revision: 1 });
     expect(mac.headers.has("Access-Control-Allow-Origin")).toBe(false);
   });
+
+  it("requires an explicit exact candidate and queues an immutable receipt split command", async () => {
+    const gateway = makeGateway();
+    await provision(gateway);
+    const document = receiptSnapshot();
+    const testEnv = gatewayEnv(document);
+    testEnv.FEATURE_RECEIPT_DRAFTS = "true";
+    testEnv.FEATURE_RECEIPT_MATCHING = "true";
+    const created = await gateway.fetch(userRequest("/api/v1/mobile/receipts", json({
+      idempotency_key: "receipt-match-create", draft: receiptDraft(),
+    })), testEnv);
+    const draft = (await created.json() as any).draft;
+    const matched = await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipts/${draft.id}/match`,
+      json({ expected_revision: 1, target_id: "transaction-fixture",
+        observed_split_revision: 0, idempotency_key: "receipt-match-submit", replace_command_id: null }),
+    ), testEnv);
+    expect(matched.status).toBe(201);
+    expect(await matched.json()).toMatchObject({
+      command: { command_type: "transaction.apply_receipt_split", target_id: "transaction-fixture",
+        receipt_draft_id: draft.id, receipt_revision: 1, allocation_digest: draft.digest },
+      draft: { status: "match_pending" },
+    });
+    const claimed = await gateway.fetch(macRequest(
+      "/api/v1/mobile/mac/commands/claim", json({ limit: 1 }),
+    ), testEnv);
+    expect((await claimed.json() as any).commands[0]).toMatchObject({
+      command_type: "transaction.apply_receipt_split", receipt_draft_id: draft.id,
+    });
+  });
+
+  it("fails receipt matching closed on amount, date, pending, and split revision", async () => {
+    for (const [change, code] of [
+      [{ amount_minor: -999 }, "RECEIPT_TOTAL_MISMATCH"],
+      [{ local_date: "2026-10-01" }, "RECEIPT_DATE_MISMATCH"],
+      [{ pending: true }, "TARGET_PENDING"],
+      [{ split_revision: 2 }, "STALE_SPLIT_REVISION"],
+    ] as const) {
+      await env.COMMANDS.batch([
+        env.COMMANDS.prepare("DELETE FROM receipt_events"), env.COMMANDS.prepare("DELETE FROM receipt_lines"),
+        env.COMMANDS.prepare("DELETE FROM receipt_revisions"), env.COMMANDS.prepare("DELETE FROM receipt_drafts"),
+        env.COMMANDS.prepare("DELETE FROM command_events"), env.COMMANDS.prepare("DELETE FROM mobile_commands"),
+        env.COMMANDS.prepare("DELETE FROM household_members"), env.COMMANDS.prepare("DELETE FROM households"),
+      ]);
+      const gateway = makeGateway(); await provision(gateway);
+      const document = receiptSnapshot(change);
+      const testEnv = gatewayEnv(document); testEnv.FEATURE_RECEIPT_DRAFTS = "true";
+      testEnv.FEATURE_RECEIPT_MATCHING = "true";
+      const response = await gateway.fetch(userRequest("/api/v1/mobile/receipts", json({
+        idempotency_key: `create-${code}`, draft: receiptDraft(),
+      })), testEnv);
+      const draft = (await response.json() as any).draft;
+      await expectError(await gateway.fetch(userRequest(`/api/v1/mobile/receipts/${draft.id}/match`, json({
+        expected_revision: 1, target_id: "transaction-fixture", observed_split_revision: 0,
+        idempotency_key: `submit-${code}`, replace_command_id: null,
+      })), testEnv), 409, code);
+    }
+  });
 });
+
+function receiptSnapshot(transactionChange: Record<string, unknown> = {}) {
+  const document = structuredClone(snapshotV2) as any;
+  document.schema_version = 3;
+  document.capabilities = {
+    commands: { "transaction.set_classification": [1, 2], "transaction.apply_receipt_split": [1] },
+    receipts: { matching: [1] },
+  };
+  document.transactions = document.transactions.map((item: any) => ({
+    ...item, amount_minor: -1_000, local_date: "2026-11-01", split_revision: 0,
+    ...transactionChange,
+  }));
+  return document;
+}
 
 function makeGateway(options: { recentLimit?: number } = {}) {
   const verifyAccessToken: AccessTokenVerifier = async (token, expected) => {

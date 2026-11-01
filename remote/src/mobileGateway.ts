@@ -18,6 +18,7 @@ import {
   handleReceiptMac,
   mapReceiptError,
   receiptDraftsEnabled,
+  type ReceiptMatchInput,
 } from "./receiptGateway";
 import { ReceiptStore } from "./receiptStore";
 
@@ -30,6 +31,7 @@ export interface MobileGatewayEnv {
   HOUSEHOLD_ID: string;
   HOUSEHOLD_NAME: string;
   FEATURE_RECEIPT_DRAFTS?: string;
+  FEATURE_RECEIPT_MATCHING?: string;
 }
 
 interface GatewayDependencies {
@@ -102,7 +104,14 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
           return errorResponse(403, "MEMBER_NOT_AUTHORIZED");
         }
         if (receiptDraftsEnabled(env.FEATURE_RECEIPT_DRAFTS)) {
-          const receiptResponse = await handleReceiptBrowser(request, url, receiptStore, member);
+          const matchSubmitter = receiptDraftsEnabled(env.FEATURE_RECEIPT_MATCHING)
+            ? (draftId: string, input: ReceiptMatchInput) => submitReceiptMatch(
+              env, store, receiptStore, member, draftId, input, now, pendingLimit, recentLimit,
+            )
+            : undefined;
+          const receiptResponse = await handleReceiptBrowser(
+            request, url, receiptStore, member, matchSubmitter,
+          );
           if (receiptResponse) return receiptResponse;
         } else if (url.pathname.startsWith("/api/v1/mobile/receipts")) {
           return errorResponse(404, "NOT_FOUND");
@@ -138,6 +147,11 @@ async function handleBrowser(
       capabilities: {
         ...(versions ? { "transaction.set_classification": versions } : {}),
         ...(receiptDraftsEnabled(env.FEATURE_RECEIPT_DRAFTS) ? { "receipts.drafts": [1] } : {}),
+        ...(receiptDraftsEnabled(env.FEATURE_RECEIPT_MATCHING)
+          && snapshot.schema_version === 3
+          && snapshot.capabilities.receipts.matching.includes(1)
+          ? { "receipts.matching": [1], "transaction.apply_receipt_split": [1] }
+          : {}),
       },
       server_time: new Date().toISOString(),
     });
@@ -179,6 +193,72 @@ async function handleBrowser(
     return jsonResponse(200, { command });
   }
   return errorResponse(404, "NOT_FOUND");
+}
+
+async function submitReceiptMatch(
+  env: MobileGatewayEnv,
+  commandStore: MobileCommandStore,
+  receiptStore: ReceiptStore,
+  member: { id: string; household_id: string },
+  draftId: string,
+  input: ReceiptMatchInput,
+  now: () => Date,
+  pendingLimit: number,
+  recentLimit: number,
+): Promise<unknown> {
+  const draft = await receiptStore.get(member.household_id, draftId);
+  if (draft.revision !== input.expected_revision) throw new GatewayError(409, "RECEIPT_REVISION_CONFLICT");
+  if (!(["waiting_for_bank", "conflict"] as const).includes(draft.status as "waiting_for_bank" | "conflict")) {
+    throw new GatewayError(409, "RECEIPT_NOT_MATCHABLE");
+  }
+  const snapshot = await readSnapshot(env.SNAPSHOTS);
+  if (snapshot.schema_version !== 3
+      || !snapshot.capabilities.receipts.matching.includes(1)
+      || !snapshot.capabilities.commands["transaction.apply_receipt_split"]?.includes(1)) {
+    throw new GatewayError(409, "RECEIPT_MATCHING_UNAVAILABLE");
+  }
+  const target = snapshot.transactions.find((item) => item.id === input.target_id);
+  if (!target) throw new GatewayError(409, "TARGET_NOT_FOUND");
+  if (target.pending) throw new GatewayError(409, "TARGET_PENDING");
+  if (target.split_revision !== input.observed_split_revision) {
+    throw new GatewayError(409, "STALE_SPLIT_REVISION");
+  }
+  if (target.currency !== draft.currency || Math.abs(target.amount_minor) !== draft.total_minor) {
+    throw new GatewayError(409, "RECEIPT_TOTAL_MISMATCH");
+  }
+  const dayDistance = Math.abs(Date.parse(`${target.local_date}T00:00:00Z`)
+    - Date.parse(`${draft.purchase_date}T00:00:00Z`)) / 86_400_000;
+  if (!Number.isFinite(dayDistance) || dayDistance > 7) {
+    throw new GatewayError(409, "RECEIPT_DATE_MISMATCH");
+  }
+  if (input.replace_command_id === null && await commandStore.countActive(member.household_id) >= pendingLimit) {
+    throw new GatewayError(429, "TOO_MANY_PENDING_COMMANDS");
+  }
+  const since = new Date(now().getTime() - 60 * 60_000).toISOString();
+  if (await commandStore.countRecentForMember(member.id, since) >= recentLimit) {
+    throw new GatewayError(429, "COMMAND_RATE_LIMITED");
+  }
+  const created = await commandStore.createOrReplace(member.household_id, member.id, {
+    command_type: "transaction.apply_receipt_split",
+    command_version: 1,
+    target_id: input.target_id,
+    observed_revision: input.observed_split_revision,
+    receipt_draft_id: draftId,
+    receipt_revision: draft.revision,
+    allocation_digest: draft.digest,
+    idempotency_key: input.idempotency_key,
+    replace_command_id: input.replace_command_id,
+  });
+  try {
+    const updated = await receiptStore.markMatchPending(member.household_id, member.id, draftId,
+      draft.revision, input.target_id, input.observed_split_revision, created.command.id);
+    return { ...created, draft: updated };
+  } catch (error) {
+    if (!created.replayed) {
+      await commandStore.cancel(member.household_id, created.command.id, member.id).catch(() => undefined);
+    }
+    throw error;
+  }
 }
 
 function validSeparateAudiences(userAudience: string, macAudience: string): boolean {
