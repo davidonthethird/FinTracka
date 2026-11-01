@@ -53,6 +53,15 @@ export interface OcrReceiptPage {
   page_index: number;
   text: string;
   confidence_basis_points: number;
+  observations?: OcrObservation[];
+}
+
+export interface OcrObservation {
+  id: string;
+  text: string;
+  confidence_basis_points: number;
+  bbox: { x: number; y: number; width: number; height: number };
+  relative_y: number;
 }
 
 export interface ReceiptOcrProgress {
