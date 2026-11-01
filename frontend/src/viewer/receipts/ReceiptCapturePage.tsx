@@ -81,5 +81,7 @@ function fromParsed(parsed: ReturnType<typeof parseReceiptPages>, pageCount: num
       tip_minor: allocated.get(line.id)?.tip_minor ?? 0,
       fees_minor: allocated.get(line.id)?.fees_minor ?? 0, taxable: true, owner: "Shared", category_id: null,
       subcategory_id: null, confidence_basis_points: line.confidence_basis_points,
-      review_flags: parsed.overlap_groups.some((group) => group.observation_ids.includes(line.observation_id)) ? ["possible_duplicate"] : [] })) };
+      review_flags: [...line.review_flags,
+        ...(parsed.overlap_groups.some((group) => group.observation_ids.includes(line.observation_id))
+          ? ["possible_duplicate"] : [])] })) };
 }
