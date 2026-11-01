@@ -75,3 +75,51 @@ export interface ReceiptOcrEngine {
   recognize(pages: PreparedReceiptPage[], signal: AbortSignal): Promise<OcrReceiptPage[]>;
   terminate(): Promise<void>;
 }
+
+export type ReceiptStatus = "editing" | "waiting_for_bank" | "match_pending" | "processing" | "matched" | "conflict" | "dismissed";
+
+export interface ReceiptLineV1 {
+  id: string;
+  order: number;
+  source_page: number | null;
+  description: string;
+  quantity: string;
+  unit_amount_minor: number | null;
+  item_total_minor: number;
+  line_discount_minor: number;
+  tax_minor: number;
+  tip_minor: number;
+  fees_minor: number;
+  taxable: boolean;
+  owner: SpendingOwner;
+  category_id: string | null;
+  subcategory_id: string | null;
+  confidence_basis_points: number;
+  review_flags: string[];
+}
+
+export interface ReceiptDraftV1 {
+  contract: "receipt_draft/v1";
+  status: ReceiptStatus;
+  merchant: string;
+  purchase_date: string | null;
+  currency: string;
+  masked_payment_hint: string | null;
+  page_count: number;
+  subtotal_minor: number;
+  discount_minor: number;
+  tax_minor: number;
+  tip_minor: number;
+  fees_minor: number;
+  total_minor: number;
+  lines: ReceiptLineV1[];
+}
+
+export interface ReceiptDraft extends ReceiptDraftV1 {
+  id: string;
+  revision: number;
+  digest: string;
+  created_at: string;
+  updated_at: string;
+  retention_at: string;
+}
