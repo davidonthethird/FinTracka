@@ -66,7 +66,7 @@ export function ViewerApp() {
       {route === "/transactions" && <TransactionsPage snapshot={snapshot} />}
       {route === "/receipts" && <ReceiptInboxPage navigate={navigate} />}
       {route === "/receipts/new" && <ReceiptCapturePage navigate={navigate} />}
-      {receiptId && <ReceiptReviewPage id={decodeURIComponent(receiptId)} taxonomy={classificationTaxonomy(snapshot)} navigate={navigate} />}
+      {receiptId && <ReceiptReviewPage id={decodeURIComponent(receiptId)} taxonomy={classificationTaxonomy(snapshot)} transactions={snapshot.transactions} navigate={navigate} />}
       {route === "/planning" && <PlanningPage snapshot={snapshot} />}
       {route === "/savings" && <SavingsPage snapshot={snapshot} />}
       {route === "/reports" && <ReportsPage snapshot={snapshot} />}

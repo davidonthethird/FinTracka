@@ -1,11 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { mobileJson } from "../api";
-import { createReceipt, dismissReceipt, getReceipt, listReceipts, replaceReceipt } from "./receiptApi";
+import { createReceipt, dismissReceipt, getReceipt, listReceipts, matchReceipt, replaceReceipt } from "./receiptApi";
 import type { ReceiptDraft, ReceiptDraftV1 } from "./types";
 
 interface ReceiptContextValue {
   available: boolean;
+  matchingAvailable: boolean;
   loading: boolean;
   drafts: ReceiptDraft[];
   error: string;
@@ -14,24 +15,28 @@ interface ReceiptContextValue {
   create: (draft: ReceiptDraftV1) => Promise<ReceiptDraft>;
   save: (current: ReceiptDraft, draft: ReceiptDraftV1) => Promise<ReceiptDraft>;
   dismiss: (current: ReceiptDraft) => Promise<void>;
+  match: (current: ReceiptDraft, targetId: string, splitRevision: number) => Promise<ReceiptDraft>;
 }
 
 const ReceiptContext = createContext<ReceiptContextValue | null>(null);
 
 export function ReceiptProvider({ children }: { children: ReactNode }) {
   const [available, setAvailable] = useState(false);
+  const [matchingAvailable, setMatchingAvailable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [drafts, setDrafts] = useState<ReceiptDraft[]>([]);
   const [error, setError] = useState("");
   const refresh = useCallback(async () => {
     try {
-      const session = await mobileJson<{ capabilities: { "receipts.drafts"?: [1] } }>("/api/v1/mobile/session");
+      const session = await mobileJson<{ capabilities: { "receipts.drafts"?: [1]; "receipts.matching"?: [1] } }>("/api/v1/mobile/session");
       const supported = session.capabilities["receipts.drafts"]?.[0] === 1;
       setAvailable(supported);
+      setMatchingAvailable(session.capabilities["receipts.matching"]?.[0] === 1);
       setDrafts(supported ? await listReceipts() : []);
       setError("");
     } catch (caught) {
       setAvailable(false);
+      setMatchingAvailable(false);
       setError(caught instanceof Error ? caught.message : "Receipt drafts are unavailable.");
     } finally { setLoading(false); }
   }, []);
@@ -63,9 +68,14 @@ export function ReceiptProvider({ children }: { children: ReactNode }) {
     const result = await dismissReceipt(current.id, current.revision);
     setDrafts((items) => items.map((item) => item.id === result.id ? result : item));
   }, []);
+  const match = useCallback(async (current: ReceiptDraft, targetId: string, splitRevision: number) => {
+    const result = await matchReceipt(current.id, current.revision, targetId, splitRevision);
+    setDrafts((items) => items.map((item) => item.id === result.id ? result : item));
+    return result;
+  }, []);
 
-  const value = useMemo(() => ({ available, loading, drafts, error, refresh, load, create, save, dismiss }),
-    [available, create, dismiss, drafts, error, load, loading, refresh, save]);
+  const value = useMemo(() => ({ available, matchingAvailable, loading, drafts, error, refresh, load, create, save, dismiss, match }),
+    [available, create, dismiss, drafts, error, load, loading, match, matchingAvailable, refresh, save]);
   return <ReceiptContext.Provider value={value}>{children}</ReceiptContext.Provider>;
 }
 

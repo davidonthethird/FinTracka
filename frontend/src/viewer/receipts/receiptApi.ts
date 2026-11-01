@@ -31,3 +31,15 @@ export async function dismissReceipt(id: string, expectedRevision: number): Prom
     { method: "POST", body: JSON.stringify({ expected_revision: expectedRevision }) },
   )).draft;
 }
+
+export async function matchReceipt(
+  id: string, expectedRevision: number, targetId: string, observedSplitRevision: number,
+  idempotencyKey: string = crypto.randomUUID(), replaceCommandId: string | null = null,
+): Promise<ReceiptDraft> {
+  return (await mobileJson<{ draft: ReceiptDraft }>(
+    `/api/v1/mobile/receipts/${encodeURIComponent(id)}/match`,
+    { method: "POST", body: JSON.stringify({ expected_revision: expectedRevision,
+      target_id: targetId, observed_split_revision: observedSplitRevision,
+      idempotency_key: idempotencyKey, replace_command_id: replaceCommandId }) },
+  )).draft;
+}

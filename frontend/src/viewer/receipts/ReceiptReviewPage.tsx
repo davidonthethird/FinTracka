@@ -2,11 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
 
 import type { ClassificationTaxonomy } from "../model";
+import type { RemoteTransaction } from "../model";
 import { useReceipts } from "./ReceiptProvider";
+import { ReceiptMatchPanel } from "./ReceiptMatchPanel";
 import type { ReceiptDraft, ReceiptDraftV1, ReceiptLineV1, SpendingOwner } from "./types";
 
-export function ReceiptReviewPage({ id, taxonomy, navigate }: {
-  id: string; taxonomy: ClassificationTaxonomy | null; navigate: (path: string) => void;
+export function ReceiptReviewPage({ id, taxonomy, transactions, navigate }: {
+  id: string; taxonomy: ClassificationTaxonomy | null; transactions: RemoteTransaction[];
+  navigate: (path: string) => void;
 }) {
   const receipts = useReceipts();
   const [current, setCurrent] = useState<ReceiptDraft>();
@@ -35,8 +38,13 @@ export function ReceiptReviewPage({ id, taxonomy, navigate }: {
   if (!current || !draft) return <div className="viewer-empty"><h2>Loading receipt…</h2></div>;
   return <div className="viewer-page"><header className="viewer-heading"><div><span>Review every item</span><h1>Receipt details</h1></div><button className="icon-button" onClick={() => navigate("/receipts")} aria-label="Back"><ArrowLeft /></button></header>
     {error && <p className="receipt-error" role="alert">{error}</p>}
-    <ReceiptReviewForm draft={{ ...current, ...draft }} taxonomy={taxonomy} saving={saving}
-      onChange={setDraft} onSave={() => void save()} />
+    {current.status === "editing" && <ReceiptReviewForm draft={{ ...current, ...draft }} taxonomy={taxonomy} saving={saving}
+      onChange={setDraft} onSave={() => void save()} />}
+    {current.status !== "editing" && <ReceiptMatchPanel draft={current} transactions={transactions}
+      available={receipts.matchingAvailable} onMatch={async (targetId, revision) => {
+        const result = await receipts.match(current, targetId, revision);
+        setCurrent(result); setDraft(toDraft(result));
+      }} />}
   </div>;
 }
 
