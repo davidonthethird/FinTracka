@@ -39,12 +39,22 @@ describe("receipt OCR assets", () => {
     expect(coreFiles).toEqual(expect.arrayContaining([
       "tesseract-core.js",
       "tesseract-core.wasm",
+      "tesseract-core.wasm.js",
       "tesseract-core-simd.js",
       "tesseract-core-simd.wasm",
+      "tesseract-core-simd.wasm.js",
+      "tesseract-core-relaxedsimd.js",
+      "tesseract-core-relaxedsimd.wasm",
+      "tesseract-core-relaxedsimd.wasm.js",
       "tesseract-core-lstm.js",
       "tesseract-core-lstm.wasm",
+      "tesseract-core-lstm.wasm.js",
       "tesseract-core-simd-lstm.js",
       "tesseract-core-simd-lstm.wasm",
+      "tesseract-core-simd-lstm.wasm.js",
+      "tesseract-core-relaxedsimd-lstm.js",
+      "tesseract-core-relaxedsimd-lstm.wasm",
+      "tesseract-core-relaxedsimd-lstm.wasm.js",
     ]));
   });
 
@@ -55,5 +65,14 @@ describe("receipt OCR assets", () => {
     ].join("\n");
     expect(sources).not.toMatch(/https?:\/\//);
     expect(sources.toLowerCase()).not.toContain("cdn");
+  });
+
+  it("uses raster benchmark fixtures that the OCR engine can decode", () => {
+    for (const name of ["one-page.png", "overlap-page.png"]) {
+      expect(readFileSync(resolve("public", "receipt-fixtures", name)).subarray(0, 8))
+        .toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    }
+    expect(readFileSync(resolve("src/viewer/receipts/ReceiptOcrBenchmark.tsx"), "utf8"))
+      .not.toContain(".svg");
   });
 });

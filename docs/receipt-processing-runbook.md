@@ -87,4 +87,12 @@ Original-image cloud backup is explicitly out of scope. It requires a separate e
 - Worker deployment configuration and separate Mac Access audience passed, at an estimated 1,440 indexed empty polls per day.
 - Frontend and remote production-dependency audits reported zero vulnerabilities. Python audit reported zero known vulnerabilities after pinning `pyasn1==0.6.5`.
 
-No live receipt was selected or applied. The iPhone performance gate and user-selected controlled live reconciliation remain deliberate activation gates, not implementation gaps.
+At that deployment, no live receipt was selected or applied. The iPhone performance gate and user-selected controlled live reconciliation remained deliberate activation gates, not implementation gaps.
+
+## 2026-11-01 real-receipt validation
+
+- Corrected the pinned browser pairing to `tesseract.js` 7.0.0 plus `tesseract.js-core` 7.0.0 and packaged every native, SIMD, relaxed-SIMD, and LSTM loader locally. No OCR CDN fallback exists.
+- The browser benchmark completed one prepared page in 1.3 seconds and six prepared pages in 1.5 seconds on the test Mac; cancellation returned `Receipt recognition was cancelled`, the page remained alive, and every request stayed on the local origin or a local `blob:` URL.
+- Nine real HEIC receipt photos, including glare, wrinkles, perspective, faint thermal print, and multi-page overlap, completed in 9.7 seconds total with a reused local worker. Low-confidence fields remained reviewable rather than being silently trusted.
+- Two exact posted purchases were applied locally after timestamped SQLite backups: Home Depot $23.89 (one detailed line) and Liquor Wine Warehouse $162.20 (four detailed lines). Each increased `split_revision` exactly once, reconciled to the signed transaction amount, passed `PRAGMA foreign_key_check`, and was unchanged by an identical replay.
+- iPhone Mirroring displayed the protected Viewer but macOS automation could not interact with the mirrored window. The Mac/browser benchmark is evidence for packaging, privacy, cancellation, and baseline performance; it does not replace the required physical iPhone Safari gate, so production receipt flags remain disabled.
