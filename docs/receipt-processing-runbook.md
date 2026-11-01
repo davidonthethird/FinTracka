@@ -75,3 +75,16 @@ The repository currently has two dated baseline test failures documented in the 
 5. Never delete local command receipts before restoring an older database: they are the exact-once evidence.
 
 Original-image cloud backup is explicitly out of scope. It requires a separate encrypted backup/recovery design and must not reuse the receipt draft store.
+
+## 2026-11-01 deployment evidence
+
+- Staging D1 applied `0003` and `0004`; the second application reported no pending migrations.
+- Production D1 applied `0003` and `0004`; the second application reported no pending migrations.
+- Staging Viewer version: `74639ae2-de3e-4899-946f-a125ef8e686e`.
+- Production Viewer version: `1ee1ac56-9bce-405d-ae0d-8a94f5dc1a37`.
+- Both deployments have `FEATURE_RECEIPT_DRAFTS=false` and `FEATURE_RECEIPT_MATCHING=false`.
+- Synthetic local migration reached schema 21 with an empty `PRAGMA foreign_key_check` result.
+- Worker deployment configuration and separate Mac Access audience passed, at an estimated 1,440 indexed empty polls per day.
+- Frontend and remote production-dependency audits reported zero vulnerabilities. Python audit reported zero known vulnerabilities after pinning `pyasn1==0.6.5`.
+
+No live receipt was selected or applied. The iPhone performance gate and user-selected controlled live reconciliation remain deliberate activation gates, not implementation gaps.
