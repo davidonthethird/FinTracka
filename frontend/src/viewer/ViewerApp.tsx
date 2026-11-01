@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { BarChart3, Landmark, List, PiggyBank, ReceiptText, WalletCards } from "lucide-react";
+import { BarChart3, Landmark, List, PiggyBank, WalletCards } from "lucide-react";
 import { loadRemoteData, type ViewerStatus } from "./api";
 import type { RemoteSnapshot } from "./model";
 import { OverviewPage } from "./OverviewPage";
@@ -14,14 +14,17 @@ import { ReceiptProvider } from "./receipts/ReceiptProvider";
 import { ReceiptReviewPage } from "./receipts/ReceiptReviewPage";
 import { classificationTaxonomy } from "./model";
 
-const navigation = [
+export const viewerNavigation = [
   ["/", "Overview", Landmark],
   ["/transactions", "Transactions", List],
-  ["/receipts", "Receipts", ReceiptText],
   ["/planning", "Planning", WalletCards],
   ["/savings", "Savings", PiggyBank],
   ["/reports", "Reports", BarChart3],
 ] as const;
+
+export function navigationPathForRoute(route: string): string {
+  return route === "/receipts" || route.startsWith("/receipts/") ? "/transactions" : route;
+}
 
 export function ViewerApp() {
   const [route, setRoute] = useState(window.location.pathname);
@@ -63,16 +66,16 @@ export function ViewerApp() {
     {status?.stale && <div className="stale-banner"><strong>Data may be out of date.</strong> Your Mac has not published a fresh snapshot recently.</div>}
     <main className="viewer-workspace">
       {route === "/" && <OverviewPage snapshot={snapshot} publishedAt={status?.published_at} />}
-      {route === "/transactions" && <TransactionsPage snapshot={snapshot} />}
+      {route === "/transactions" && <TransactionsPage snapshot={snapshot} navigate={navigate} />}
       {route === "/receipts" && <ReceiptInboxPage navigate={navigate} />}
       {route === "/receipts/new" && <ReceiptCapturePage navigate={navigate} />}
       {receiptId && <ReceiptReviewPage id={decodeURIComponent(receiptId)} taxonomy={classificationTaxonomy(snapshot)} transactions={snapshot.transactions} navigate={navigate} />}
       {route === "/planning" && <PlanningPage snapshot={snapshot} />}
       {route === "/savings" && <SavingsPage snapshot={snapshot} />}
       {route === "/reports" && <ReportsPage snapshot={snapshot} />}
-      {!navigation.some(([path]) => path === route) && !receiptRoute && <Placeholder title="Page not found" text="Choose a section below." />}
+      {!viewerNavigation.some(([path]) => path === route) && !receiptRoute && <Placeholder title="Page not found" text="Choose a section below." />}
     </main>
-    <nav className="viewer-nav" aria-label="Viewer sections">{navigation.map(([path, label, Icon]) => <button key={path} className={route === path || (path === "/receipts" && route.startsWith("/receipts/")) ? "active" : ""} onClick={() => navigate(path)}><Icon aria-hidden="true" /><span>{label}</span></button>)}</nav>
+    <nav className="viewer-nav" aria-label="Viewer sections">{viewerNavigation.map(([path, label, Icon]) => <button key={path} className={navigationPathForRoute(route) === path ? "active" : ""} onClick={() => navigate(path)}><Icon aria-hidden="true" /><span>{label}</span></button>)}</nav>
   </div></ReceiptProvider></MobileCommandProvider>;
 }
 
