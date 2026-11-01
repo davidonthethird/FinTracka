@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import { prepareReceiptPage } from "./receiptImages";
 import { createReceiptOcrEngine } from "./receiptOcr";
 import type { OcrReceiptPage, ReceiptOcrProgress } from "./types";
 
@@ -19,9 +20,10 @@ export function ReceiptOcrBenchmark() {
     setError(""); setResults([]); setDuration(undefined);
     const started = performance.now();
     try {
-      const pages = Array.from({ length: pageCount }, (_, index) => ({
-        id: `synthetic-${index + 1}`,
-        image: `/receipt-fixtures/${index % 2 === 0 ? "one-page" : "overlap-page"}.svg`,
+      const pages = await Promise.all(Array.from({ length: pageCount }, async (_, index) => {
+        const response = await fetch(`/receipt-fixtures/${index % 2 === 0 ? "one-page" : "overlap-page"}.png`);
+        if (!response.ok) throw new Error("Synthetic receipt fixture is unavailable");
+        return prepareReceiptPage(`synthetic-${index + 1}`, await response.blob());
       }));
       setResults(await engine.current.recognize(pages, controller.current.signal));
       setDuration(performance.now() - started);

@@ -85,6 +85,54 @@ describe("receipt parser", () => {
     ]);
     expect(result.overlap_groups).toEqual([]);
   });
+
+  it("prefers a plausible merchant over OCR debris near the top of a photo", () => {
+    const result = parseReceiptPages([page(0, [
+      observation("debris", "\\ \\", 5, 0.01),
+      observation("logo-noise", "a 3 He", 20, 0.03),
+      observation("merchant", "LOWE'S HOME CENTERS, LLC", 70, 0.08),
+      observation("date", "11/01/26 12:54 PM", 120, 0.13),
+      observation("item", "FIBERGLASS HAMMER 22.98", 300, 0.30),
+      observation("total", "TOTAL 24.99", 900, 0.90),
+    ])]);
+
+    expect(result.merchant?.value).toBe("LOWE'S HOME CENTERS, LLC");
+    expect(result.purchase_date?.value).toBe("2026-11-01");
+  });
+
+  it("normalizes common OCR punctuation only on labeled receipt totals", () => {
+    const result = parseReceiptPages([page(0, [
+      observation("merchant", "THE HOME DEPOT", 20, 0.02),
+      observation("item", "PROPANE TANK EXCHANGE 21.94", 300, 0.30),
+      observation("subtotal", "SUBTOTAL 21.94", 700, 0.70),
+      observation("tax", "~ TOTAL TAK: 1.95 noise", 760, 0.76),
+      observation("total", "| TOTAL $23, 89 foil ne", 820, 0.82),
+    ])]);
+
+    expect(result).toMatchObject({
+      merchant: { value: "THE HOME DEPOT" }, subtotal_minor: { value: 2_194 },
+      tax_minor: { value: 195 }, total_minor: { value: 2_389 },
+    });
+    expect(result.lines.map((line) => [line.description, line.item_total_minor]))
+      .toEqual([["PROPANE TANK EXCHANGE", 2_194]]);
+  });
+
+  it("uses a checkout balance as the total and excludes payment-summary rows", () => {
+    const result = parseReceiptPages([page(0, [
+      observation("merchant", "STOPEESHOP", 20, 0.02),
+      observation("item", "RASPBERRIES 3.49", 240, 0.24),
+      observation("tax", "TAX 0.27", 700, 0.70),
+      observation("pre-discount", "TOTAL AFTER SAVINGS 61.73", 720, 0.72),
+      observation("balance", "with BALANCE 52.0¢", 760, 0.76),
+      observation("payment", "MASTERCARD 52.00", 820, 0.82),
+      observation("change", "CHANGE 0.00", 880, 0.88),
+    ])]);
+
+    expect(result.total_minor?.value).toBe(5_200);
+    expect(result.merchant?.value).toBe("STOPEESHOP");
+    expect(result.lines.map((line) => [line.description, line.item_total_minor]))
+      .toEqual([["RASPBERRIES", 349]]);
+  });
 });
 
 function observation(id: string, text: string, y: number, relativeY: number) {

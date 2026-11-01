@@ -1,4 +1,4 @@
-import { createWorker, OEM, type LoggerMessage, type Worker } from "tesseract.js";
+import { createWorker, OEM, type Block, type LoggerMessage, type Worker } from "tesseract.js";
 
 import type {
   OcrReceiptPage,
@@ -63,13 +63,14 @@ class TesseractReceiptOcrEngine implements ReceiptOcrEngine {
       for (const [pageIndex, page] of pages.entries()) {
         if (signal.aborted) throw abortError();
         this.activePage = pageIndex;
-        const result = await worker.recognize(page.image);
+        const result = await worker.recognize(page.image, {}, { text: true, blocks: true });
         if (signal.aborted) throw abortError();
         results.push({
           id: page.id,
           page_index: pageIndex,
           text: result.data.text,
           confidence_basis_points: Math.max(0, Math.min(10_000, Math.round(result.data.confidence * 100))),
+          observations: observationsFromBlocks(page.id, result.data.blocks),
         });
       }
       return results;
@@ -86,6 +87,20 @@ class TesseractReceiptOcrEngine implements ReceiptOcrEngine {
     this.worker = undefined;
     if (worker) await worker.terminate();
   }
+}
+
+function observationsFromBlocks(pageId: string, blocks: Block[] | null) {
+  if (!blocks?.length) return undefined;
+  const pageBottom = Math.max(1, ...blocks.map((block) => block.bbox.y1));
+  return blocks.flatMap((block) => block.paragraphs.flatMap((paragraph) => paragraph.lines))
+    .map((line, index) => ({
+      id: `${pageId}-line-${index}`,
+      text: line.text.trim(),
+      confidence_basis_points: Math.max(0, Math.min(10_000, Math.round(line.confidence * 100))),
+      bbox: { x: line.bbox.x0, y: line.bbox.y0,
+        width: Math.max(0, line.bbox.x1 - line.bbox.x0), height: Math.max(0, line.bbox.y1 - line.bbox.y0) },
+      relative_y: Math.max(0, Math.min(1, line.bbox.y0 / pageBottom)),
+    })).filter((line) => line.text.length > 0);
 }
 
 export function createReceiptOcrEngine(onProgress?: ProgressHandler): ReceiptOcrEngine {
