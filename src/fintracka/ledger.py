@@ -114,7 +114,7 @@ def set_splits(
         if owns_transaction:
             connection.execute("BEGIN IMMEDIATE")
         parent = connection.execute(
-            "SELECT amount_minor, updated_at FROM transactions WHERE id = ?", (transaction_id,)
+            "SELECT amount_minor, updated_at, split_revision FROM transactions WHERE id = ?", (transaction_id,)
         ).fetchone()
         if parent is None:
             raise IntegrityError("transaction not found")
@@ -124,11 +124,12 @@ def set_splits(
             raise IntegrityError("split children must sum exactly to the parent")
         connection.execute("DELETE FROM transaction_splits WHERE parent_transaction_id = ?", (transaction_id,))
         connection.executemany(
-            "INSERT INTO transaction_splits (id, parent_transaction_id, amount_minor, category_id, notes, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO transaction_splits (id, parent_transaction_id, amount_minor, category_id, notes, source, created_at) VALUES (?, ?, ?, ?, ?, 'manual', ?)",
             [(new_id(), transaction_id, amount, category, notes, now) for amount, category, notes in splits],
         )
         connection.execute(
-            "UPDATE transactions SET has_splits = 1, updated_at = ? WHERE id = ?", (now, transaction_id)
+            "UPDATE transactions SET has_splits = 1, split_revision = ?, updated_at = ? WHERE id = ?",
+            (parent["split_revision"] + 1, now, transaction_id),
         )
         _audit(connection, "user", "transaction_split", "transaction", transaction_id, now)
         if owns_transaction:
