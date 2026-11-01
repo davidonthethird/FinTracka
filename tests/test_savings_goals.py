@@ -506,7 +506,8 @@ def test_raising_overall_goal_can_refill_from_existing_goal_balances(
         linked_category_id=None, overall_target_minor=3_000_000,
         refill_sources={general["id"]: 500_000}, allow_partial_refill=False,
     )
-    overview = savings_goal_overview(ledger, "2026-10")
+    current_month = date.today().isoformat()[:7]
+    overview = savings_goal_overview(ledger, current_month)
     balances = {goal.name: goal.balance_minor for goal in overview.goals}
     assert balances["Emergency"] == 3_000_000
     assert balances["General Savings"] == 0
@@ -516,7 +517,7 @@ def test_raising_overall_goal_can_refill_from_existing_goal_balances(
         "SELECT id FROM savings_ledger_entries WHERE source_key LIKE 'reallocation:%' LIMIT 1"
     ).fetchone()[0]
     undo_savings_event(ledger, reallocation_id, "change refill choice")
-    overview = savings_goal_overview(ledger, "2026-10")
+    overview = savings_goal_overview(ledger, current_month)
     balances = {goal.name: goal.balance_minor for goal in overview.goals}
     assert balances["Emergency"] == 2_500_000
     assert balances["General Savings"] == 500_000

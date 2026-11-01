@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test("synthetic finance workflow with Plaid profiles, reports, and remote viewer settings", async ({ page }) => {
   test.setTimeout(60_000);
+  await page.clock.setFixedTime(new Date("2026-10-27T12:00:00-04:00"));
   const responseErrors: string[] = [];
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
@@ -35,7 +36,7 @@ test("synthetic finance workflow with Plaid profiles, reports, and remote viewer
   await expect(page.getByText("Connected accounts", { exact: true })).toBeVisible();
   await expect(page.getByText("Manually tracked assets", { exact: true })).toBeVisible();
   await expect(page.getByText("Household brokerage", { exact: true })).toBeVisible();
-  await expect(page.getByText("Earnings", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("Earnings this month", { exact: true }).first()).toBeVisible();
   await page.getByLabel("Savings owner").selectOption("Ariela");
   await expect(page.getByText("Household brokerage", { exact: true })).toBeVisible();
   await expect(page.getByText("Other reserve", { exact: true })).toHaveCount(0);
@@ -252,6 +253,7 @@ test("synthetic finance workflow with Plaid profiles, reports, and remote viewer
   await expect(page.getByText("OLDER GROCERIES", { exact: true }).first()).toBeVisible();
 
   await page.getByRole("link", { name: "Planning" }).click();
+  await page.getByRole("textbox", { name: "Month", exact: true }).fill("2026-10");
   const inactiveToggle = page.getByLabel("Show inactive categories");
   await expect(inactiveToggle).toBeVisible();
   await expect(page.locator(".planning-summary")).toContainText("Remaining after targets");
@@ -385,6 +387,7 @@ test("synthetic finance workflow with Plaid profiles, reports, and remote viewer
   await page.getByRole("button", { name: "Save allocation" }).click();
   await expect(page.getByRole("status")).toContainText("Envelope allocation saved");
   await page.getByRole("link", { name: "Reports" }).click();
+  await page.getByRole("textbox", { name: "Month", exact: true }).fill("2026-10");
   await expect(page.getByRole("heading", { name: "Income and spending flow" })).toBeVisible();
   const funFlowButton = page.getByRole("button", { name: /Show Fun transactions/ });
   const funFlowNode = funFlowButton.locator("..");
