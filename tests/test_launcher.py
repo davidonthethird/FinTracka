@@ -5,8 +5,12 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
+ZSH = shutil.which("zsh")
+pytestmark = pytest.mark.skipif(ZSH is None, reason="the desktop launcher requires macOS zsh")
 
 
 def _launcher_project(tmp_path: Path, npm_exit: int = 0) -> tuple[Path, dict[str, str], Path]:
@@ -43,7 +47,7 @@ def test_launcher_refreshes_dependencies_before_building(tmp_path: Path) -> None
     launcher, environment, npm_log = _launcher_project(tmp_path)
 
     result = subprocess.run(
-        [launcher], input="\n", text=True, capture_output=True,
+        [ZSH, launcher], input="\n", text=True, capture_output=True,
         env=environment, timeout=10,
     )
 
@@ -60,7 +64,7 @@ def test_launcher_reports_build_failure_without_zsh_reserved_variable_error(
     launcher, environment, _ = _launcher_project(tmp_path, npm_exit=7)
 
     result = subprocess.run(
-        [launcher], input="\n", text=True, capture_output=True,
+        [ZSH, launcher], input="\n", text=True, capture_output=True,
         env=environment, timeout=10,
     )
 
