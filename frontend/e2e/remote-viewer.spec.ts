@@ -10,8 +10,27 @@ test("remote viewer is read-only, responsive, drillable, and leaves no financial
     await page.goto(viewer);
     await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    const viewerNavigation = page.getByRole("navigation", { name: "Viewer sections" });
+    await expect(viewerNavigation.getByRole("button")).toHaveCount(5);
+    if (width === 320) {
+      const navigationBounds = await viewerNavigation.evaluate((element) => {
+        const bar = element.getBoundingClientRect();
+        const buttons = [...element.querySelectorAll("button")].map((button) => button.getBoundingClientRect());
+        return {
+          oneRow: new Set(buttons.map((button) => Math.round(button.top))).size === 1,
+          contained: buttons.every((button) => button.left >= bar.left && button.right <= bar.right && button.bottom <= bar.bottom),
+        };
+      });
+      expect(navigationBounds).toEqual({ oneRow: true, contained: true });
+    }
     await page.getByRole("button", { name: "Transactions", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Transactions", exact: true })).toBeVisible();
+    if (width === 320) {
+      await page.getByRole("button", { name: /Scan receipt/ }).click();
+      await expect(page.getByRole("heading", { name: "Receipts", exact: true })).toBeVisible();
+      await expect(viewerNavigation.getByRole("button", { name: "Transactions", exact: true })).toHaveClass(/active/);
+      await viewerNavigation.getByRole("button", { name: "Transactions", exact: true }).click();
+    }
     const edges = await page.locator(".transaction-entry > b").evaluateAll((amounts) => amounts.map((amount) => Math.round(amount.getBoundingClientRect().right)));
     expect(new Set(edges).size).toBe(1);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

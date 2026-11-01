@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Search } from "lucide-react";
+import { ChevronLeft, ChevronRight, ReceiptText, Search } from "lucide-react";
 import { formatMoney } from "../format";
 import { TransactionDrawer } from "./TransactionDrawer";
 import { classificationTaxonomy, filterTransactions, paginateTransactions, snapshotMonths, type RemoteSnapshot, type RemoteTransaction } from "./model";
 import { activeCommandForTransaction, latestCommandForTransaction, proposedClassification, statusLabel, useMobileCommands, type MobileCommand } from "./mobileCommands";
 
-export function TransactionsPage({ snapshot }: { snapshot: RemoteSnapshot }) {
+export function TransactionsPage({ snapshot, navigate }: { snapshot: RemoteSnapshot; navigate: (path: string) => void }) {
   const mobile = useMobileCommands();
   const [search, setSearch] = useState("");
   const [account, setAccount] = useState("");
@@ -22,6 +22,7 @@ export function TransactionsPage({ snapshot }: { snapshot: RemoteSnapshot }) {
   function update(setter: (value: string) => void, value: string) { setter(value); setPage(1); }
   return <div className="viewer-page transactions-view">
     <header className="viewer-heading"><div><span>{mobile.available ? "Household register" : "Read-only register"}</span><h1>Transactions</h1></div><strong>{filtered.length} shown</strong></header>
+    <button className="transaction-receipt-action" onClick={() => navigate("/receipts")}><ReceiptText aria-hidden="true" /><span><strong>Scan receipt</strong><small>Review and split purchases</small></span></button>
     {mobile.error && <div className="mobile-command-banner" role="status"><strong>Phone edits unavailable</strong><span>{mobile.error}</span><button onClick={() => void mobile.refresh()}>Try again</button></div>}
     <section className="transaction-tools" aria-label="Transaction filters">
       <label className="viewer-search"><Search aria-hidden="true" /><input aria-label="Search transactions" placeholder="Search merchant or description" value={search} onChange={(event) => update(setSearch, event.target.value)} /></label>
