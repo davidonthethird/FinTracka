@@ -17,7 +17,7 @@ from fintracka.remote_snapshot import (
     snapshot_digest,
     view_key,
 )
-from fintracka.remote_models import RemoteSnapshotV2
+from fintracka.remote_models import RemoteSnapshotV2, RemoteSnapshotV3
 from fintracka.reports import overview
 
 
@@ -86,6 +86,22 @@ def test_snapshot_v2_fixture_is_strict_and_requires_integer_revisions() -> None:
     fixture["transactions"][0]["classification_revision"] = 1.5
     with pytest.raises(ValueError):
         RemoteSnapshotV2.model_validate(fixture)
+
+
+def test_snapshot_v3_fixture_and_matching_capability_are_strict(database) -> None:
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "remote_snapshot_v3.json").read_text())
+    parsed = RemoteSnapshotV3.model_validate(fixture)
+    assert parsed.transactions[0].split_revision == 0
+    assert parsed.capabilities.receipts == {"matching": (1,)}
+    enabled = build_remote_snapshot(
+        database, source_sequence=9, history_months=6, now=NOW,
+        snapshot_id="snapshot-v3-enabled", mobile_commands_enabled=True,
+        receipt_matching_enabled=True,
+    )
+    assert isinstance(enabled, RemoteSnapshotV3)
+    assert enabled.schema_version == 3
+    assert enabled.capabilities.commands["transaction.apply_receipt_split"] == (1,)
+    assert all(item.split_revision >= 0 for item in enabled.transactions)
 
 
 def test_snapshot_reuses_local_read_models_in_exact_minor_units(database) -> None:

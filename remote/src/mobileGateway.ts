@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { parseRemoteSnapshot, type RemoteSnapshot, type RemoteSnapshotV2 } from "./contract";
+import { parseRemoteSnapshot, type RemoteSnapshot, type RemoteSnapshotV2, type RemoteSnapshotV3 } from "./contract";
 import {
   CommandResultSchema,
   CreateClassificationCommandSchema,
@@ -277,8 +277,8 @@ async function readSnapshot(bucket: R2Bucket): Promise<RemoteSnapshot> {
   }
 }
 
-function classificationEnabled(snapshot: RemoteSnapshot): snapshot is RemoteSnapshotV2 {
-  return snapshot.schema_version === 2
+function classificationEnabled(snapshot: RemoteSnapshot): snapshot is RemoteSnapshotV2 | RemoteSnapshotV3 {
+  return (snapshot.schema_version === 2 || snapshot.schema_version === 3)
     && snapshot.capabilities.commands["transaction.set_classification"]?.includes(1) === true;
 }
 

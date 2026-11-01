@@ -22,6 +22,7 @@ export interface RemoteTransaction {
   is_cash_withdrawal: boolean;
   updated_at: string;
   classification_revision?: number;
+  split_revision?: number;
 }
 
 export interface RemoteOverview {
@@ -72,7 +73,20 @@ export interface RemoteSnapshotV2 extends RemoteSnapshotBase {
   taxonomy: ClassificationTaxonomy;
 }
 
-export type RemoteSnapshot = RemoteSnapshotV1 | RemoteSnapshotV2;
+export interface RemoteSnapshotV3 extends RemoteSnapshotBase {
+  schema_version: 3;
+  transactions: (RemoteTransaction & { classification_revision: number; split_revision: number })[];
+  capabilities: {
+    commands: {
+      "transaction.set_classification"?: [1] | [1, 2];
+      "transaction.apply_receipt_split": [1];
+    };
+    receipts: { matching: [1] };
+  };
+  taxonomy: ClassificationTaxonomy;
+}
+
+export type RemoteSnapshot = RemoteSnapshotV1 | RemoteSnapshotV2 | RemoteSnapshotV3;
 
 export interface TransactionFilters {
   search?: string;
@@ -86,7 +100,7 @@ export function parseSnapshot(value: unknown): RemoteSnapshot {
   if (!value || typeof value !== "object") throw new Error("The remote snapshot is invalid.");
   const candidate = value as Partial<RemoteSnapshot>;
   if (
-    (candidate.schema_version !== 1 && candidate.schema_version !== 2) ||
+    (candidate.schema_version !== 1 && candidate.schema_version !== 2 && candidate.schema_version !== 3) ||
     typeof candidate.snapshot_id !== "string" ||
     !Number.isInteger(candidate.source_sequence) ||
     typeof candidate.captured_at !== "string" ||
@@ -100,16 +114,29 @@ export function parseSnapshot(value: unknown): RemoteSnapshot {
     const v2 = candidate as Partial<RemoteSnapshotV2>;
     if (!validV2(v2)) throw new Error("This FinTracka snapshot version is not supported.");
   }
+  if (candidate.schema_version === 3 && !validV3(candidate as Partial<RemoteSnapshotV3>)) {
+    throw new Error("This FinTracka snapshot version is not supported.");
+  }
   return candidate as RemoteSnapshot;
 }
 
 export function supportsMobileClassification(snapshot: RemoteSnapshot): boolean {
-  return snapshot.schema_version === 2
+  return (snapshot.schema_version === 2 || snapshot.schema_version === 3)
     && snapshot.capabilities.commands["transaction.set_classification"]?.[1] === 2;
 }
 
 export function classificationTaxonomy(snapshot: RemoteSnapshot): ClassificationTaxonomy | null {
-  return snapshot.schema_version === 2 ? snapshot.taxonomy : null;
+  return snapshot.schema_version === 2 || snapshot.schema_version === 3 ? snapshot.taxonomy : null;
+}
+
+function validV3(snapshot: Partial<RemoteSnapshotV3>): snapshot is RemoteSnapshotV3 {
+  if (!snapshot.capabilities || !snapshot.taxonomy
+    || snapshot.capabilities.commands?.["transaction.apply_receipt_split"]?.[0] !== 1
+    || snapshot.capabilities.receipts?.matching?.[0] !== 1) return false;
+  if (!snapshot.transactions?.every((item) => Number.isInteger(item.classification_revision)
+    && Number.isInteger(item.split_revision) && (item.split_revision ?? -1) >= 0)) return false;
+  const parents = new Set(snapshot.taxonomy.categories.map((item) => item.id));
+  return snapshot.taxonomy.subcategories.every((item) => parents.has(item.category_id));
 }
 
 function validV2(snapshot: Partial<RemoteSnapshotV2>): snapshot is RemoteSnapshotV2 {
