@@ -54,6 +54,37 @@ describe("receipt parser", () => {
     expect(repeated.lines).toHaveLength(2);
     expect(repeated.overlap_groups).toEqual([]);
   });
+
+  it("extracts discounts, tips, and service fees without turning them into products", () => {
+    const result = parseReceiptPages([page(0, [
+      observation("merchant", "CAFE FIXTURE", 10, 0.01),
+      observation("meal", "MEAL 20.00", 100, 0.10),
+      observation("drink", "DRINK 5.00", 200, 0.20),
+      observation("discount", "DISCOUNT -2.00", 300, 0.30),
+      observation("tax", "TAX 1.50", 400, 0.40),
+      observation("tip", "TIP 4.00", 500, 0.50),
+      observation("fee", "SERVICE FEE 1.00", 600, 0.60),
+      observation("total", "TOTAL 29.50", 900, 0.90),
+    ])]);
+    expect(result).toMatchObject({ discount_minor: { value: 200 }, tax_minor: { value: 150 },
+      tip_minor: { value: 400 }, fees_minor: { value: 100 }, total_minor: { value: 2950 } });
+    expect(result.lines.map((line) => line.description)).toEqual(["MEAL", "DRINK"]);
+  });
+
+  it("keeps exempt grocery markers and missing-subtotal receipts visibly reviewable", () => {
+    const result = parseReceiptPages([page(0, [
+      observation("merchant", "GROCERY FIXTURE", 10, 0.01),
+      observation("milk", "MILK E 4.00", 200, 0.20),
+      observation("milk-again", "MILK E 4.00", 300, 0.30),
+      observation("total", "TOTAL 8.00", 900, 0.90),
+    ])]);
+    expect(result.subtotal_minor).toBeUndefined();
+    expect(result.lines).toMatchObject([
+      { description: "MILK E", item_total_minor: 400 },
+      { description: "MILK E", item_total_minor: 400 },
+    ]);
+    expect(result.overlap_groups).toEqual([]);
+  });
 });
 
 function observation(id: string, text: string, y: number, relativeY: number) {

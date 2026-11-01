@@ -313,10 +313,10 @@ def test_receipt_split_applies_exactly_once_and_replays_after_completion_failure
     path, secrets, transaction_id, _category_id = configured_ledger(tmp_path)
     connection = connect(path)
     transaction = connection.execute(
-        "SELECT amount_minor, currency, split_revision FROM transactions WHERE id = ?", (transaction_id,)
+        "SELECT amount_minor, currency, split_revision, local_date FROM transactions WHERE id = ?", (transaction_id,)
     ).fetchone()
     connection.close()
-    draft = receipt_for_amount(abs(transaction["amount_minor"]), transaction["currency"])
+    draft = receipt_for_amount(abs(transaction["amount_minor"]), transaction["currency"], transaction["local_date"])
     allocation_digest = receipt_digest(draft)
     payload = json.dumps({"receipt_draft_id": "draft-1", "receipt_revision": 1,
         "allocation_digest": allocation_digest}, separators=(",", ":")).encode()
@@ -553,10 +553,10 @@ def claimed(
     )
 
 
-def receipt_for_amount(amount_minor: int, currency: str) -> dict[str, object]:
+def receipt_for_amount(amount_minor: int, currency: str, purchase_date: str = "2026-10-01") -> dict[str, object]:
     return {
         "contract": "receipt_draft/v1", "status": "waiting_for_bank", "merchant": "Fixture",
-        "purchase_date": "2026-10-01", "currency": currency, "masked_payment_hint": None,
+        "purchase_date": purchase_date, "currency": currency, "masked_payment_hint": None,
         "page_count": 1, "subtotal_minor": amount_minor, "discount_minor": 0,
         "tax_minor": 0, "tip_minor": 0, "fees_minor": 0, "total_minor": amount_minor,
         "lines": [{"id": "line-1", "order": 0, "source_page": 0,

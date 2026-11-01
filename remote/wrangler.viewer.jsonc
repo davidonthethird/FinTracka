@@ -28,7 +28,8 @@
         "ACCESS_MAC_AUD": "0bdc62491b666aee9f39710c9b69b17cbdeccae87951fc3515a7c637da32d386",
         "HOUSEHOLD_ID": "fintracka-household-v1",
         "HOUSEHOLD_NAME": "FinTracka household",
-        "FEATURE_RECEIPT_DRAFTS": "false"
+        "FEATURE_RECEIPT_DRAFTS": "false",
+        "FEATURE_RECEIPT_MATCHING": "false"
       }
     },
     "production": {
@@ -47,7 +48,8 @@
         "ACCESS_MAC_AUD": "550252d3098e4d0bf22259cf9f98b71149433a565fae23bd6fd541199e9c20c5",
         "HOUSEHOLD_ID": "fintracka-household-v1",
         "HOUSEHOLD_NAME": "FinTracka household",
-        "FEATURE_RECEIPT_DRAFTS": "false"
+        "FEATURE_RECEIPT_DRAFTS": "false",
+        "FEATURE_RECEIPT_MATCHING": "false"
       }
     }
   }

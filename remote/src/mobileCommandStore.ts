@@ -335,7 +335,7 @@ export class MobileCommandStore {
 
     const now = this.clock().toISOString();
     const errorCode = parsed.data.status === "rejected" ? parsed.data.error_code : null;
-    const results = await this.database.batch([
+    const statements = [
       this.database.prepare(`
         UPDATE mobile_commands
         SET status = ?, result_json = ?, error_code = ?, updated_at = ?, finished_at = ?
@@ -356,7 +356,15 @@ export class MobileCommandStore {
         claimToken,
         now,
       ),
-    ]);
+    ];
+    if (existing.command_type === "transaction.apply_receipt_split") {
+      statements.push(this.database.prepare(`UPDATE receipt_drafts
+        SET status = ?, active_command_id = NULL, updated_at = ?, last_activity_at = ?
+        WHERE active_command_id = ? AND household_id = ?`)
+        .bind(parsed.data.status === "applied" ? "matched" : "conflict",
+          now, now, commandId, existing.household_id));
+    }
+    const results = await this.database.batch(statements);
     if ((results[0].meta.changes ?? 0) !== 1) {
       const raced = await this.commandRow(commandId);
       if (raced?.claim_token === claimToken && raced.result_json === resultJson) {

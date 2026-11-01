@@ -516,9 +516,18 @@ describe("mobile gateway", () => {
     const claimed = await gateway.fetch(macRequest(
       "/api/v1/mobile/mac/commands/claim", json({ limit: 1 }),
     ), testEnv);
-    expect((await claimed.json() as any).commands[0]).toMatchObject({
+    const receiptCommand = (await claimed.json() as any).commands[0];
+    expect(receiptCommand).toMatchObject({
       command_type: "transaction.apply_receipt_split", receipt_draft_id: draft.id,
     });
+    const completed = await gateway.fetch(macRequest(
+      `/api/v1/mobile/mac/commands/${receiptCommand.id}/complete`,
+      json({ claim_token: receiptCommand.claim_token, result: { status: "applied",
+        receipt_id: "local-receipt-1", split_revision: 1, split_count: 1 } }),
+    ), testEnv);
+    expect(completed.status).toBe(200);
+    const refreshed = await gateway.fetch(userRequest(`/api/v1/mobile/receipts/${draft.id}`), testEnv);
+    expect((await refreshed.json() as any).draft.status).toBe("matched");
   });
 
   it("fails receipt matching closed on amount, date, pending, and split revision", async () => {

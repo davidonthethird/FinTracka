@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from fintracka.ids import new_id
@@ -91,10 +91,19 @@ def apply_receipt_split(
             raise ReceiptConflict("transaction split revision changed")
         if transaction["pending"] or transaction["tombstoned"] or transaction["user_archived"]:
             raise ReceiptConflict("transaction is not eligible for receipt matching")
+        if transaction["amount_minor"] >= 0:
+            raise ReceiptError("receipt target must be spending")
         if transaction["currency"] != parsed["currency"]:
             raise ReceiptError("receipt currency does not match transaction")
         if abs(transaction["amount_minor"]) != parsed["total_minor"]:
             raise ReceiptError("receipt amount does not match transaction")
+        try:
+            distance = abs((date.fromisoformat(transaction["local_date"])
+                            - date.fromisoformat(parsed["purchase_date"])).days)
+        except (TypeError, ValueError) as error:
+            raise ReceiptError("receipt date does not match transaction") from error
+        if distance > 7:
+            raise ReceiptError("receipt date does not match transaction")
         prior_splits = [dict(row) for row in connection.execute(
             "SELECT * FROM transaction_splits WHERE parent_transaction_id = ? ORDER BY id",
             (transaction_id,),

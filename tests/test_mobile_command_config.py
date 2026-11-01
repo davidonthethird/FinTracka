@@ -37,7 +37,7 @@ def test_mobile_command_settings_default_disabled_and_receipts_are_permanent(tmp
     assert settings.enabled is False
     assert settings.gateway_url is None
     assert connection.execute("SELECT COUNT(*) FROM mobile_command_receipts").fetchone()[0] == 0
-    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 20
+    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 21
 
 
 def test_configuration_uses_distinct_keychain_refs_and_keeps_secrets_out_of_sqlite(tmp_path) -> None:

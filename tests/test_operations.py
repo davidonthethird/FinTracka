@@ -84,7 +84,7 @@ def test_pre_migration_backup_is_verified_and_private(tmp_path: Path) -> None:
     for backup in backups:
         verify_backup(backup)
         assert stat.S_IMODE(backup.stat().st_mode) == 0o600
-    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 20
+    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 21
     connection.close()
 
 

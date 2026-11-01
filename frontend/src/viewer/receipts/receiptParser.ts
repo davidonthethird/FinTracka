@@ -13,7 +13,10 @@ export interface ParsedReceiptCandidate {
   merchant?: ParsedField<string>;
   purchase_date?: ParsedField<string>;
   subtotal_minor?: ParsedField<number>;
+  discount_minor?: ParsedField<number>;
   tax_minor?: ParsedField<number>;
+  tip_minor?: ParsedField<number>;
+  fees_minor?: ParsedField<number>;
   total_minor?: ParsedField<number>;
   lines: ParsedReceiptLine[];
   overlap_groups: { id: string; observation_ids: string[] }[];
@@ -43,9 +46,13 @@ export function parseReceiptPages(pages: OcrReceiptPage[]): ParsedReceiptCandida
   const merchantObservation = visible.find((item) => !dateFrom(item.text) && amountFrom(item.text) === null);
   const dateObservation = visible.find((item) => dateFrom(item.text));
   const subtotal = labeledAmount(visible, /^\s*sub\s*total\b/i);
+  const discount = labeledAmount(visible, /^\s*(?:discount|coupon|savings)\b/i);
   const tax = labeledAmount(visible, /^\s*tax\b/i);
+  const tip = labeledAmount(visible, /^\s*(?:tip|gratuity)\b/i);
+  const fees = labeledAmount(visible, /^\s*(?:service|delivery|convenience)\s+fee\b/i);
   const total = [...visible].reverse().find((item) => /^\s*(?:grand\s+)?total\b/i.test(item.text));
-  const excluded = new Set([merchantObservation?.id, dateObservation?.id, subtotal?.id, tax?.id, total?.id]);
+  const excluded = new Set([merchantObservation?.id, dateObservation?.id, subtotal?.id,
+    discount?.id, tax?.id, tip?.id, fees?.id, total?.id]);
   const lines = visible.filter((item) => !excluded.has(item.id))
     .filter((item) => amountFrom(item.text) !== null)
     .map((item, index) => ({
@@ -60,7 +67,10 @@ export function parseReceiptPages(pages: OcrReceiptPage[]): ParsedReceiptCandida
     ...(merchantObservation ? { merchant: field(merchantObservation, merchantObservation.text.trim()) } : {}),
     ...(dateObservation ? { purchase_date: field(dateObservation, dateFrom(dateObservation.text)!) } : {}),
     ...(subtotal ? { subtotal_minor: field(subtotal, amountFrom(subtotal.text)!) } : {}),
+    ...(discount ? { discount_minor: field(discount, amountFrom(discount.text)!) } : {}),
     ...(tax ? { tax_minor: field(tax, amountFrom(tax.text)!) } : {}),
+    ...(tip ? { tip_minor: field(tip, amountFrom(tip.text)!) } : {}),
+    ...(fees ? { fees_minor: field(fees, amountFrom(fees.text)!) } : {}),
     ...(total ? { total_minor: field(total, amountFrom(total.text)!) } : {}),
     lines,
     overlap_groups: overlapGroups,

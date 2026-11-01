@@ -223,7 +223,8 @@ async function submitReceiptMatch(
   if (target.split_revision !== input.observed_split_revision) {
     throw new GatewayError(409, "STALE_SPLIT_REVISION");
   }
-  if (target.currency !== draft.currency || Math.abs(target.amount_minor) !== draft.total_minor) {
+  if (target.amount_minor >= 0 || target.currency !== draft.currency
+      || Math.abs(target.amount_minor) !== draft.total_minor) {
     throw new GatewayError(409, "RECEIPT_TOTAL_MISMATCH");
   }
   const dayDistance = Math.abs(Date.parse(`${target.local_date}T00:00:00Z`)
