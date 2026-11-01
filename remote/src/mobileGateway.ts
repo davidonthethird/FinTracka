@@ -13,6 +13,13 @@ import {
   verifyAccessToken,
   type AccessTokenVerifier,
 } from "./mobileIdentity";
+import {
+  handleReceiptBrowser,
+  handleReceiptMac,
+  mapReceiptError,
+  receiptDraftsEnabled,
+} from "./receiptGateway";
+import { ReceiptStore } from "./receiptStore";
 
 export interface MobileGatewayEnv {
   COMMANDS: D1Database;
@@ -22,6 +29,7 @@ export interface MobileGatewayEnv {
   ACCESS_MAC_AUD: string;
   HOUSEHOLD_ID: string;
   HOUSEHOLD_NAME: string;
+  FEATURE_RECEIPT_DRAFTS?: string;
 }
 
 interface GatewayDependencies {
@@ -62,6 +70,7 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
     async fetch(request: Request, env: MobileGatewayEnv): Promise<Response> {
       const url = new URL(request.url);
       const store = new MobileCommandStore(env.COMMANDS, now);
+      const receiptStore = new ReceiptStore(env.COMMANDS, now);
       try {
         if (!validSeparateAudiences(env.ACCESS_USER_AUD, env.ACCESS_MAC_AUD)) {
           return errorResponse(503, "MOBILE_AUTH_MISCONFIGURED");
@@ -72,6 +81,12 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
             audience: env.ACCESS_MAC_AUD,
           }, verifier);
           if (!identity) return errorResponse(403, "PROCESSOR_NOT_AUTHORIZED");
+          if (receiptDraftsEnabled(env.FEATURE_RECEIPT_DRAFTS)) {
+            const receiptResponse = await handleReceiptMac(
+              request, url, receiptStore, env.HOUSEHOLD_ID,
+            );
+            if (receiptResponse) return receiptResponse;
+          }
           return await handleMac(request, url, env, store, identity.id);
         }
         if (!url.pathname.startsWith("/api/v1/mobile/")) {
@@ -86,10 +101,18 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
         if (!member || member.household_id !== env.HOUSEHOLD_ID) {
           return errorResponse(403, "MEMBER_NOT_AUTHORIZED");
         }
+        if (receiptDraftsEnabled(env.FEATURE_RECEIPT_DRAFTS)) {
+          const receiptResponse = await handleReceiptBrowser(request, url, receiptStore, member);
+          if (receiptResponse) return receiptResponse;
+        } else if (url.pathname.startsWith("/api/v1/mobile/receipts")) {
+          return errorResponse(404, "NOT_FOUND");
+        }
         return await handleBrowser(
           request, url, env, store, member, now, pendingLimit, recentLimit,
         );
       } catch (error) {
+        const receiptError = mapReceiptError(error);
+        if (receiptError) return receiptError;
         return mapError(error);
       }
     },
@@ -112,9 +135,10 @@ async function handleBrowser(
     const versions = classificationVersions(snapshot);
     return jsonResponse(200, {
       member: { id: member.id, display_name: member.display_name },
-      capabilities: versions
-        ? { "transaction.set_classification": versions }
-        : {},
+      capabilities: {
+        ...(versions ? { "transaction.set_classification": versions } : {}),
+        ...(receiptDraftsEnabled(env.FEATURE_RECEIPT_DRAFTS) ? { "receipts.drafts": [1] } : {}),
+      },
       server_time: new Date().toISOString(),
     });
   }

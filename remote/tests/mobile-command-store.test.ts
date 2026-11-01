@@ -31,6 +31,10 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await env.COMMANDS.batch([
+    env.COMMANDS.prepare("DELETE FROM receipt_events"),
+    env.COMMANDS.prepare("DELETE FROM receipt_lines"),
+    env.COMMANDS.prepare("DELETE FROM receipt_revisions"),
+    env.COMMANDS.prepare("DELETE FROM receipt_drafts"),
     env.COMMANDS.prepare("DELETE FROM command_events"),
     env.COMMANDS.prepare("DELETE FROM mobile_commands"),
     env.COMMANDS.prepare("DELETE FROM household_members"),

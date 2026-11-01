@@ -7,6 +7,7 @@ import snapshotV1 from "../../tests/fixtures/remote_snapshot_v1.json";
 import snapshotV2 from "../../tests/fixtures/remote_snapshot_v2.json";
 import { createMobileGateway, type MobileGatewayEnv } from "../src/mobileGateway";
 import type { AccessClaims, AccessTokenVerifier } from "../src/mobileIdentity";
+import { draft as receiptDraft } from "./receipt-model.test";
 
 declare global {
   namespace Cloudflare {
@@ -28,6 +29,10 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await env.COMMANDS.batch([
+    env.COMMANDS.prepare("DELETE FROM receipt_events"),
+    env.COMMANDS.prepare("DELETE FROM receipt_lines"),
+    env.COMMANDS.prepare("DELETE FROM receipt_revisions"),
+    env.COMMANDS.prepare("DELETE FROM receipt_drafts"),
     env.COMMANDS.prepare("DELETE FROM command_events"),
     env.COMMANDS.prepare("DELETE FROM mobile_commands"),
     env.COMMANDS.prepare("DELETE FROM household_members"),
@@ -413,6 +418,78 @@ describe("mobile gateway", () => {
     expect(response.status).toBe(403);
     expect(await response.text()).not.toContain("private cert detail");
   });
+
+  it("keeps receipt drafts disabled by default and advertises them only when enabled", async () => {
+    const gateway = makeGateway();
+    await provision(gateway);
+    const disabled = gatewayEnv();
+    expect(await (await gateway.fetch(userRequest("/api/v1/mobile/session"), disabled)).json())
+      .toMatchObject({ capabilities: { "transaction.set_classification": [1, 2] } });
+    await expectError(
+      await gateway.fetch(userRequest("/api/v1/mobile/receipts"), disabled),
+      404, "NOT_FOUND",
+    );
+
+    const enabled = gatewayEnv();
+    enabled.FEATURE_RECEIPT_DRAFTS = "true";
+    expect(await (await gateway.fetch(userRequest("/api/v1/mobile/session"), enabled)).json())
+      .toMatchObject({ capabilities: { "receipts.drafts": [1] } });
+  });
+
+  it("creates, reads, replaces, lists, and dismisses household receipt drafts", async () => {
+    const gateway = makeGateway();
+    await provision(gateway);
+    const testEnv = gatewayEnv();
+    testEnv.FEATURE_RECEIPT_DRAFTS = "true";
+    const createdResponse = await gateway.fetch(userRequest(
+      "/api/v1/mobile/receipts",
+      json({ idempotency_key: "gateway-receipt-001", draft: receiptDraft() }),
+    ), testEnv);
+    expect(createdResponse.status).toBe(201);
+    const created = await createdResponse.json() as any;
+
+    expect((await (await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipts/${created.draft.id}`,
+    ), testEnv)).json() as any).draft).toMatchObject({ merchant: "Synthetic Market", revision: 1 });
+    const replaced = await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipts/${created.draft.id}`,
+      { ...json({ expected_revision: 1, idempotency_key: "gateway-receipt-002",
+        draft: { ...receiptDraft(), merchant: "Corrected" } }), method: "PUT" },
+    ), testEnv);
+    expect(replaced.status).toBe(200);
+    expect((await replaced.json() as any).draft).toMatchObject({ merchant: "Corrected", revision: 2 });
+    const listed = await gateway.fetch(userRequest("/api/v1/mobile/receipts"), testEnv);
+    expect((await listed.json() as any).drafts).toHaveLength(1);
+    const dismissed = await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipts/${created.draft.id}/dismiss`, json({ expected_revision: 2 }),
+    ), testEnv);
+    expect((await dismissed.json() as any).draft.status).toBe("dismissed");
+  });
+
+  it("rejects receipt image fields, cross-origin writes, oversized bodies, and browser access to immutable revisions", async () => {
+    const gateway = makeGateway();
+    await provision(gateway);
+    const testEnv = gatewayEnv(); testEnv.FEATURE_RECEIPT_DRAFTS = "true";
+    for (const request of [
+      userRequest("/api/v1/mobile/receipts", json({ idempotency_key: "receipt-invalid-1",
+        draft: { ...receiptDraft(), image: "bytes" } })),
+      userRequest("/api/v1/mobile/receipts", json({ idempotency_key: "receipt-invalid-2",
+        draft: receiptDraft() }, { Origin: "https://evil.test" })),
+      userRequest("/api/v1/mobile/receipts", json({ padding: "x".repeat(263_000) })),
+    ]) expect((await gateway.fetch(request, testEnv)).status).toBeGreaterThanOrEqual(400);
+
+    const created = await gateway.fetch(userRequest("/api/v1/mobile/receipts", json({
+      idempotency_key: "receipt-valid-001", draft: receiptDraft(),
+    })), testEnv);
+    const id = (await created.json() as any).draft.id;
+    await expectError(await gateway.fetch(userRequest(
+      `/api/v1/mobile/mac/receipts/${id}?revision=1`,
+    ), testEnv), 403, "PROCESSOR_NOT_AUTHORIZED");
+    const mac = await gateway.fetch(macRequest(`/api/v1/mobile/mac/receipts/${id}?revision=1`), testEnv);
+    expect(mac.status).toBe(200);
+    expect((await mac.json() as any).revision).toMatchObject({ id, revision: 1 });
+    expect(mac.headers.has("Access-Control-Allow-Origin")).toBe(false);
+  });
 });
 
 function makeGateway(options: { recentLimit?: number } = {}) {
@@ -448,6 +525,7 @@ function gatewayEnv(document: unknown = snapshotV2): MobileGatewayEnv {
     ACCESS_MAC_AUD: MAC_AUD,
     HOUSEHOLD_ID: HOUSEHOLD,
     HOUSEHOLD_NAME: "Test household",
+    FEATURE_RECEIPT_DRAFTS: "false",
   };
 }
 
