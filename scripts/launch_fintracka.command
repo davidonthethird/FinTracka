@@ -21,7 +21,7 @@ if curl --silent --fail "$APP_URL/api/v1/health" >/dev/null 2>&1; then
   fi
 fi
 
-trap 'status=$?; if (( status != 0 )); then echo; echo "FinTracka could not start. Press Return to close."; read; fi' EXIT
+trap 'exit_code=$?; if (( exit_code != 0 )); then echo; echo "FinTracka could not start. Press Return to close."; read; fi; exit "$exit_code"' EXIT
 
 cd "$PROJECT_DIR"
 if [[ ! -x .venv/bin/python ]]; then
@@ -29,6 +29,8 @@ if [[ ! -x .venv/bin/python ]]; then
   exit 1
 fi
 
+echo "Refreshing FinTracka dependencies..."
+npm --prefix frontend install --no-audit --no-fund
 echo "Preparing the latest FinTracka interface..."
 npm --prefix frontend run build
 echo "Starting FinTracka. Keep this window open; press Control-C to stop."
