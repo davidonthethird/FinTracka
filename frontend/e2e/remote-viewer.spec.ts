@@ -258,3 +258,67 @@ test("authorized household members can choose a scope, replace, and cancel a cla
   await expect(page.getByRole("dialog").getByText("Cancelled", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Edit classification" })).toBeVisible();
 });
+
+test("iPhone receipt Shortcut handoff imports populated text without loading browser OCR", async ({ page }) => {
+  const ocrRequests: string[] = [];
+  page.on("request", (request) => { if (/receipt-ocr|paddle|onnx/i.test(request.url())) ocrRequests.push(request.url()); });
+  await page.route("**/api/v1/mobile/receipt-scan-sessions", (route) => route.fulfill({ status: 201, json: {
+    contract: "receipt_scan_session/v1", token: "a".repeat(43),
+    upload_url: `${viewer}/api/v1/mobile/shortcut/receipt-imports`, expires_at: "2026-11-02T12:10:00.000Z",
+  } }));
+  await page.goto(`${viewer}/receipts/new`);
+  const launch = page.getByRole("link", { name: "Scan with iPhone" });
+  await expect(launch).toBeVisible();
+  const shortcutUrl = new URL(await launch.getAttribute("href") ?? "");
+  expect(shortcutUrl.protocol).toBe("shortcuts:");
+  expect(shortcutUrl.searchParams.get("name")).toBe("FinTracka Scan Receipt");
+  expect(page.locator('input[type="file"]')).toHaveCount(0);
+
+  const imported = { id: "00000000-0000-4000-8000-000000000001", shortcut_version: 1,
+    pages: [{ page_index: 0, text: "SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50" }],
+    created_at: "2026-11-02T12:00:00.000Z", expires_at: "2026-11-02T12:30:00.000Z" };
+  let createdBody: any;
+  await page.route(`**/api/v1/mobile/receipt-imports/${imported.id}`, async (route) => {
+    if (route.request().method() === "DELETE") await route.fulfill({ status: 204, body: "" });
+    else await route.fulfill({ json: { import: imported } });
+  });
+  await page.route("**/api/v1/mobile/receipts", async (route) => {
+    createdBody = route.request().postDataJSON();
+    await route.fulfill({ status: 201, json: { draft: { ...createdBody.draft, id: "shortcut-draft-1",
+      revision: 1, digest: "a".repeat(64), created_at: "2026-11-02", updated_at: "2026-11-02",
+      retention_at: "2027-01-31" }, replayed: false } });
+  });
+  await page.goto(`${viewer}/receipts/import/${imported.id}`);
+  await expect(page.getByRole("heading", { name: "Receipt details" })).toBeVisible();
+  expect(createdBody.idempotency_key).toBe(`shortcut-import-${imported.id}`);
+  expect(createdBody.draft).toMatchObject({ merchant: "SYNTHETIC MARKET", total_minor: 450 });
+  expect(ocrRequests).toEqual([]);
+});
+
+test("receipt import keeps unusable text reviewable and explains expired imports", async ({ page }) => {
+  const unusableId = "00000000-0000-4000-8000-000000000002";
+  let createCalls = 0;
+  await page.route(`**/api/v1/mobile/receipt-imports/${unusableId}`, (route) => route.fulfill({ json: { import: {
+    id: unusableId, shortcut_version: 1, pages: [{ page_index: 0, text: "###\n---" }],
+    created_at: "2026-11-02T12:00:00.000Z", expires_at: "2026-11-02T12:30:00.000Z",
+  } } }));
+  await page.route("**/api/v1/mobile/receipts", (route) => { createCalls += 1; return route.abort(); });
+  await page.goto(`${viewer}/receipts/import/${unusableId}`);
+  const unusable = page.getByRole("alert");
+  await expect(unusable).toContainText("did not contain a usable");
+  await expect(unusable).toBeFocused();
+  await page.getByText("Show recognized text").click();
+  await expect(page.locator(".receipt-recognized-text pre")).toContainText("###");
+  expect(createCalls).toBe(0);
+
+  const expiredId = "00000000-0000-4000-8000-000000000003";
+  await page.route(`**/api/v1/mobile/receipt-imports/${expiredId}`, (route) => route.fulfill({
+    status: 404, json: { error_code: "RECEIPT_IMPORT_NOT_FOUND" },
+  }));
+  await page.goto(`${viewer}/receipts/import/${expiredId}`);
+  const expired = page.getByRole("alert");
+  await expect(expired).toContainText("expired or was already removed");
+  await expect(expired).toBeFocused();
+  await page.getByRole("button", { name: "Start a new scan" }).click();
+  await expect(page.getByRole("heading", { name: "Scan receipt" })).toBeVisible();
+});

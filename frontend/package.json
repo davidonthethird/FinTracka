@@ -8,7 +8,7 @@
     "copy:receipt-ocr-assets": "node scripts/copy-receipt-ocr-assets.mjs",
     "dev:viewer": "npm run copy:receipt-ocr-assets && vite --config vite.viewer.config.ts --open /viewer.html",
     "build": "tsc -b && vite build",
-    "build:viewer": "tsc --noEmit -p tsconfig.app.json && npm run copy:receipt-ocr-assets && vite build --config vite.viewer.config.ts",
+    "build:viewer": "tsc --noEmit -p tsconfig.app.json && vite build --config vite.viewer.config.ts",
     "test:e2e": "playwright test",
     "test": "vitest run",
     "typecheck": "tsc -b --pretty false",

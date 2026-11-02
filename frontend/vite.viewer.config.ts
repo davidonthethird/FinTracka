@@ -1,9 +1,10 @@
-import { readFileSync, renameSync } from "node:fs";
+import { copyFileSync, readFileSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  publicDir: command === "build" ? false : "public",
   resolve: {
     alias: { "onnxruntime-web": "onnxruntime-web/wasm" },
     conditions: ["onnxruntime-web-use-extern-wasm"],
@@ -28,6 +29,8 @@ export default defineConfig({
           resolve(import.meta.dirname, "dist-viewer/viewer.html"),
           resolve(import.meta.dirname, "dist-viewer/index.html"),
         );
+        copyFileSync(resolve(import.meta.dirname, "public/favicon.svg"),
+          resolve(import.meta.dirname, "dist-viewer/favicon.svg"));
       },
     },
   ],
@@ -36,4 +39,4 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: { input: resolve(import.meta.dirname, "viewer.html") },
   },
-});
+}));

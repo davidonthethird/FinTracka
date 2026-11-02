@@ -49,15 +49,13 @@ describe("receipt API and pages", () => {
     expect(review).toContain("Save and wait for bank transaction");
   });
 
-  it("offers separate camera and photo-library inputs on iPhone", () => {
+  it("prepares a native iPhone Shortcut handoff without browser file inputs", () => {
     const html = renderToStaticMarkup(
       <ReceiptProvider><ReceiptCapturePage navigate={() => undefined} /></ReceiptProvider>,
     );
-    expect(html).toContain("Take photo");
-    expect(html).toContain("Choose from photo library");
-    expect(html.match(/capture="environment"/g)).toHaveLength(1);
-    expect(html.match(/type="file"/g)).toHaveLength(2);
-    expect(html.match(/accept="image\/jpeg,image\/png"/g)).toHaveLength(2);
+    expect(html).toContain("Preparing secure scan");
+    expect(html).toContain("photos stay on your iPhone");
+    expect(html).not.toContain("type=\"file\"");
   });
 });
 

@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import fixture from "../../tests/fixtures/remote_snapshot_v1.json";
 
-import { navigationPathForRoute, receiptIdForRoute, viewerNavigation } from "../src/viewer/ViewerApp";
+import { navigationPathForRoute, receiptIdForRoute, receiptImportIdForRoute, viewerNavigation } from "../src/viewer/ViewerApp";
 import { MobileCommandProvider } from "../src/viewer/mobileCommands";
 import { parseSnapshot } from "../src/viewer/model";
 import { TransactionsPage } from "../src/viewer/TransactionsPage";
@@ -36,6 +36,8 @@ describe("viewer navigation", () => {
   it("does not treat the new-receipt route as an existing receipt id", () => {
     expect(receiptIdForRoute("/receipts/new")).toBeUndefined();
     expect(receiptIdForRoute("/receipts/draft-1")).toBe("draft-1");
+    expect(receiptIdForRoute("/receipts/import/import-1")).toBeUndefined();
+    expect(receiptImportIdForRoute("/receipts/import/import-1")).toBe("import-1");
   });
 
   it("keeps the mobile bar to one five-column safe-area row", () => {
