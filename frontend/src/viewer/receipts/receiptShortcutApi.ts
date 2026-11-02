@@ -39,10 +39,10 @@ export async function deleteReceiptImport(id: string): Promise<void> {
 }
 
 export function buildReceiptShortcutUrl(session: ReceiptScanSession): string {
-  const query = new URLSearchParams({
-    name: "FinTracka Scan Receipt",
-    input: "text",
-    text: JSON.stringify(session),
-  });
-  return `shortcuts://run-shortcut?${query.toString()}`;
+  const query = [
+    `name=${encodeURIComponent("FinTracka Scan Receipt")}`,
+    "input=text",
+    `text=${encodeURIComponent(JSON.stringify(session))}`,
+  ].join("&");
+  return `shortcuts://run-shortcut?${query}`;
 }
