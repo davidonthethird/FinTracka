@@ -104,7 +104,8 @@ export class ReceiptImageStore {
 }
 
 export async function prepareReceiptPage(id: string, source: Blob, maxEdge = 3_200): Promise<PreparedReceiptPage> {
-  const bitmap = await createImageBitmap(source);
+  const decodable = await browserDecodableImage(source);
+  const bitmap = await createImageBitmap(decodable);
   try {
     const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
     const canvas = document.createElement("canvas");
@@ -121,6 +122,16 @@ export async function prepareReceiptPage(id: string, source: Blob, maxEdge = 3_2
   } finally {
     bitmap.close();
   }
+}
+
+async function browserDecodableImage(source: Blob): Promise<Blob> {
+  const heicMime = /^image\/hei[cf]/i.test(source.type);
+  const heicName = typeof File !== "undefined" && source instanceof File && /\.hei[cf]$/i.test(source.name);
+  if (!heicMime && !heicName) return source;
+  const { heicTo } = await import("heic-to/csp");
+  const converted = await heicTo({ blob: source, type: "image/jpeg", quality: 0.92 });
+  if (!(converted instanceof Blob)) throw new ReceiptImageStoreError("storage_unavailable", "HEIC conversion failed");
+  return converted;
 }
 
 function withoutKey({ key: _key, ...row }: StoredRow): StoredReceiptImage { return row; }
