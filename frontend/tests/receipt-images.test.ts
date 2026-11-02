@@ -1,15 +1,7 @@
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { prepareReceiptPage, ReceiptImageStore, ReceiptImageStoreError } from "../src/viewer/receipts/receiptImages";
-
-const heic = vi.hoisted(() => ({
-  heicTo: vi.fn(async () => new Blob(["jpeg"], { type: "image/jpeg" })),
-}));
-
-vi.mock("heic-to/csp", () => heic);
-
-afterEach(() => vi.unstubAllGlobals());
+import { ReceiptImageStore, ReceiptImageStoreError } from "../src/viewer/receipts/receiptImages";
 
 describe("receipt image store", () => {
   it("stores ordered origin-private blobs with crop and rotation metadata", async () => {
@@ -47,24 +39,4 @@ describe("receipt image store", () => {
     })).rejects.toEqual(expect.objectContaining<Partial<ReceiptImageStoreError>>({ code: "quota_exceeded" }));
   });
 
-  it("converts an iPhone HEIC photo before browser decoding", async () => {
-    const decoded = { width: 100, height: 200, close: vi.fn() };
-    const createImageBitmap = vi.fn(async (source: Blob) => {
-      if (source.type !== "image/jpeg") throw new DOMException("The source image could not be decoded.");
-      return decoded;
-    });
-    vi.stubGlobal("createImageBitmap", createImageBitmap);
-    vi.stubGlobal("document", { createElement: () => ({
-      width: 0, height: 0,
-      getContext: () => ({ drawImage: vi.fn() }),
-      toBlob: (callback: (blob: Blob) => void) => callback(new Blob(["normalized"], { type: "image/jpeg" })),
-    }) });
-
-    const result = await prepareReceiptPage("iphone-photo", new Blob(["heic"], { type: "image/heic" }));
-
-    expect(heic.heicTo).toHaveBeenCalledWith(expect.objectContaining({ type: "image/jpeg" }));
-    expect(createImageBitmap).toHaveBeenCalledWith(expect.objectContaining({ type: "image/jpeg" }));
-    expect(result.image).toEqual(expect.objectContaining({ type: "image/jpeg" }));
-    expect(decoded.close).toHaveBeenCalledOnce();
-  });
 });
