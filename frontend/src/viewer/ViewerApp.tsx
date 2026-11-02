@@ -26,6 +26,11 @@ export function navigationPathForRoute(route: string): string {
   return route === "/receipts" || route.startsWith("/receipts/") ? "/transactions" : route;
 }
 
+export function receiptIdForRoute(route: string): string | undefined {
+  if (route === "/receipts/new") return undefined;
+  return route.match(/^\/receipts\/([^/]+)$/)?.[1];
+}
+
 export function ViewerApp() {
   const [route, setRoute] = useState(window.location.pathname);
   const [snapshot, setSnapshot] = useState<RemoteSnapshot>();
@@ -59,7 +64,7 @@ export function ViewerApp() {
   }
   if (error) return <main className="viewer-state"><span className="viewer-mark">F</span><h1>Viewer unavailable</h1><p>{error}</p><button onClick={() => window.location.reload()}>Try again</button></main>;
   if (!snapshot) return <main className="viewer-state"><span className="viewer-mark">F</span><h1>Opening your private ledger</h1><p>Reading the latest published snapshot…</p></main>;
-  const receiptId = route.match(/^\/receipts\/([^/]+)$/)?.[1];
+  const receiptId = receiptIdForRoute(route);
   const receiptRoute = route === "/receipts" || route === "/receipts/new" || Boolean(receiptId);
   return <MobileCommandProvider snapshot={snapshot} onSnapshotRefresh={refreshSnapshot}><ReceiptProvider><div className="remote-shell">
     <header className="viewer-topbar"><button className="viewer-brand" onClick={() => navigate("/")}><span>F</span><strong>FinTracka</strong><small>Remote viewer</small></button><a href="/cdn-cgi/access/logout">Sign out</a></header>

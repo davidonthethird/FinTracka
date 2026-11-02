@@ -80,6 +80,7 @@ def _publish_remote_snapshot_locked(
                     history_months=settings.history_months,
                     now=captured_at,
                     mobile_commands_enabled=mobile_command_settings.enabled,
+                    receipt_matching_enabled=mobile_command_settings.enabled,
                 )
                 payload = serialize_remote_snapshot(snapshot)
                 result = client_factory(settings, secrets).publish(payload, snapshot_digest(payload))

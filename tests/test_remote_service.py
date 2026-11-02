@@ -280,9 +280,12 @@ def test_publish_advertises_mobile_editing_only_after_explicit_enable(tmp_path) 
         now=lambda: datetime(2026, 10, 30, 12, tzinfo=timezone.utc),
     )
 
+    assert captured["schema_version"] == 3
     assert captured["capabilities"]["commands"] == {
         "transaction.set_classification": [1, 2],
+        "transaction.apply_receipt_split": [1],
     }
+    assert captured["capabilities"]["receipts"] == {"matching": [1]}
 
 
 def test_manual_publish_is_allowed_before_automatic_publication_is_enabled(tmp_path) -> None:
