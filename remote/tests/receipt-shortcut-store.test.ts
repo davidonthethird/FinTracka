@@ -39,6 +39,18 @@ beforeEach(async () => {
 });
 
 describe("receipt shortcut model", () => {
+  it("accepts the decimal page indexes emitted by Apple Shortcuts", () => {
+    const parsed = ReceiptShortcutCaptureSchema.parse({
+      ...capture(), pages: [{ page_index: "0", text: "Synthetic Market" }],
+    });
+    expect(parsed.pages[0].page_index).toBe(0);
+    for (const page_index of ["", "00", "1.5", "-1", "12", "one"]) {
+      expect(ReceiptShortcutCaptureSchema.safeParse({
+        ...capture(), pages: [{ page_index, text: "Synthetic Market" }],
+      }).success).toBe(false);
+    }
+  });
+
   it("accepts a native Shortcuts SHA-256 idempotency key", () => {
     const nativeKey = "a".repeat(64);
     expect(ReceiptShortcutCaptureSchema.parse({
