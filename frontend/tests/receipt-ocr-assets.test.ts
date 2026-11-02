@@ -1,14 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  RECEIPT_OCR_CORE_PATH,
-  RECEIPT_OCR_LANGUAGE_PATH,
-  RECEIPT_OCR_WORKER_PATH,
+  RECEIPT_OCR_DETECTION_MODEL_URL,
+  RECEIPT_OCR_RECOGNITION_MODEL_URL,
+  RECEIPT_OCR_RUNTIME_PATH,
 } from "../src/viewer/receipts/receiptOcr";
 
 const temporaryDirectories: string[] = [];
@@ -18,53 +18,36 @@ afterEach(() => {
 });
 
 describe("receipt OCR assets", () => {
-  it("uses only same-origin paths", () => {
-    for (const assetPath of [RECEIPT_OCR_WORKER_PATH, RECEIPT_OCR_CORE_PATH, RECEIPT_OCR_LANGUAGE_PATH]) {
+  it("uses only same-origin runtime paths", () => {
+    for (const assetPath of [
+      RECEIPT_OCR_DETECTION_MODEL_URL,
+      RECEIPT_OCR_RECOGNITION_MODEL_URL,
+      RECEIPT_OCR_RUNTIME_PATH,
+    ]) {
       expect(assetPath).toMatch(/^\/receipt-ocr\//);
       expect(assetPath).not.toMatch(/^https?:\/\//);
     }
   });
 
-  it("copies the pinned worker, all selectable core builds, and English data", () => {
+  it("copies the pinned ONNX browser runtime", () => {
     const output = mkdtempSync(join(tmpdir(), "fintracka-receipt-ocr-"));
     temporaryDirectories.push(output);
     execFileSync(process.execPath, [resolve("scripts/copy-receipt-ocr-assets.mjs"), output], {
-      cwd: resolve("."),
-      stdio: "pipe",
+      cwd: resolve("."), stdio: "pipe", env: { ...process.env, FINTRACKA_RECEIPT_OCR_SKIP_MODELS: "1" },
     });
 
-    expect(readFileSync(join(output, "worker.min.js"))).not.toHaveLength(0);
-    expect(readFileSync(join(output, "lang", "eng.traineddata.gz"))).not.toHaveLength(0);
-    const coreFiles = readdirSync(join(output, "core"));
-    expect(coreFiles).toEqual(expect.arrayContaining([
-      "tesseract-core.js",
-      "tesseract-core.wasm",
-      "tesseract-core.wasm.js",
-      "tesseract-core-simd.js",
-      "tesseract-core-simd.wasm",
-      "tesseract-core-simd.wasm.js",
-      "tesseract-core-relaxedsimd.js",
-      "tesseract-core-relaxedsimd.wasm",
-      "tesseract-core-relaxedsimd.wasm.js",
-      "tesseract-core-lstm.js",
-      "tesseract-core-lstm.wasm",
-      "tesseract-core-lstm.wasm.js",
-      "tesseract-core-simd-lstm.js",
-      "tesseract-core-simd-lstm.wasm",
-      "tesseract-core-simd-lstm.wasm.js",
-      "tesseract-core-relaxedsimd-lstm.js",
-      "tesseract-core-relaxedsimd-lstm.wasm",
-      "tesseract-core-relaxedsimd-lstm.wasm.js",
-    ]));
+    expect(readFileSync(join(output, "ort", "ort-wasm-simd-threaded.mjs"))).not.toHaveLength(0);
+    expect(readFileSync(join(output, "ort", "ort-wasm-simd-threaded.wasm"))).not.toHaveLength(0);
+    expect(readFileSync(join(output, "ort", "ort-wasm-simd-threaded.jsep.mjs"))).not.toHaveLength(0);
+    expect(readFileSync(join(output, "ort", "ort-wasm-simd-threaded.jsep.wasm"))).not.toHaveLength(0);
   });
 
-  it("contains no remote fallback in the copier or OCR adapter", () => {
-    const sources = [
-      readFileSync(resolve("scripts/copy-receipt-ocr-assets.mjs"), "utf8"),
-      readFileSync(resolve("src/viewer/receipts/receiptOcr.ts"), "utf8"),
-    ].join("\n");
-    expect(sources).not.toMatch(/https?:\/\//);
-    expect(sources.toLowerCase()).not.toContain("cdn");
+  it("pins both official models by sha256 and has no runtime remote fallback", () => {
+    const copier = readFileSync(resolve("scripts/copy-receipt-ocr-assets.mjs"), "utf8");
+    expect(copier.match(/sha256: "[a-f0-9]{64}"/g)).toHaveLength(2);
+    const adapter = readFileSync(resolve("src/viewer/receipts/receiptOcr.ts"), "utf8");
+    expect(adapter).not.toMatch(/https?:\/\//);
+    expect(adapter.toLowerCase()).not.toContain("cdn");
   });
 
   it("uses raster benchmark fixtures that the OCR engine can decode", () => {

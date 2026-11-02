@@ -1,4 +1,4 @@
-import { createWorker, OEM, type Block, type LoggerMessage, type Worker } from "tesseract.js";
+import type { OcrResult, Point2D } from "@paddleocr/paddleocr-js";
 
 import type {
   OcrReceiptPage,
@@ -7,102 +7,111 @@ import type {
   ReceiptOcrProgress,
 } from "./types";
 
-export const RECEIPT_OCR_WORKER_PATH = "/receipt-ocr/worker.min.js";
-export const RECEIPT_OCR_CORE_PATH = "/receipt-ocr/core";
-export const RECEIPT_OCR_LANGUAGE_PATH = "/receipt-ocr/lang";
+export const RECEIPT_OCR_DETECTION_MODEL_URL = "/receipt-ocr/models/PP-OCRv6_small_det.tar";
+export const RECEIPT_OCR_RECOGNITION_MODEL_URL = "/receipt-ocr/models/PP-OCRv6_small_rec.tar";
+export const RECEIPT_OCR_RUNTIME_PATH = "/receipt-ocr/ort/";
 
 type ProgressHandler = (progress: ReceiptOcrProgress) => void;
+type PaddleModule = typeof import("@paddleocr/paddleocr-js");
+type PaddleEngine = Awaited<ReturnType<PaddleModule["PaddleOCR"]["create"]>>;
 
 function abortError(): DOMException {
   return new DOMException("Receipt recognition was cancelled", "AbortError");
 }
 
-class TesseractReceiptOcrEngine implements ReceiptOcrEngine {
-  private worker?: Worker;
-  private workerPromise?: Promise<Worker>;
-  private activePage = 0;
-  private pageCount = 0;
+class PaddleReceiptOcrEngine implements ReceiptOcrEngine {
+  private engine?: PaddleEngine;
+  private enginePromise?: Promise<PaddleEngine>;
 
   constructor(private readonly onProgress?: ProgressHandler) {}
 
-  private getWorker(): Promise<Worker> {
-    if (this.worker) return Promise.resolve(this.worker);
-    if (!this.workerPromise) {
-      this.workerPromise = createWorker("eng", OEM.LSTM_ONLY, {
-        workerPath: RECEIPT_OCR_WORKER_PATH,
-        corePath: RECEIPT_OCR_CORE_PATH,
-        langPath: RECEIPT_OCR_LANGUAGE_PATH,
-        logger: (message: LoggerMessage) => this.reportProgress(message),
-      }).then((worker) => {
-        this.worker = worker;
-        return worker;
-      }).finally(() => {
-        this.workerPromise = undefined;
-      });
+  private getEngine(): Promise<PaddleEngine> {
+    if (this.engine) return Promise.resolve(this.engine);
+    if (!this.enginePromise) {
+      this.enginePromise = import("@paddleocr/paddleocr-js").then(({ PaddleOCR }) => PaddleOCR.create({
+        lang: "en",
+        ocrVersion: "PP-OCRv6",
+        textDetectionModelName: "PP-OCRv6_small_det",
+        textDetectionModelAsset: { url: RECEIPT_OCR_DETECTION_MODEL_URL },
+        textRecognitionModelName: "PP-OCRv6_small_rec",
+        textRecognitionModelAsset: { url: RECEIPT_OCR_RECOGNITION_MODEL_URL },
+        worker: true,
+        ortOptions: { backend: "wasm", wasmPaths: RECEIPT_OCR_RUNTIME_PATH, numThreads: 1, simd: true },
+      })).then((engine) => {
+        this.engine = engine;
+        return engine;
+      }).finally(() => { this.enginePromise = undefined; });
     }
-    return this.workerPromise;
-  }
-
-  private reportProgress(message: LoggerMessage): void {
-    this.onProgress?.({
-      page_index: this.activePage,
-      page_count: this.pageCount,
-      status: message.status,
-      progress_basis_points: Math.max(0, Math.min(10_000, Math.round(message.progress * 10_000))),
-    });
+    return this.enginePromise;
   }
 
   async recognize(pages: PreparedReceiptPage[], signal: AbortSignal): Promise<OcrReceiptPage[]> {
     if (signal.aborted) throw abortError();
-    this.pageCount = pages.length;
-    const worker = await this.getWorker();
-    const abort = () => { void this.terminate(); };
-    signal.addEventListener("abort", abort, { once: true });
-    try {
-      const results: OcrReceiptPage[] = [];
-      for (const [pageIndex, page] of pages.entries()) {
-        if (signal.aborted) throw abortError();
-        this.activePage = pageIndex;
-        const result = await worker.recognize(page.image, {}, { text: true, blocks: true });
-        if (signal.aborted) throw abortError();
-        results.push({
-          id: page.id,
-          page_index: pageIndex,
-          text: result.data.text,
-          confidence_basis_points: Math.max(0, Math.min(10_000, Math.round(result.data.confidence * 100))),
-          observations: observationsFromBlocks(page.id, result.data.blocks),
-        });
-      }
-      return results;
-    } catch (error) {
+    const engine = await this.getEngine();
+    if (signal.aborted) throw abortError();
+    const results: OcrReceiptPage[] = [];
+    for (const [pageIndex, page] of pages.entries()) {
       if (signal.aborted) throw abortError();
-      throw error;
-    } finally {
-      signal.removeEventListener("abort", abort);
+      this.onProgress?.({ page_index: pageIndex, page_count: pages.length,
+        status: "reading receipt", progress_basis_points: 0 });
+      const [result] = await engine.predict(page.image, {
+        textDetLimitSideLen: 3_200,
+        textDetMaxSideLimit: 4_000,
+        textDetThresh: 0.2,
+        textDetBoxThresh: 0.4,
+        textDetUnclipRatio: 1.8,
+        textRecScoreThresh: 0.05,
+      });
+      if (signal.aborted) throw abortError();
+      results.push(pageFromResult(page.id, pageIndex, result));
+      this.onProgress?.({ page_index: pageIndex, page_count: pages.length,
+        status: "page complete", progress_basis_points: 10_000 });
     }
+    return results;
   }
 
   async terminate(): Promise<void> {
-    const worker = this.worker;
-    this.worker = undefined;
-    if (worker) await worker.terminate();
+    const engine = this.engine ?? await this.enginePromise;
+    this.engine = undefined;
+    this.enginePromise = undefined;
+    if (engine) await engine.dispose();
   }
 }
 
-function observationsFromBlocks(pageId: string, blocks: Block[] | null) {
-  if (!blocks?.length) return undefined;
-  const pageBottom = Math.max(1, ...blocks.map((block) => block.bbox.y1));
-  return blocks.flatMap((block) => block.paragraphs.flatMap((paragraph) => paragraph.lines))
-    .map((line, index) => ({
-      id: `${pageId}-line-${index}`,
-      text: line.text.trim(),
-      confidence_basis_points: Math.max(0, Math.min(10_000, Math.round(line.confidence * 100))),
-      bbox: { x: line.bbox.x0, y: line.bbox.y0,
-        width: Math.max(0, line.bbox.x1 - line.bbox.x0), height: Math.max(0, line.bbox.y1 - line.bbox.y0) },
-      relative_y: Math.max(0, Math.min(1, line.bbox.y0 / pageBottom)),
-    })).filter((line) => line.text.length > 0);
+function pageFromResult(id: string, pageIndex: number, result: OcrResult): OcrReceiptPage {
+  const items = result.items.filter((item) => item.text.trim().length > 0);
+  const confidence = items.length
+    ? Math.round(items.reduce((sum, item) => sum + item.score, 0) / items.length * 10_000)
+    : 0;
+  return {
+    id,
+    page_index: pageIndex,
+    text: items.map((item) => item.text.trim()).join("\n"),
+    confidence_basis_points: clampBasisPoints(confidence),
+    observations: items.map((item, index) => {
+      const bounds = polygonBounds(item.poly);
+      return {
+        id: `${id}-line-${index}`,
+        text: item.text.trim(),
+        confidence_basis_points: clampBasisPoints(Math.round(item.score * 10_000)),
+        bbox: bounds,
+        relative_y: Math.max(0, Math.min(1, bounds.y / Math.max(1, result.image.height))),
+      };
+    }),
+  };
+}
+
+function polygonBounds(poly: Point2D[]) {
+  const xs = poly.map(([x]) => x);
+  const ys = poly.map(([, y]) => y);
+  const x = Math.min(...xs); const y = Math.min(...ys);
+  return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
+}
+
+function clampBasisPoints(value: number): number {
+  return Math.max(0, Math.min(10_000, value));
 }
 
 export function createReceiptOcrEngine(onProgress?: ProgressHandler): ReceiptOcrEngine {
-  return new TesseractReceiptOcrEngine(onProgress);
+  return new PaddleReceiptOcrEngine(onProgress);
 }

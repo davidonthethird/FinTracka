@@ -103,7 +103,7 @@ export class ReceiptImageStore {
   }
 }
 
-export async function prepareReceiptPage(id: string, source: Blob, maxEdge = 2_400): Promise<PreparedReceiptPage> {
+export async function prepareReceiptPage(id: string, source: Blob, maxEdge = 3_200): Promise<PreparedReceiptPage> {
   const bitmap = await createImageBitmap(source);
   try {
     const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
