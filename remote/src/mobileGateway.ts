@@ -21,6 +21,13 @@ import {
   type ReceiptMatchInput,
 } from "./receiptGateway";
 import { ReceiptStore } from "./receiptStore";
+import {
+  handleReceiptShortcutBrowser,
+  handleReceiptShortcutUpload,
+  mapReceiptShortcutError,
+  receiptShortcutEnabled,
+} from "./receiptShortcutGateway";
+import { ReceiptShortcutStore } from "./receiptShortcutStore";
 
 export interface MobileGatewayEnv {
   COMMANDS: D1Database;
@@ -32,6 +39,7 @@ export interface MobileGatewayEnv {
   HOUSEHOLD_NAME: string;
   FEATURE_RECEIPT_DRAFTS?: string;
   FEATURE_RECEIPT_MATCHING?: string;
+  FEATURE_RECEIPT_SHORTCUT?: string;
 }
 
 interface GatewayDependencies {
@@ -73,9 +81,16 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
       const url = new URL(request.url);
       const store = new MobileCommandStore(env.COMMANDS, now);
       const receiptStore = new ReceiptStore(env.COMMANDS, now);
+      const shortcutStore = new ReceiptShortcutStore(env.COMMANDS, now);
       try {
         if (!validSeparateAudiences(env.ACCESS_USER_AUD, env.ACCESS_MAC_AUD)) {
           return errorResponse(503, "MOBILE_AUTH_MISCONFIGURED");
+        }
+        if (url.pathname === "/api/v1/mobile/shortcut/receipt-imports") {
+          if (!receiptShortcutEnabled(env.FEATURE_RECEIPT_SHORTCUT)) {
+            return errorResponse(404, "NOT_FOUND");
+          }
+          return await handleReceiptShortcutUpload(request, shortcutStore);
         }
         if (url.pathname.startsWith("/api/v1/mobile/mac/")) {
           const identity = await resolveProcessorIdentity(request, {
@@ -103,6 +118,12 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
         if (!member || member.household_id !== env.HOUSEHOLD_ID) {
           return errorResponse(403, "MEMBER_NOT_AUTHORIZED");
         }
+        if (receiptShortcutEnabled(env.FEATURE_RECEIPT_SHORTCUT)) {
+          const shortcutResponse = await handleReceiptShortcutBrowser(
+            request, url, shortcutStore, member,
+          );
+          if (shortcutResponse) return shortcutResponse;
+        }
         if (receiptDraftsEnabled(env.FEATURE_RECEIPT_DRAFTS)) {
           const matchSubmitter = receiptDraftsEnabled(env.FEATURE_RECEIPT_MATCHING)
             ? (draftId: string, input: ReceiptMatchInput) => submitReceiptMatch(
@@ -120,6 +141,8 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
           request, url, env, store, member, now, pendingLimit, recentLimit,
         );
       } catch (error) {
+        const shortcutError = mapReceiptShortcutError(error);
+        if (shortcutError) return shortcutError;
         const receiptError = mapReceiptError(error);
         if (receiptError) return receiptError;
         return mapError(error);
