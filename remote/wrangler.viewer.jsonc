@@ -29,7 +29,7 @@
         "HOUSEHOLD_ID": "fintracka-household-v1",
         "HOUSEHOLD_NAME": "FinTracka household",
         "FEATURE_RECEIPT_DRAFTS": "true",
-        "FEATURE_RECEIPT_MATCHING": "false"
+        "FEATURE_RECEIPT_MATCHING": "true"
       }
     },
     "production": {
@@ -48,8 +48,8 @@
         "ACCESS_MAC_AUD": "550252d3098e4d0bf22259cf9f98b71149433a565fae23bd6fd541199e9c20c5",
         "HOUSEHOLD_ID": "fintracka-household-v1",
         "HOUSEHOLD_NAME": "FinTracka household",
-        "FEATURE_RECEIPT_DRAFTS": "false",
-        "FEATURE_RECEIPT_MATCHING": "false"
+        "FEATURE_RECEIPT_DRAFTS": "true",
+        "FEATURE_RECEIPT_MATCHING": "true"
       }
     }
   }
