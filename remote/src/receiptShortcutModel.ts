@@ -1,7 +1,10 @@
 import { z } from "zod";
 
 export const ReceiptShortcutPageSchema = z.object({
-  page_index: z.int().min(0).max(11),
+  page_index: z.preprocess(
+    (value) => typeof value === "string" && /^(0|[1-9]\d*)$/.test(value) ? Number(value) : value,
+    z.int().min(0).max(11),
+  ),
   text: z.string().max(30_000).refine((value) => value.trim().length > 0, "blank page"),
 }).strict();
 
