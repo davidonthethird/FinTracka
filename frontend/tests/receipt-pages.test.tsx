@@ -1,7 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ReceiptInboxView } from "../src/viewer/receipts/ReceiptInboxPage";
+import { ReceiptCapturePage } from "../src/viewer/receipts/ReceiptCapturePage";
+import { ReceiptProvider } from "../src/viewer/receipts/ReceiptProvider";
 import { ReceiptReviewForm } from "../src/viewer/receipts/ReceiptReviewPage";
 import { createReceipt, replaceReceipt } from "../src/viewer/receipts/receiptApi";
 import type { ReceiptDraft } from "../src/viewer/receipts/types";
@@ -44,6 +47,16 @@ describe("receipt API and pages", () => {
     expect(review).toContain("Ariela");
     expect(review).toContain("Shared");
     expect(review).toContain("Save and wait for bank transaction");
+  });
+
+  it("offers separate camera and photo-library inputs on iPhone", () => {
+    const html = renderToStaticMarkup(
+      <ReceiptProvider><ReceiptCapturePage navigate={() => undefined} /></ReceiptProvider>,
+    );
+    expect(html).toContain("Take photo");
+    expect(html).toContain("Choose from photo library");
+    expect(html.match(/capture="environment"/g)).toHaveLength(1);
+    expect(html.match(/type="file"/g)).toHaveLength(2);
   });
 });
 
