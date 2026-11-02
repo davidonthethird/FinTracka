@@ -23,7 +23,10 @@ Create a new shortcut named exactly `FinTracka Scan Receipt`. In its Details, ac
    - Convert the result to Text and trim whitespace. If empty, show `No text was recognized on page [PageIndex + 1]. Retake or reselect that page.` and stop before any upload.
    - Create a Dictionary with `page_index` = `PageIndex` and `text` = recognized text. Add it to `Pages`.
    - Increment `PageIndex` by 1.
-10. **Generate UUID** and save it as `IdempotencyKey`. Keep this value unchanged if **Get Contents of URL** is retried during this same Shortcut run.
+10. Build a native per-run idempotency key without a cloud model or script:
+    - Add **Current Date** and a **Random Number** from `100000000` through `999999999` to a Text action.
+    - Run **Generate Hash** with `SHA256` over that Text and save the lowercase hexadecimal result as `IdempotencyKey`.
+    - Keep this value unchanged if **Get Contents of URL** is retried during this same Shortcut run. The API accepts this 64-character SHA-256 digest (and continues to accept UUIDs for older reviewed copies).
 11. Create Dictionary `Capture` with:
     - `contract`: `receipt_shortcut_capture/v1`
     - `idempotency_key`: `IdempotencyKey`

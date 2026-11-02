@@ -7,7 +7,9 @@ export const ReceiptShortcutPageSchema = z.object({
 
 export const ReceiptShortcutCaptureSchema = z.object({
   contract: z.literal("receipt_shortcut_capture/v1"),
-  idempotency_key: z.string().uuid(),
+  idempotency_key: z.string().refine((value) =>
+    z.uuid().safeParse(value).success || /^[a-f0-9]{64}$/i.test(value),
+  "idempotency key must be a UUID or SHA-256 digest"),
   shortcut_version: z.literal(1),
   pages: z.array(ReceiptShortcutPageSchema).min(1).max(12),
 }).strict().superRefine((capture, context) => {

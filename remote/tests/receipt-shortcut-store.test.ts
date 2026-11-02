@@ -39,6 +39,13 @@ beforeEach(async () => {
 });
 
 describe("receipt shortcut model", () => {
+  it("accepts a native Shortcuts SHA-256 idempotency key", () => {
+    const nativeKey = "a".repeat(64);
+    expect(ReceiptShortcutCaptureSchema.parse({
+      ...capture(), idempotency_key: nativeKey,
+    }).idempotency_key).toBe(nativeKey);
+  });
+
   it("accepts ordered nonblank pages and rejects unknown, blank, duplicate, and oversized input", () => {
     expect(ReceiptShortcutCaptureSchema.parse(capture()).pages).toHaveLength(1);
     for (const invalid of [
