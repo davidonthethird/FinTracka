@@ -18,6 +18,7 @@
     "@paddleocr/paddleocr-js": "0.4.2",
     "@tanstack/react-table": "8.21.3",
     "lucide-react": "1.61.0",
+    "onnxruntime-web": "1.24.3",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-plaid-link": "5.0.0",
