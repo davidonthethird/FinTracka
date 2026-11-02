@@ -11,8 +11,6 @@ const ortRoot = resolve(frontendRoot, "node_modules", "onnxruntime-web", "dist")
 const runtimeFiles = [
   "ort-wasm-simd-threaded.mjs",
   "ort-wasm-simd-threaded.wasm",
-  "ort-wasm-simd-threaded.jsep.mjs",
-  "ort-wasm-simd-threaded.jsep.wasm",
 ];
 const models = [
   {

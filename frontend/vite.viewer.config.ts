@@ -4,6 +4,10 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  resolve: {
+    alias: { "onnxruntime-web": "onnxruntime-web/wasm" },
+    conditions: ["onnxruntime-web-use-extern-wasm"],
+  },
   plugins: [
     react(),
     {

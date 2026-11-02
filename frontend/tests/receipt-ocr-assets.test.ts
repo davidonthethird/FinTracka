@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -38,8 +38,14 @@ describe("receipt OCR assets", () => {
 
     expect(readFileSync(join(output, "ort", "ort-wasm-simd-threaded.mjs"))).not.toHaveLength(0);
     expect(readFileSync(join(output, "ort", "ort-wasm-simd-threaded.wasm"))).not.toHaveLength(0);
-    expect(readFileSync(join(output, "ort", "ort-wasm-simd-threaded.jsep.mjs"))).not.toHaveLength(0);
-    expect(readFileSync(join(output, "ort", "ort-wasm-simd-threaded.jsep.wasm"))).not.toHaveLength(0);
+    expect(existsSync(join(output, "ort", "ort-wasm-simd-threaded.jsep.mjs"))).toBe(false);
+    expect(existsSync(join(output, "ort", "ort-wasm-simd-threaded.jsep.wasm"))).toBe(false);
+  });
+
+  it("bundles the CPU/WASM-only ONNX entry instead of the oversized JSEP runtime", () => {
+    const config = readFileSync(resolve("vite.viewer.config.ts"), "utf8");
+    expect(config).toContain('"onnxruntime-web": "onnxruntime-web/wasm"');
+    expect(config).toContain('"onnxruntime-web-use-extern-wasm"');
   });
 
   it("pins both official models by sha256 and has no runtime remote fallback", () => {
