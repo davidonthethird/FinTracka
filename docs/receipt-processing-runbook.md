@@ -1,6 +1,6 @@
 # Receipt processing runbook
 
-FinTracka scans receipt images locally in the authenticated phone browser. Original images and OCR text never leave that browser. Only a reviewed, structured draft is stored in the household D1 database; SQLite on the Mac remains the financial system of record.
+FinTracka uses Apple's on-device text recognition through the reviewed `FinTracka Scan Receipt` iPhone Shortcut. Original images never leave the phone. The Shortcut uploads only ordered recognized text through a ten-minute, one-use, member-bound session; the temporary text import expires after 30 minutes. A reviewed structured draft is stored in household D1, and SQLite on the Mac remains the financial system of record. Build and deploy the Shortcut only from [receipt-shortcut-setup.md](receipt-shortcut-setup.md).
 
 ## Security and correctness boundaries
 
@@ -15,25 +15,25 @@ FinTracka scans receipt images locally in the authenticated phone browser. Origi
 
 1. Create and verify a local SQLite backup. Keep the once-per-minute command processor disabled.
 2. Build and test the Viewer against snapshot schemas 1, 2, and 3.
-3. Apply D1 migrations through `0004_receipt_commands.sql` in staging. Run the command again and require “no migrations to apply.”
-4. Deploy the Viewer Worker with `FEATURE_RECEIPT_DRAFTS=false` and `FEATURE_RECEIPT_MATCHING=false`.
+3. Apply D1 migrations through `0005_receipt_shortcut_imports.sql` in staging. Run the command again and require “no migrations to apply.”
+4. Deploy the Viewer Worker with `FEATURE_RECEIPT_DRAFTS=false`, `FEATURE_RECEIPT_MATCHING=false`, and `FEATURE_RECEIPT_SHORTCUT=false`.
 5. Migrate a copied/synthetic SQLite database through migration 021 and require `PRAGMA foreign_key_check` to return no rows.
 6. Publish a synthetic snapshot v3. Verify older snapshots still read and v3 advertises `transaction.apply_receipt_split:[1]` and `receipts.matching:[1]`.
-7. Enable drafts in staging only. Run the iPhone performance gate below. Keep financial matching false.
+7. Enable drafts in staging only. Configure and test the exact receipt-upload Access path, then enable `FEATURE_RECEIPT_SHORTCUT` in staging and run the iPhone gate below. Keep financial matching false.
 8. Enable matching in staging and complete the controlled synthetic reconciliation.
 9. Repeat migrations, reader deployment, and idempotence checks in production with both flags false.
 10. Enable production drafts only after the iPhone gate. Enable production matching and the minute processor only after the user-selected live reconciliation.
 
 ## Required iPhone gate
 
-On a supported iPhone in the protected staging Viewer, use the receipt OCR benchmark and then the normal capture flow:
+On each supported household iPhone in the protected staging Viewer, install the inspected version-1 Shortcut and use the normal camera and library flows:
 
-- one page completes within 15 seconds;
-- six pages complete within 90 seconds;
-- Safari does not reload or evict the page;
-- Network inspection shows no third-party image, OCR, or receipt-text request;
+- one page completes without Safari OCR or a page reload;
+- six ordered pages return without duplicate or missing lines;
+- the Shortcut performs **Extract Text from Image** while offline before its upload attempt;
+- Network inspection shows no image upload or third-party request; only recognized text reaches the exact Worker path;
 - a long overlap is either collapsed only when exact or visibly flagged for review;
-- photos remain usable while offline and are pruned after the local retention window.
+- camera and photo-library permissions appear only when used, and a cancelled/failed scan creates zero drafts.
 
 If this gate fails, keep both production receipt flags false. Do not substitute cloud OCR without a new privacy and threat-model review.
 
@@ -68,7 +68,7 @@ The repository currently has two dated baseline test failures documented in the 
 
 ## Rollback
 
-1. Set `FEATURE_RECEIPT_MATCHING=false` and redeploy. Pending receipt commands remain inert if the Mac processor is also disabled.
+1. Set `FEATURE_RECEIPT_SHORTCUT=false` and `FEATURE_RECEIPT_MATCHING=false` and redeploy. Remove only the exact receipt-upload Access Bypass application. Pending receipt commands remain inert if the Mac processor is also disabled.
 2. Disable and remove the command schedule with the existing CLI commands.
 3. Keep `FEATURE_RECEIPT_DRAFTS=true` only if capture/review should remain available; set it false to hide the entire receipt surface.
 4. Do not reverse a D1 or SQLite migration in place. Restore the verified pre-migration SQLite backup if local rollback is necessary; D1 columns/tables may remain unused.
@@ -89,11 +89,15 @@ Original-image cloud backup is explicitly out of scope. It requires a separate e
 
 At that deployment, no live receipt was selected or applied. The iPhone performance gate and user-selected controlled live reconciliation remained deliberate activation gates, not implementation gaps.
 
-## 2026-11-01 real-receipt validation
+## 2026-11-01 browser OCR benchmark evidence (superseded for production capture)
 
 - Replaced Tesseract with self-hosted PaddleOCR.js 0.4.2 and pinned PP-OCRv6-small detection/recognition models after comparing both engines against the real photos. Model hashes are verified during the build and no OCR CDN fallback exists.
 - The final cold Mac/headless-browser benchmark completed one prepared Target page in 7.0 seconds. The OCR chunk lazy-loads only on the scan route; ordinary Viewer startup no longer includes the roughly 10 MB OCR JavaScript chunk.
 - All nine real HEIC photos—including glare, wrinkles, perspective, faint thermal print, a photographed checkout screen, and two views of one receipt—produced exact visible merchant/summary fields and exact monetary lines. The ACME pair collapsed to one 16-line receipt. Stop & Shop's three ambiguous final digits were corrected only after the printed subtotal proved the 12-cent reconciliation, and those lines remain marked for review.
 - The Target photograph contains no visible purchase date; the parser correctly leaves it blank rather than inferring or inventing one.
 - Four exact posted purchases were applied locally after timestamped SQLite backups: ACME $109.61 (16 detailed lines), Target $38.11 (one detailed line), Home Depot $23.89 (one detailed line), and Liquor Wine Warehouse $162.20 (four detailed lines). Each increased `split_revision` exactly once, reconciled to the signed transaction amount, passed `PRAGMA foreign_key_check`, and was unchanged by an identical replay. The same-day Lowe's and Stop & Shop receipts remain unmatched until their bank transactions post.
-- iPhone Mirroring displayed the protected Viewer but macOS automation could not interact with the mirrored window. The Mac/browser benchmark is evidence for packaging, privacy, cancellation, and baseline performance; it does not replace the required physical iPhone Safari gate, so production receipt flags remain disabled.
+- iPhone Mirroring displayed the protected Viewer but macOS automation could not interact with the mirrored window. These results remain parser benchmark evidence only. Production capture now uses Apple Vision through the Shortcut, and its physical-iPhone gate remains required before activation.
+
+## Apple Vision Shortcut activation evidence
+
+Pending. Record the date, staging Worker version, exact-path Access application review, security-matrix result, both member-isolation scans, camera/library results, offline Vision result, and private-receipt acceptance result here before enabling production. Do not record tokens, import IDs, host/account identifiers, or receipt text.
