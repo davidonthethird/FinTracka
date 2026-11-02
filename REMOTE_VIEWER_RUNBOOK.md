@@ -1,6 +1,6 @@
 # FinTracka remote viewer runbook
 
-Receipt capture and item-level transaction splitting use the additional release gate in [docs/receipt-processing-runbook.md](docs/receipt-processing-runbook.md). Keep `FEATURE_RECEIPT_DRAFTS` and `FEATURE_RECEIPT_MATCHING` false in production until that gate is recorded; receipt matching reuses the dedicated Mac Access identity but has its own typed command and immutable revision checks.
+Receipt capture and item-level transaction splitting use the additional release gates in [docs/receipt-shortcut-setup.md](docs/receipt-shortcut-setup.md) and [docs/receipt-processing-runbook.md](docs/receipt-processing-runbook.md). Keep `FEATURE_RECEIPT_DRAFTS`, `FEATURE_RECEIPT_SHORTCUT`, and `FEATURE_RECEIPT_MATCHING` false in production until those gates are recorded; receipt matching reuses the dedicated Mac Access identity but has its own typed command and immutable revision checks.
 
 The remote viewer is a sanitized copy of the local ledger. SQLite on the Mac remains authoritative. Financial views are read-only and the viewer is not a backup. An authenticated household member may submit one narrowly typed category/subcategory proposal with a one-time, current-and-future, or eligible-past-and-future scope; only the Mac can validate and apply it to the ledger. The remote service cannot sync banks, change amounts/accounts/owners, bulk-edit arbitrary fields, or recover local data.
 
@@ -43,6 +43,12 @@ Mobile classification editing has a separate release gate from snapshot viewing.
 - [ ] Provision the two exact household member mappings from the Mac, reconcile controlled `1×` and `↔` commands, and only then enable/schedule production processing. The mappings are provisioned; reconciliation remains.
 
 The more-specific Mac application must win over the general Viewer application for `/api/v1/mobile/mac/*`. Bad or missing service credentials must return 401/403 and must never fall back to an interactive login redirect. Phone API routes remain under the exact-household, MFA-protected Viewer application. `ACCESS_MAC_AUD=UNCONFIGURED_DENY_ALL` intentionally keeps the Mac routes fail-closed before this setup is complete.
+
+### Receipt Shortcut upload boundary
+
+The sole unauthenticated Access exception is an exact `public` destination override on the existing Viewer application for `/api/v1/mobile/shortcut/receipt-imports`. Destination override path patterns do not cover subpaths unless a wildcard is present. The override exists only so the iPhone Shortcut can present the Worker-issued one-use bearer token without carrying a permanent Access credential. It does not restrict HTTP methods and disables Access logging for that matching path; the Worker must therefore reject every non-`POST` request and validate the short-lived token, strict JSON contract, page/body limits, and replay digest itself. Never add a wildcard or exempt `/api/v1/mobile/shortcut/`, `/api/v1/mobile/*`, or the Viewer hostname.
+
+Keep `FEATURE_RECEIPT_SHORTCUT=false` until the exact public override, neighboring-path denial, and method matrix pass. Enable staging only for the remaining cross-member and physical-phone acceptance; production stays false until those gates pass. Full setup, inspection, tests, and rollback are in [docs/receipt-shortcut-setup.md](docs/receipt-shortcut-setup.md).
 
 Apply and verify the command schema:
 

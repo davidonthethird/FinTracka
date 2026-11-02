@@ -258,3 +258,129 @@ test("authorized household members can choose a scope, replace, and cancel a cla
   await expect(page.getByRole("dialog").getByText("Cancelled", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Edit classification" })).toBeVisible();
 });
+
+test("iPhone receipt Shortcut handoff imports populated text without loading browser OCR", async ({ page }) => {
+  const ocrRequests: string[] = [];
+  page.on("request", (request) => { if (/receipt-ocr|paddle|onnx/i.test(request.url())) ocrRequests.push(request.url()); });
+  await page.route("**/api/v1/mobile/receipt-scan-sessions", (route) => route.fulfill({ status: 201, json: {
+    contract: "receipt_scan_session/v1", token: "a".repeat(43),
+    upload_url: `${viewer}/api/v1/mobile/shortcut/receipt-imports`, expires_at: "2026-11-02T12:10:00.000Z",
+  } }));
+  await page.goto(`${viewer}/receipts/new`);
+  const launch = page.getByRole("link", { name: "Scan with iPhone" });
+  await expect(launch).toBeVisible();
+  const shortcutUrl = new URL(await launch.getAttribute("href") ?? "");
+  expect(shortcutUrl.protocol).toBe("shortcuts:");
+  expect(shortcutUrl.searchParams.get("name")).toBe("FinTracka Scan Receipt");
+  expect(page.locator('input[type="file"]')).toHaveCount(0);
+
+  const imported = { id: "00000000-0000-4000-8000-000000000001", shortcut_version: 1,
+    pages: [{ page_index: 0, text: "SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50" }],
+    created_at: "2026-11-02T12:00:00.000Z", expires_at: "2026-11-02T12:30:00.000Z" };
+  let createdBody: any;
+  await page.route(`**/api/v1/mobile/receipt-imports/${imported.id}`, async (route) => {
+    if (route.request().method() === "DELETE") await route.fulfill({ status: 204, body: "" });
+    else await route.fulfill({ json: { import: imported } });
+  });
+  await page.route("**/api/v1/mobile/receipts", async (route) => {
+    createdBody = route.request().postDataJSON();
+    await route.fulfill({ status: 201, json: { draft: { ...createdBody.draft, id: "shortcut-draft-1",
+      revision: 1, digest: "a".repeat(64), created_at: "2026-11-02", updated_at: "2026-11-02",
+      retention_at: "2027-01-31" }, replayed: false } });
+  });
+  await page.goto(`${viewer}/receipts/import/${imported.id}`);
+  await expect(page.getByRole("heading", { name: "Receipt details" })).toBeVisible();
+  expect(createdBody.idempotency_key).toBe(`shortcut-import-${imported.id}`);
+  expect(createdBody.draft).toMatchObject({ merchant: "SYNTHETIC MARKET", total_minor: 450 });
+  expect(ocrRequests).toEqual([]);
+});
+
+test("leaving a receipt import before it loads does not create a draft", async ({ page }) => {
+  const importId = "00000000-0000-4000-8000-000000000004";
+  let releaseImport!: () => void;
+  const importReleased = new Promise<void>((resolve) => { releaseImport = resolve; });
+  let createCalls = 0;
+  await page.route(`**/api/v1/mobile/receipt-imports/${importId}`, async (route) => {
+    await importReleased;
+    await route.fulfill({ json: { import: {
+      id: importId, shortcut_version: 1,
+      pages: [{ page_index: 0, text: "SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50" }],
+      created_at: "2026-11-02T12:00:00.000Z", expires_at: "2026-11-02T12:30:00.000Z",
+    } } });
+  });
+  await page.route("**/api/v1/mobile/receipts", (route) => {
+    createCalls += 1;
+    return route.abort();
+  });
+
+  await page.goto(`${viewer}/receipts/import/${importId}`);
+  await page.getByRole("navigation", { name: "Viewer sections" })
+    .getByRole("button", { name: "Transactions", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Transactions", exact: true })).toBeVisible();
+  releaseImport();
+  await page.waitForTimeout(100);
+
+  expect(createCalls).toBe(0);
+});
+
+test("receipt import keeps unusable text reviewable and explains expired imports", async ({ page }) => {
+  const unusableId = "00000000-0000-4000-8000-000000000002";
+  let createCalls = 0;
+  await page.route(`**/api/v1/mobile/receipt-imports/${unusableId}`, (route) => route.fulfill({ json: { import: {
+    id: unusableId, shortcut_version: 1, pages: [{ page_index: 0, text: "###\n---" }],
+    created_at: "2026-11-02T12:00:00.000Z", expires_at: "2026-11-02T12:30:00.000Z",
+  } } }));
+  await page.route("**/api/v1/mobile/receipts", (route) => { createCalls += 1; return route.abort(); });
+  await page.goto(`${viewer}/receipts/import/${unusableId}`);
+  const unusable = page.getByRole("alert");
+  await expect(unusable).toContainText("did not contain a usable");
+  await expect(unusable).toBeFocused();
+  await page.getByText("Show recognized text").click();
+  await expect(page.locator(".receipt-recognized-text pre")).toContainText("###");
+  expect(createCalls).toBe(0);
+
+  const expiredId = "00000000-0000-4000-8000-000000000003";
+  await page.route(`**/api/v1/mobile/receipt-imports/${expiredId}`, (route) => route.fulfill({
+    status: 404, json: { error_code: "RECEIPT_IMPORT_NOT_FOUND" },
+  }));
+  await page.goto(`${viewer}/receipts/import/${expiredId}`);
+  const expired = page.getByRole("alert");
+  await expect(expired).toContainText("expired or was already removed");
+  await expect(expired).toBeFocused();
+  await page.getByRole("button", { name: "Start a new scan" }).click();
+  await expect(page.getByRole("heading", { name: "Scan receipt" })).toBeVisible();
+});
+
+test("receipt inbox confirms safe removal and refreshes after a revision conflict", async ({ page }) => {
+  const draft = (id: string, merchant: string) => ({ contract: "receipt_draft/v1", status: "editing",
+    merchant, purchase_date: "2026-11-02", currency: "USD", masked_payment_hint: null, page_count: 1,
+    subtotal_minor: 450, discount_minor: 0, tax_minor: 0, tip_minor: 0, fees_minor: 0, total_minor: 450,
+    lines: [], id, revision: 1, digest: "a".repeat(64), created_at: "2026-11-02",
+    updated_at: "2026-11-02", retention_at: "2027-01-31" });
+  let drafts = [draft("remove-1", "Remove Market"), draft("conflict-1", "Conflict Market")];
+  await page.route("**/api/v1/mobile/session", (route) => route.fulfill({ json: {
+    member: { id: "member-fixture", display_name: "Fixture member" },
+    capabilities: { "receipts.drafts": [1] }, server_time: new Date().toISOString(),
+  } }));
+  await page.route("**/api/v1/mobile/receipts", (route) => route.fulfill({ json: { drafts } }));
+  await page.route("**/api/v1/mobile/receipts/remove-1/dismiss", async (route) => {
+    const removed = { ...drafts[0], status: "dismissed", revision: 2 };
+    drafts = drafts.map((item) => item.id === removed.id ? removed : item);
+    await route.fulfill({ json: { draft: removed } });
+  });
+  await page.route("**/api/v1/mobile/receipts/conflict-1/dismiss", async (route) => {
+    drafts = drafts.map((item) => item.id === "conflict-1" ? { ...item, status: "conflict", revision: 2 } : item);
+    await route.fulfill({ status: 409, json: { error_code: "RECEIPT_REVISION_CONFLICT" } });
+  });
+  await page.goto(`${viewer}/receipts`);
+  await expect(page.getByRole("button", { name: "Open Remove Market receipt" })).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Remove Remove Market receipt" }).click();
+  await expect(page.getByRole("button", { name: "Open Remove Market receipt" })).toHaveCount(0);
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Remove Conflict Market receipt" }).click();
+  await expect(page.getByRole("alert")).toContainText("could not be removed");
+  await expect(page.getByRole("button", { name: "Open Conflict Market receipt" })).toBeVisible();
+  await expect(page.locator(".receipt-inbox-row", { hasText: "Conflict Market" })).toContainText("Needs review");
+});

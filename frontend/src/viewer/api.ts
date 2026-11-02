@@ -50,5 +50,7 @@ function humanMobileError(code: string): string {
   if (code === "STALE_CLASSIFICATION") return "The classification changed. Refresh before trying again.";
   if (code === "COMMAND_NOT_CANCELLABLE") return "This edit is already being applied and can no longer be cancelled.";
   if (code === "TOO_MANY_PENDING_COMMANDS" || code === "COMMAND_RATE_LIMITED") return "Too many edits are waiting. Try again after your Mac processes them.";
+  if (code === "RECEIPT_SCAN_SESSION_RATE_LIMITED") return "Too many receipt scans were prepared. Wait a few minutes and try again.";
+  if (code === "RECEIPT_IMPORT_NOT_FOUND") return "This receipt import expired or was already removed.";
   return "The edit could not be submitted. Try again.";
 }

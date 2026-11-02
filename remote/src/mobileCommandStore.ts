@@ -73,6 +73,16 @@ export class MobileCommandStore {
     `).bind(normalized).first<HouseholdMember>();
   }
 
+  async resolveMemberById(id: string): Promise<HouseholdMember | null> {
+    if (!id || id.length > 128) return null;
+    return this.database.prepare(`
+      SELECT m.id, m.household_id, m.display_name, m.role
+      FROM household_members m
+      JOIN households h ON h.id = m.household_id
+      WHERE m.id = ? AND m.active = 1 AND h.active = 1
+    `).bind(id).first<HouseholdMember>();
+  }
+
   async upsertMember(input: MemberProvisioning): Promise<void> {
     const email = normalizeEmail(input.normalizedEmail);
     if (!email || !input.householdId || !input.memberId || !input.displayName.trim()) {

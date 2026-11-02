@@ -1,9 +1,42 @@
 import { describe, expect, it } from "vitest";
 
 import { parseReceiptPages } from "../src/viewer/receipts/receiptParser";
+import { receiptPagesFromPlainText } from "../src/viewer/receipts/receiptPlainText";
 import type { OcrReceiptPage } from "../src/viewer/receipts/types";
 
 describe("receipt parser", () => {
+  it.each([
+    {
+      name: "Target", text: "TARGET CIRCLE\n10/14/26\nHandbags\n$35.00\nSUBTOTAL\n$35.00\nTAX\n$3.11\nTOTAL\n$38.11",
+      merchant: "Target", subtotal: 3_500, tax: 311, total: 3_811, lines: [["Handbags", 3_500]],
+    },
+    {
+      name: "ACME", text: "ACME MARKETS\n10/20/26\nPAPER NAPKINS 9.99\nDRAGON FRUIT 4.50\nSUBTOTAL 14.49\nTAX 1.28\nTOTAL 15.77",
+      merchant: "ACME MARKETS", subtotal: 1_449, tax: 128, total: 1_577,
+      lines: [["PAPER NAPKINS", 999], ["DRAGON FRUIT", 450]],
+    },
+    {
+      name: "Lowe's", text: "LOWE'S HOME CENTERS, LLC\n11/01/26\nFIBERGLASS HAMMER\n22.98\nSUBTOTAL\n22.98\nTAX\n2.04\nTOTAL\n25.02",
+      merchant: "LOWE'S HOME CENTERS, LLC", subtotal: 2_298, tax: 204, total: 2_502,
+      lines: [["FIBERGLASS HAMMER", 2_298]],
+    },
+    {
+      name: "Stop & Shop", text: "STOP & SHOP\n11/02/26\nRASPBERRIES\n3.49\nSUBTOTAL\n3.49\nTAX\n0.31\nBALANCE\n3.80",
+      merchant: "Stop & Shop", subtotal: 349, tax: 31, total: 380, lines: [["RASPBERRIES", 349]],
+    },
+    {
+      name: "Home Depot", text: "THE HOME DEPOT\n11/02/26\nPROPANE TANK EXCHANGE\n21.94\nSUBTOTAL\n21.94\nTAX\n1.95\nTOTAL\n23.89",
+      merchant: "THE HOME DEPOT", subtotal: 2_194, tax: 195, total: 2_389,
+      lines: [["PROPANE TANK EXCHANGE", 2_194]],
+    },
+  ])("parses sanitized Apple Vision text for $name", ({ text, merchant, subtotal, tax, total, lines }) => {
+    const result = parseReceiptPages(receiptPagesFromPlainText([{ page_index: 0, text }]));
+
+    expect(result).toMatchObject({ merchant: { value: merchant }, subtotal_minor: { value: subtotal },
+      tax_minor: { value: tax }, total_minor: { value: total } });
+    expect(result.lines.map((line) => [line.description, line.item_total_minor])).toEqual(lines);
+  });
+
   it("extracts merchant, date, lines, and totals with source confidence", () => {
     const result = parseReceiptPages([page(0, [
       observation("merchant", "SYNTHETIC MARKET", 20, 0.02),

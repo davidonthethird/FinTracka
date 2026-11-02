@@ -12,7 +12,7 @@ interface ReceiptContextValue {
   error: string;
   refresh: () => Promise<void>;
   load: (id: string) => Promise<ReceiptDraft>;
-  create: (draft: ReceiptDraftV1) => Promise<ReceiptDraft>;
+  create: (draft: ReceiptDraftV1, idempotencyKey?: string) => Promise<ReceiptDraft>;
   save: (current: ReceiptDraft, draft: ReceiptDraftV1) => Promise<ReceiptDraft>;
   dismiss: (current: ReceiptDraft) => Promise<void>;
   match: (current: ReceiptDraft, targetId: string, splitRevision: number) => Promise<ReceiptDraft>;
@@ -49,8 +49,8 @@ export function ReceiptProvider({ children }: { children: ReactNode }) {
     return () => { window.clearInterval(timer); window.removeEventListener("focus", focus); };
   }, [refresh]);
 
-  const create = useCallback(async (draft: ReceiptDraftV1) => {
-    const result = await createReceipt(draft);
+  const create = useCallback(async (draft: ReceiptDraftV1, idempotencyKey?: string) => {
+    const result = await createReceipt(draft, idempotencyKey);
     setDrafts((current) => [result, ...current.filter((item) => item.id !== result.id)]);
     return result;
   }, []);
@@ -65,9 +65,14 @@ export function ReceiptProvider({ children }: { children: ReactNode }) {
     return result;
   }, []);
   const dismiss = useCallback(async (current: ReceiptDraft) => {
-    const result = await dismissReceipt(current.id, current.revision);
-    setDrafts((items) => items.map((item) => item.id === result.id ? result : item));
-  }, []);
+    try {
+      const result = await dismissReceipt(current.id, current.revision);
+      setDrafts((items) => items.map((item) => item.id === result.id ? result : item));
+    } catch (caught) {
+      await refresh();
+      throw caught;
+    }
+  }, [refresh]);
   const match = useCallback(async (current: ReceiptDraft, targetId: string, splitRevision: number) => {
     const result = await matchReceipt(current.id, current.revision, targetId, splitRevision);
     setDrafts((items) => items.map((item) => item.id === result.id ? result : item));
