@@ -46,9 +46,9 @@ The more-specific Mac application must win over the general Viewer application f
 
 ### Receipt Shortcut upload boundary
 
-The sole unauthenticated Access exception is a separate, most-specific application path ending exactly in `/api/v1/mobile/shortcut/receipt-imports`. Its Bypass/Everyone policy exists only so the iPhone Shortcut can present the Worker-issued one-use bearer token without carrying a permanent Access credential. Access Bypass does not restrict HTTP methods and disables Access logging for that matching path; the Worker must therefore reject every non-`POST` request and validate the short-lived token, strict JSON contract, page/body limits, and replay digest itself. Never broaden the path with a wildcard or exempt `/api/v1/mobile/shortcut/`, `/api/v1/mobile/*`, or the Viewer hostname.
+The sole unauthenticated Access exception is an exact `public` destination override on the existing Viewer application for `/api/v1/mobile/shortcut/receipt-imports`. Destination override path patterns do not cover subpaths unless a wildcard is present. The override exists only so the iPhone Shortcut can present the Worker-issued one-use bearer token without carrying a permanent Access credential. It does not restrict HTTP methods and disables Access logging for that matching path; the Worker must therefore reject every non-`POST` request and validate the short-lived token, strict JSON contract, page/body limits, and replay digest itself. Never add a wildcard or exempt `/api/v1/mobile/shortcut/`, `/api/v1/mobile/*`, or the Viewer hostname.
 
-Keep `FEATURE_RECEIPT_SHORTCUT=false` until the exact-path application, neighboring-path denial, method matrix, cross-member denial, and both physical phones pass staging. Full setup, inspection, tests, and rollback are in [docs/receipt-shortcut-setup.md](docs/receipt-shortcut-setup.md).
+Keep `FEATURE_RECEIPT_SHORTCUT=false` until the exact public override, neighboring-path denial, and method matrix pass. Enable staging only for the remaining cross-member and physical-phone acceptance; production stays false until those gates pass. Full setup, inspection, tests, and rollback are in [docs/receipt-shortcut-setup.md](docs/receipt-shortcut-setup.md).
 
 Apply and verify the command schema:
 

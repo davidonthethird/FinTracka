@@ -70,7 +70,7 @@ The normal Access-authenticated browser creates a scan session using `POST /api/
 
 ### Shortcut upload endpoint
 
-The exact path `/api/v1/mobile/shortcut/receipt-imports` is the only route made public through a Cloudflare Access path override. Access cannot restrict that override by HTTP method, so the Worker accepts only `POST` and rejects every other method. The path remains application-authenticated: `POST` requires the one-time bearer token, strict JSON, a bounded body, and a valid session. The Worker consumes the token atomically when it creates the import.
+The exact path `/api/v1/mobile/shortcut/receipt-imports` is the only route made public through a Cloudflare Access `public` destination override on the existing Viewer application. Destination override path patterns do not implicitly cover subpaths. Access cannot restrict that override by HTTP method, so the Worker accepts only `POST` and rejects every other method. The path remains application-authenticated: `POST` requires the one-time bearer token, strict JSON, a bounded body, and a valid session. The Worker consumes the token atomically when it creates the import.
 
 The Access configuration must expose only this exact path—not `/api/v1/mobile/shortcut/*`, `/api/v1/mobile/*`, or the Worker hostname generally. Every other API and page remains under the existing Access applications.
 

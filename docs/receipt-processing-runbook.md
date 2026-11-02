@@ -68,7 +68,7 @@ The repository currently has two dated baseline test failures documented in the 
 
 ## Rollback
 
-1. Set `FEATURE_RECEIPT_SHORTCUT=false` and `FEATURE_RECEIPT_MATCHING=false` and redeploy. Remove only the exact receipt-upload Access Bypass application. Pending receipt commands remain inert if the Mac processor is also disabled.
+1. Set `FEATURE_RECEIPT_SHORTCUT=false` and `FEATURE_RECEIPT_MATCHING=false` and redeploy. Remove only the exact receipt-upload public destination override from the Viewer Access application. Pending receipt commands remain inert if the Mac processor is also disabled.
 2. Disable and remove the command schedule with the existing CLI commands.
 3. Keep `FEATURE_RECEIPT_DRAFTS=true` only if capture/review should remain available; set it false to hide the entire receipt surface.
 4. Do not reverse a D1 or SQLite migration in place. Restore the verified pre-migration SQLite backup if local rollback is necessary; D1 columns/tables may remain unused.
@@ -109,4 +109,13 @@ Pending. Record the date, staging Worker version, exact-path Access application 
 - Browser: all 8 Playwright flows passed, including populated Shortcut return, safe navigation during import, unusable/expired import behavior, no production OCR request, and safe inbox dismissal/conflict refresh.
 - Local application: all 256 Python tests passed.
 - Production Viewer build contains no PaddleOCR worker, model, runtime, or receipt-fixture assets. The private development benchmark remains available only under the development server.
-- Both staging and production retain `FEATURE_RECEIPT_SHORTCUT=false`. No Access Bypass application was created, no Shortcut was installed, no private receipt text was uploaded, and no real-device acceptance result is claimed by this automated gate.
+- Production retains `FEATURE_RECEIPT_SHORTCUT=false`. No Shortcut was installed, no private receipt text was uploaded, and no real-device acceptance result is claimed by this automated gate.
+
+### 2026-11-02 staging Access and feature gate
+
+- Staging D1 applied migration `0005`; the immediate second application reported no pending migrations.
+- The existing staging Viewer Access application retains its household Allow policy and now has one exact `public` destination override for the receipt import endpoint. No wildcard or separate prefix-matching application remains.
+- Unauthenticated `GET`, `PUT`, `PATCH`, `DELETE`, and `OPTIONS` on the exact endpoint returned `405` with `Allow: POST`; `POST` without a bearer token returned `401 RECEIPT_SCAN_SESSION_INVALID`.
+- The deeper receipt-import path, its parent path, authenticated receipt-claim path, and Viewer root still redirect to Access. The equivalent production endpoint also remains Access-protected.
+- Staging Viewer version `1e90a825-698d-49be-ae4d-9a318878d0a1` is deployed with `FEATURE_RECEIPT_SHORTCUT=true`; production remains false.
+- Valid-token replay, cross-member isolation, camera/library, offline Vision, and private-receipt acceptance still require physical iPhone testing before production activation.

@@ -60,13 +60,13 @@ The Worker feature remains off until this gate passes.
 
 1. Apply D1 migration `0005_receipt_shortcut_imports.sql` twice in staging; the second run must report no pending migrations.
 2. Deploy the staging Viewer with `FEATURE_RECEIPT_SHORTCUT=false`.
-3. In **Zero Trust → Access → Applications**, add a separate self-hosted application for the staging Viewer hostname with path exactly `/api/v1/mobile/shortcut/receipt-imports`. Do not use a wildcard, parent path, query string, or neighboring path.
-4. Add one **Bypass / Everyone** policy to that exact-path application. Cloudflare Access Bypass removes Access authentication and logging for the matching path, so the Worker one-time token is the only application credential there. The general Viewer Access application must continue protecting every other path.
-5. Confirm the exact-path application wins over the parent application. Unauthenticated `GET`, `PUT`, `PATCH`, `DELETE`, and `OPTIONS` requests to the exact endpoint must reach the Worker and return `405`; only a valid token-bearing `POST` can create an import. `/api/v1/mobile/shortcut/`, `/api/v1/mobile/shortcut/receipt-imports/anything`, `/api/v1/mobile/receipt-imports/...`, and all Viewer pages must still require Access.
+3. In **Zero Trust → Access → Applications**, edit the existing staging Viewer application. On its public destination, add one `public` destination override whose path pattern is exactly `/api/v1/mobile/shortcut/receipt-imports`. Do not add a wildcard, parent path, query string, or separate path application: ordinary Access application paths implicitly cover subpaths, while destination override path patterns do not.
+4. Confirm the existing household Allow policy and audience are unchanged. The exact public override removes Access authentication and logging only for the matching request path, so the Worker one-time token is the application credential there. The Viewer application must continue protecting every other path.
+5. Confirm the override matches only the exact endpoint. Unauthenticated `GET`, `PUT`, `PATCH`, `DELETE`, and `OPTIONS` requests to it must reach the Worker and return `405`; only a valid token-bearing `POST` can create an import. `/api/v1/mobile/shortcut/`, `/api/v1/mobile/shortcut/receipt-imports/anything`, `/api/v1/mobile/receipt-imports/...`, and all Viewer pages must still require Access.
 6. Enable `FEATURE_RECEIPT_SHORTCUT=true` in staging only and deploy again.
 7. Run the matrix below, then one camera and one library scan for each household member. Each import must be visible only to the member who created its session.
 
-Cloudflare documents that the more-specific application path takes precedence and that Access application paths do not support query strings. Bypass is intended only for narrowly public endpoints and disables Access enforcement for matching traffic, which is why this application must contain the exact path only.
+Cloudflare documents that destination override path patterns are exact unless they contain a wildcard. Public overrides disable Access enforcement for matching traffic, which is why this override must contain only the exact path.
 
 ## Required staging matrix
 
@@ -92,7 +92,7 @@ Record only pass/fail, timestamp, Worker version, and redacted status/error code
 ## Rollback
 
 1. Set `FEATURE_RECEIPT_SHORTCUT=false` and redeploy. The scan-session, upload, and import APIs then fail closed while existing receipt drafts/review/matching continue normally.
-2. Remove only the exact-path Access application or its Bypass policy. Do not alter the parent Viewer or Mac applications.
+2. Remove only the exact public destination override from the Viewer application. Do not delete or alter its household policy, audience, destination, or the Mac application.
 3. Revoke outstanding sessions/imports by deleting rows from `receipt_shortcut_imports` and `receipt_scan_sessions` in the intended environment after recording row counts—not contents. These tables hold temporary recognized text, so do not export them.
 4. Verify the exact upload path again requires Access and neighboring paths are unchanged.
 5. Leave migration `0005` in place; do not reverse D1 migrations in production.
@@ -105,3 +105,4 @@ The browser PaddleOCR benchmark remains available only on the private developmen
 - [Apple: understanding Shortcut input types](https://support.apple.com/en-gb/guide/shortcuts/apd7644168e1/ios)
 - [Cloudflare: Access application paths and precedence](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/)
 - [Cloudflare: Access Bypass policy behavior](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/)
+- [Cloudflare: Worker Access destinations and exact public overrides](https://developers.cloudflare.com/workers/configuration/cloudflare-access/)
