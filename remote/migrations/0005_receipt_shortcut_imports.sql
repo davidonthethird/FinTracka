@@ -23,6 +23,17 @@ ON receipt_scan_sessions(actor_member_id, created_at);
 CREATE INDEX receipt_scan_sessions_cleanup_idx
 ON receipt_scan_sessions(created_at);
 
+CREATE TRIGGER receipt_scan_session_rate_limit
+BEFORE INSERT ON receipt_scan_sessions
+WHEN (
+    SELECT COUNT(*) FROM receipt_scan_sessions session
+    WHERE session.actor_member_id = NEW.actor_member_id
+      AND session.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', NEW.created_at, '-1 hour')
+) >= 10
+BEGIN
+    SELECT RAISE(ABORT, 'receipt scan session rate limited');
+END;
+
 CREATE TABLE receipt_shortcut_imports (
     id TEXT PRIMARY KEY CHECK(length(id) BETWEEN 1 AND 128),
     session_token_digest TEXT NOT NULL UNIQUE REFERENCES receipt_scan_sessions(token_digest) ON DELETE CASCADE,
@@ -56,4 +67,15 @@ WHEN NOT EXISTS (
 )
 BEGIN
     SELECT RAISE(ABORT, 'receipt scan session unavailable');
+END;
+
+CREATE TRIGGER receipt_shortcut_import_rate_limit
+BEFORE INSERT ON receipt_shortcut_imports
+WHEN (
+    SELECT COUNT(*) FROM receipt_shortcut_imports receipt_import
+    WHERE receipt_import.actor_member_id = NEW.actor_member_id
+      AND receipt_import.expires_at > NEW.created_at
+) >= 5
+BEGIN
+    SELECT RAISE(ABORT, 'too many receipt imports');
 END;

@@ -66,9 +66,16 @@ export class ReceiptShortcutStore {
     const digest = await sha256Hex(token);
     const now = nowDate.toISOString();
     const expiresAt = new Date(nowDate.getTime() + TEN_MINUTES).toISOString();
-    await this.database.prepare(`INSERT INTO receipt_scan_sessions
-      (token_digest, household_id, actor_member_id, created_at, expires_at)
-      VALUES (?, ?, ?, ?, ?)`).bind(digest, householdId, memberId, now, expiresAt).run();
+    try {
+      await this.database.prepare(`INSERT INTO receipt_scan_sessions
+        (token_digest, household_id, actor_member_id, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?)`).bind(digest, householdId, memberId, now, expiresAt).run();
+    } catch (error) {
+      if (errorIncludes(error, "receipt scan session rate limited")) {
+        throw new ReceiptShortcutStoreError("RECEIPT_SCAN_SESSION_RATE_LIMITED");
+      }
+      throw error;
+    }
     return { token, expires_at: expiresAt };
   }
 
@@ -82,7 +89,6 @@ export class ReceiptShortcutStore {
     if (new TextEncoder().encode(canonical).byteLength > BODY_LIMIT) {
       throw new ReceiptShortcutStoreError("RECEIPT_SHORTCUT_BODY_TOO_LARGE");
     }
-    await this.cleanup();
     const tokenDigest = await sha256Hex(token);
     const bodyDigest = await sha256Hex(canonical);
     const session = await this.database.prepare(`SELECT token_digest, household_id, actor_member_id,
@@ -92,6 +98,7 @@ export class ReceiptShortcutStore {
     if (session.expires_at <= this.clock().toISOString()) {
       throw new ReceiptShortcutStoreError("RECEIPT_SCAN_SESSION_EXPIRED");
     }
+    await this.cleanup();
     if (session.consumed_import_id) {
       if (session.idempotency_key !== parsed.data.idempotency_key || session.body_digest !== bodyDigest) {
         throw new ReceiptShortcutStoreError("RECEIPT_SCAN_SESSION_CONSUMED");
@@ -125,7 +132,10 @@ export class ReceiptShortcutStore {
           id, parsed.data.idempotency_key, bodyDigest, now, tokenDigest, now,
         ),
       ]);
-    } catch {
+    } catch (error) {
+      if (errorIncludes(error, "too many receipt imports")) {
+        throw new ReceiptShortcutStoreError("TOO_MANY_RECEIPT_IMPORTS");
+      }
       const raced = await this.database.prepare(`SELECT token_digest, household_id, actor_member_id,
         consumed_import_id, idempotency_key, body_digest, expires_at
         FROM receipt_scan_sessions WHERE token_digest = ?`).bind(tokenDigest).first<SessionRow>();
@@ -190,4 +200,8 @@ function base64Url(bytes: Uint8Array): string {
 async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function errorIncludes(error: unknown, message: string): boolean {
+  return String(error).toLowerCase().includes(message);
 }

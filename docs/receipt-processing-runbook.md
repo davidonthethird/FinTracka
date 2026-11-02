@@ -101,3 +101,12 @@ At that deployment, no live receipt was selected or applied. The iPhone performa
 ## Apple Vision Shortcut activation evidence
 
 Pending. Record the date, staging Worker version, exact-path Access application review, security-matrix result, both member-isolation scans, camera/library results, offline Vision result, and private-receipt acceptance result here before enabling production. Do not record tokens, import IDs, host/account identifiers, or receipt text.
+
+### 2026-11-02 implementation verification
+
+- Worker: 10 files / 88 tests passed; TypeScript typecheck passed.
+- Viewer: 21 files / 131 tests passed; Viewer typecheck and production build passed.
+- Browser: all 8 Playwright flows passed, including populated Shortcut return, safe navigation during import, unusable/expired import behavior, no production OCR request, and safe inbox dismissal/conflict refresh.
+- Local application: all 256 Python tests passed.
+- Production Viewer build contains no PaddleOCR worker, model, runtime, or receipt-fixture assets. The private development benchmark remains available only under the development server.
+- Both staging and production retain `FEATURE_RECEIPT_SHORTCUT=false`. No Access Bypass application was created, no Shortcut was installed, no private receipt text was uploaded, and no real-device acceptance result is claimed by this automated gate.

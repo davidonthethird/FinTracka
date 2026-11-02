@@ -71,6 +71,8 @@ describe("receipt API and pages", () => {
     );
     expect(html).toContain("Preparing secure scan");
     expect(html).toContain("photos stay on your iPhone");
+    expect(html).toContain("Shortcut not installed or out of date?");
+    expect(html).toContain("version 1");
     expect(html).not.toContain("type=\"file\"");
   });
 });

@@ -295,6 +295,34 @@ test("iPhone receipt Shortcut handoff imports populated text without loading bro
   expect(ocrRequests).toEqual([]);
 });
 
+test("leaving a receipt import before it loads does not create a draft", async ({ page }) => {
+  const importId = "00000000-0000-4000-8000-000000000004";
+  let releaseImport!: () => void;
+  const importReleased = new Promise<void>((resolve) => { releaseImport = resolve; });
+  let createCalls = 0;
+  await page.route(`**/api/v1/mobile/receipt-imports/${importId}`, async (route) => {
+    await importReleased;
+    await route.fulfill({ json: { import: {
+      id: importId, shortcut_version: 1,
+      pages: [{ page_index: 0, text: "SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50" }],
+      created_at: "2026-11-02T12:00:00.000Z", expires_at: "2026-11-02T12:30:00.000Z",
+    } } });
+  });
+  await page.route("**/api/v1/mobile/receipts", (route) => {
+    createCalls += 1;
+    return route.abort();
+  });
+
+  await page.goto(`${viewer}/receipts/import/${importId}`);
+  await page.getByRole("navigation", { name: "Viewer sections" })
+    .getByRole("button", { name: "Transactions", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Transactions", exact: true })).toBeVisible();
+  releaseImport();
+  await page.waitForTimeout(100);
+
+  expect(createCalls).toBe(0);
+});
+
 test("receipt import keeps unusable text reviewable and explains expired imports", async ({ page }) => {
   const unusableId = "00000000-0000-4000-8000-000000000002";
   let createCalls = 0;

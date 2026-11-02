@@ -92,6 +92,18 @@ describe("receipt Shortcut pages", () => {
     expect(create).not.toHaveBeenCalled();
     expect(cleanup).not.toHaveBeenCalled();
   });
+
+  it("does not create a draft after import finalization is cancelled", async () => {
+    const imported = receiptImport("SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50");
+    const create = vi.fn();
+    const cleanup = vi.fn();
+
+    const result = await finalizeReceiptImport(imported, { create, cleanup, cancelled: () => true });
+
+    expect(result).toEqual({ status: "cancelled" });
+    expect(create).not.toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
+  });
 });
 
 function receiptImport(text: string): PublicReceiptImport {

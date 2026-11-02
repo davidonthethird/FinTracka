@@ -90,6 +90,19 @@ describe("receipt shortcut store", () => {
     })).rejects.toMatchObject({ code: "RECEIPT_SCAN_SESSION_CONSUMED" });
   });
 
+  it("does not let an invalid public token trigger cleanup writes", async () => {
+    let now = NOW;
+    const store = new ReceiptShortcutStore(env.COMMANDS, () => now);
+    const session = await store.createSession(HOUSEHOLD, MEMBER);
+    await store.createImport(session.token, capture());
+    now = new Date("2026-11-02T12:31:00.000Z");
+
+    await expect(store.createImport("x".repeat(43), capture()))
+      .rejects.toMatchObject({ code: "RECEIPT_SCAN_SESSION_INVALID" });
+    expect((await env.COMMANDS.prepare("SELECT COUNT(*) AS count FROM receipt_shortcut_imports")
+      .first<{ count: number }>())?.count).toBe(1);
+  });
+
   it("isolates imports by member and prunes them after thirty minutes", async () => {
     let now = NOW;
     const store = new ReceiptShortcutStore(env.COMMANDS, () => now);
@@ -145,6 +158,25 @@ describe("receipt shortcut store", () => {
       .bind(MEMBER).run();
     await expect(importStore.createSession(HOUSEHOLD, MEMBER))
       .rejects.toMatchObject({ code: "MEMBER_NOT_AUTHORIZED" });
+  });
+
+  it("enforces production caps across concurrent requests", async () => {
+    const store = makeStore();
+    const sessions = await Promise.allSettled(Array.from({ length: 11 }, () =>
+      store.createSession(HOUSEHOLD, MEMBER)));
+    expect(sessions.filter((result) => result.status === "fulfilled")).toHaveLength(10);
+    expect(sessions.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect((await env.COMMANDS.prepare(`SELECT COUNT(*) AS count FROM receipt_scan_sessions
+      WHERE actor_member_id = ?`).bind(MEMBER).first<{ count: number }>())?.count).toBe(10);
+
+    const tokens = sessions.flatMap((result) => result.status === "fulfilled" ? [result.value.token] : []).slice(0, 6);
+    const imports = await Promise.allSettled(tokens.map((token) => store.createImport(token, {
+      ...capture(), idempotency_key: crypto.randomUUID(),
+    })));
+    expect(imports.filter((result) => result.status === "fulfilled")).toHaveLength(5);
+    expect(imports.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect((await env.COMMANDS.prepare(`SELECT COUNT(*) AS count FROM receipt_shortcut_imports
+      WHERE actor_member_id = ?`).bind(MEMBER).first<{ count: number }>())?.count).toBe(5);
   });
 });
 

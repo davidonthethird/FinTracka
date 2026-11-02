@@ -12,10 +12,12 @@ import type { ReceiptDraft, ReceiptDraftV1 } from "./types";
 interface FinalizerDependencies {
   create: (draft: ReceiptDraftV1, idempotencyKey: string) => Promise<ReceiptDraft>;
   cleanup: () => Promise<void>;
+  cancelled?: () => boolean;
 }
 
 export type ReceiptImportResult = { status: "created"; draft: ReceiptDraft }
-  | { status: "unusable"; imported: PublicReceiptImport };
+  | { status: "unusable"; imported: PublicReceiptImport }
+  | { status: "cancelled" };
 
 export async function finalizeReceiptImport(
   imported: PublicReceiptImport,
@@ -23,6 +25,7 @@ export async function finalizeReceiptImport(
 ): Promise<ReceiptImportResult> {
   const parsed = parseReceiptPages(receiptPagesFromPlainText(imported.pages));
   if (!isUsableParsedReceipt(parsed)) return { status: "unusable", imported };
+  if (dependencies.cancelled?.()) return { status: "cancelled" };
   const draft = await dependencies.create(draftFromParsedReceipt(parsed, imported.pages.length),
     `shortcut-import-${imported.id}`);
   try { await dependencies.cleanup(); } catch { /* deterministic replay retries cleanup */ }
@@ -41,14 +44,16 @@ export function ReceiptShortcutImportPage({ id, navigate }: { id: string; naviga
     let active = true;
     setWorking(true); setError(""); setImported(undefined);
     getReceiptImport(id).then(async (value) => {
+      if (!active) return;
       const result = await finalizeReceiptImport(value, {
         create: receipts.create,
         cleanup: () => deleteReceiptImport(value.id),
+        cancelled: () => !active,
       });
       if (!active) return;
       if (result.status === "created") {
         navigate(`/receipts/${encodeURIComponent(result.draft.id)}`);
-      } else {
+      } else if (result.status === "unusable") {
         setImported(result.imported);
         setError("The recognized text did not contain a usable merchant, total, or priced item.");
         setWorking(false);
@@ -70,7 +75,7 @@ export function ReceiptShortcutImportPage({ id, navigate }: { id: string; naviga
   }
 
   return <div className="viewer-page"><header className="viewer-heading"><div><span>Apple Vision</span><h1>Import receipt</h1></div>
-    <button className="icon-button" onClick={() => navigate("/receipts")} aria-label="Close"><X /></button></header>
+    <button className="icon-button" disabled={working} onClick={() => navigate("/receipts")} aria-label="Close"><X /></button></header>
     <section className="receipt-capture receipt-shortcut-import" aria-busy={working}>
       <FileWarning aria-hidden="true" />
       <h2>{working ? "Preparing your receipt" : "Receipt needs another look"}</h2>
