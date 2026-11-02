@@ -322,3 +322,37 @@ test("receipt import keeps unusable text reviewable and explains expired imports
   await page.getByRole("button", { name: "Start a new scan" }).click();
   await expect(page.getByRole("heading", { name: "Scan receipt" })).toBeVisible();
 });
+
+test("receipt inbox confirms safe removal and refreshes after a revision conflict", async ({ page }) => {
+  const draft = (id: string, merchant: string) => ({ contract: "receipt_draft/v1", status: "editing",
+    merchant, purchase_date: "2026-11-02", currency: "USD", masked_payment_hint: null, page_count: 1,
+    subtotal_minor: 450, discount_minor: 0, tax_minor: 0, tip_minor: 0, fees_minor: 0, total_minor: 450,
+    lines: [], id, revision: 1, digest: "a".repeat(64), created_at: "2026-11-02",
+    updated_at: "2026-11-02", retention_at: "2027-01-31" });
+  let drafts = [draft("remove-1", "Remove Market"), draft("conflict-1", "Conflict Market")];
+  await page.route("**/api/v1/mobile/session", (route) => route.fulfill({ json: {
+    member: { id: "member-fixture", display_name: "Fixture member" },
+    capabilities: { "receipts.drafts": [1] }, server_time: new Date().toISOString(),
+  } }));
+  await page.route("**/api/v1/mobile/receipts", (route) => route.fulfill({ json: { drafts } }));
+  await page.route("**/api/v1/mobile/receipts/remove-1/dismiss", async (route) => {
+    const removed = { ...drafts[0], status: "dismissed", revision: 2 };
+    drafts = drafts.map((item) => item.id === removed.id ? removed : item);
+    await route.fulfill({ json: { draft: removed } });
+  });
+  await page.route("**/api/v1/mobile/receipts/conflict-1/dismiss", async (route) => {
+    drafts = drafts.map((item) => item.id === "conflict-1" ? { ...item, status: "conflict", revision: 2 } : item);
+    await route.fulfill({ status: 409, json: { error_code: "RECEIPT_REVISION_CONFLICT" } });
+  });
+  await page.goto(`${viewer}/receipts`);
+  await expect(page.getByRole("button", { name: "Open Remove Market receipt" })).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Remove Remove Market receipt" }).click();
+  await expect(page.getByRole("button", { name: "Open Remove Market receipt" })).toHaveCount(0);
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Remove Conflict Market receipt" }).click();
+  await expect(page.getByRole("alert")).toContainText("could not be removed");
+  await expect(page.getByRole("button", { name: "Open Conflict Market receipt" })).toBeVisible();
+  await expect(page.locator(".receipt-inbox-row", { hasText: "Conflict Market" })).toContainText("Needs review");
+});

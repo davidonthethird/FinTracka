@@ -1,4 +1,5 @@
-import { Camera, ChevronRight, ReceiptText } from "lucide-react";
+import { useState } from "react";
+import { Camera, ChevronRight, ReceiptText, X } from "lucide-react";
 
 import type { ReceiptDraft } from "./types";
 import { useReceipts } from "./ReceiptProvider";
@@ -10,21 +11,44 @@ export function ReceiptInboxPage({ navigate }: { navigate: (path: string) => voi
     <div className="viewer-empty"><h2>Receipt scanning is not enabled yet</h2><p>{receipts.error || "The private staging gate must pass first."}</p></div></div>;
   return <div className="viewer-page"><ReceiptHeader />
     <ReceiptInboxView drafts={receipts.drafts} onNew={() => navigate("/receipts/new")}
-      onOpen={(id) => navigate(`/receipts/${encodeURIComponent(id)}`)} />
+      onOpen={(id) => navigate(`/receipts/${encodeURIComponent(id)}`)} onDismiss={receipts.dismiss} />
   </div>;
 }
 
-export function ReceiptInboxView({ drafts, onOpen, onNew }: {
+export function canDismissReceipt(status: ReceiptDraft["status"]): boolean {
+  return status === "editing" || status === "waiting_for_bank" || status === "conflict";
+}
+
+export function ReceiptInboxView({ drafts, onOpen, onNew, onDismiss }: {
   drafts: ReceiptDraft[]; onOpen: (id: string) => void; onNew: () => void;
+  onDismiss: (draft: ReceiptDraft) => Promise<void>;
 }) {
+  const [dismissing, setDismissing] = useState<string>();
+  const [error, setError] = useState("");
   const visible = drafts.filter((draft) => draft.status !== "dismissed");
+  async function dismiss(draft: ReceiptDraft) {
+    const title = draft.merchant || "Untitled receipt";
+    if (!window.confirm(`Remove ${title}? This draft has not been added to spending.`)) return;
+    setDismissing(draft.id); setError("");
+    try { await onDismiss(draft); }
+    catch { setError(`${title} could not be removed. The receipt list was refreshed.`); }
+    finally { setDismissing(undefined); }
+  }
   return <>
     <button className="receipt-new" onClick={onNew}><Camera aria-hidden="true" /><span><strong>Scan a receipt</strong><small>Images stay on this device</small></span></button>
     <p className="receipt-boundary"><ReceiptText aria-hidden="true" /> Drafts are uncommitted. No spending has been added until a bank transaction is explicitly matched and your Mac applies it.</p>
-    <section className="receipt-inbox">{visible.length ? visible.map((draft) => <button key={draft.id} onClick={() => onOpen(draft.id)}>
-      <span><strong>{draft.merchant || "Untitled receipt"}</strong><small>{draft.purchase_date || "Date needed"} · {statusLabel(draft.status)}</small></span>
-      <b>{money(draft.total_minor, draft.currency)}</b><ChevronRight aria-hidden="true" />
-    </button>) : <div className="viewer-empty"><h2>No receipt drafts</h2><p>Photograph a receipt to split its items.</p></div>}</section>
+    {error && <p className="receipt-error" role="alert">{error}</p>}
+    <section className="receipt-inbox">{visible.length ? visible.map((draft) => {
+      const title = draft.merchant || "Untitled receipt";
+      return <div className="receipt-inbox-row" key={draft.id}>
+        <button className="receipt-inbox-open" aria-label={`Open ${title} receipt`} onClick={() => onOpen(draft.id)}>
+          <span><strong>{title}</strong><small>{draft.purchase_date || "Date needed"} · {statusLabel(draft.status)}</small></span>
+          <b>{money(draft.total_minor, draft.currency)}</b><ChevronRight aria-hidden="true" />
+        </button>
+        {canDismissReceipt(draft.status) && <button className="receipt-inbox-remove" aria-label={`Remove ${title} receipt`}
+          disabled={dismissing === draft.id} onClick={() => void dismiss(draft)}><X aria-hidden="true" /></button>}
+      </div>;
+    }) : <div className="viewer-empty"><h2>No receipt drafts</h2><p>Photograph a receipt to split its items.</p></div>}</section>
   </>;
 }
 

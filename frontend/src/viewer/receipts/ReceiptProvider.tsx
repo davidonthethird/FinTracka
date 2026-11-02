@@ -65,9 +65,14 @@ export function ReceiptProvider({ children }: { children: ReactNode }) {
     return result;
   }, []);
   const dismiss = useCallback(async (current: ReceiptDraft) => {
-    const result = await dismissReceipt(current.id, current.revision);
-    setDrafts((items) => items.map((item) => item.id === result.id ? result : item));
-  }, []);
+    try {
+      const result = await dismissReceipt(current.id, current.revision);
+      setDrafts((items) => items.map((item) => item.id === result.id ? result : item));
+    } catch (caught) {
+      await refresh();
+      throw caught;
+    }
+  }, [refresh]);
   const match = useCallback(async (current: ReceiptDraft, targetId: string, splitRevision: number) => {
     const result = await matchReceipt(current.id, current.revision, targetId, splitRevision);
     setDrafts((items) => items.map((item) => item.id === result.id ? result : item));

@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ReceiptInboxView } from "../src/viewer/receipts/ReceiptInboxPage";
+import { canDismissReceipt, ReceiptInboxView } from "../src/viewer/receipts/ReceiptInboxPage";
 import { ReceiptCapturePage } from "../src/viewer/receipts/ReceiptCapturePage";
 import { ReceiptProvider } from "../src/viewer/receipts/ReceiptProvider";
 import { ReceiptReviewForm } from "../src/viewer/receipts/ReceiptReviewPage";
@@ -39,7 +39,8 @@ describe("receipt API and pages", () => {
 
   it("labels unmatched drafts as nonfinancial and exposes A/D/S review controls", () => {
     const receipt = persistedDraft();
-    const inbox = renderToStaticMarkup(<ReceiptInboxView drafts={[receipt]} onOpen={() => undefined} onNew={() => undefined} />);
+    const inbox = renderToStaticMarkup(<ReceiptInboxView drafts={[receipt]} onOpen={() => undefined}
+      onNew={() => undefined} onDismiss={async () => undefined} />);
     expect(inbox).toContain("No spending has been added");
     const review = renderToStaticMarkup(<ReceiptReviewForm draft={receipt} taxonomy={null}
       saving={false} onSave={() => undefined} onChange={() => undefined} />);
@@ -47,6 +48,21 @@ describe("receipt API and pages", () => {
     expect(review).toContain("Ariela");
     expect(review).toContain("Shared");
     expect(review).toContain("Save and wait for bank transaction");
+  });
+
+  it("offers separate accessible removal only for eligible receipt states", () => {
+    expect(["editing", "waiting_for_bank", "conflict"].every((status) => canDismissReceipt(status as ReceiptDraft["status"]))).toBe(true);
+    expect(["match_pending", "processing", "matched", "dismissed"]
+      .some((status) => canDismissReceipt(status as ReceiptDraft["status"]))).toBe(false);
+    const eligible = persistedDraft();
+    const protectedDraft = { ...persistedDraft(), id: "receipt-2", status: "processing" as const };
+    const html = renderToStaticMarkup(<ReceiptInboxView drafts={[eligible, protectedDraft]}
+      onOpen={() => undefined} onNew={() => undefined} onDismiss={async () => undefined} />);
+    expect(html).toContain('aria-label="Open Synthetic Market receipt"');
+    expect(html).toContain('aria-label="Remove Synthetic Market receipt"');
+    expect(html.match(/aria-label="Remove Synthetic Market receipt"/g)).toHaveLength(1);
+    expect(html).toContain('class="receipt-inbox-row"><button class="receipt-inbox-open"');
+    expect(html).toMatch(/<\/button><button class="receipt-inbox-remove"/);
   });
 
   it("prepares a native iPhone Shortcut handoff without browser file inputs", () => {
