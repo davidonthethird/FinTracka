@@ -24,15 +24,16 @@ export function ReceiptCapturePage({ navigate }: { navigate: (path: string) => v
     if (files.length > 12) { setError("Choose no more than 12 receipt photos."); return; }
     setWorking(true); setError(""); controller.current = new AbortController();
     try {
-      let current = await receipts.create(emptyDraft());
       const pages = [];
       for (const [index, file] of [...files].entries()) {
         const page = await prepareReceiptPage(crypto.randomUUID(), file);
-        await imageStore.put(current.id, page.id, page.image as Blob, { order: index, rotation_degrees: 0, crop: null });
         pages.push(page);
       }
       const parsed = parseReceiptPages(await engine.current.recognize(pages, controller.current.signal));
-      current = await receipts.save(current, fromParsed(parsed, pages.length));
+      const current = await receipts.create(fromParsed(parsed, pages.length));
+      for (const [index, page] of pages.entries()) {
+        await imageStore.put(current.id, page.id, page.image as Blob, { order: index, rotation_degrees: 0, crop: null });
+      }
       navigate(`/receipts/${encodeURIComponent(current.id)}`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Receipt capture failed.");
@@ -50,12 +51,6 @@ export function ReceiptCapturePage({ navigate }: { navigate: (path: string) => v
       {error && <p className="receipt-error" role="alert">{error}</p>}
     </section>
   </div>;
-}
-
-function emptyDraft(): ReceiptDraftV1 {
-  return { contract: "receipt_draft/v1", status: "editing", merchant: "", purchase_date: null,
-    currency: "USD", masked_payment_hint: null, page_count: 0, subtotal_minor: 0,
-    discount_minor: 0, tax_minor: 0, tip_minor: 0, fees_minor: 0, total_minor: 0, lines: [] };
 }
 
 function fromParsed(parsed: ReturnType<typeof parseReceiptPages>, pageCount: number): ReceiptDraftV1 {
