@@ -43,8 +43,8 @@ export function ReceiptCapturePage({ navigate }: { navigate: (path: string) => v
   return <div className="viewer-page"><header className="viewer-heading"><div><span>On-device OCR</span><h1>Scan receipt</h1></div><button className="icon-button" onClick={() => navigate("/receipts")} aria-label="Close"><X /></button></header>
     <section className="receipt-capture"><Camera aria-hidden="true" /><h2>Photograph every page</h2><p>Overlap long receipts slightly. Photos and OCR stay in this browser.</p>
       <div className="receipt-source-actions">
-        <label className="receipt-camera"><input type="file" accept="image/*" capture="environment" multiple disabled={working} onChange={(event) => void capture(event.target.files)} />{working ? "Reading receipt…" : "Take photo"}</label>
-        <label className="receipt-library"><input type="file" accept="image/*" multiple disabled={working} onChange={(event) => void capture(event.target.files)} />Choose from photo library</label>
+        <label className="receipt-camera"><input type="file" accept="image/jpeg,image/png" capture="environment" multiple disabled={working} onChange={(event) => void capture(event.target.files)} />{working ? "Reading receipt…" : "Take photo"}</label>
+        <label className="receipt-library"><input type="file" accept="image/jpeg,image/png" multiple disabled={working} onChange={(event) => void capture(event.target.files)} />Choose from photo library</label>
       </div>
       {progress && <p role="status">Page {progress.page_index + 1} of {progress.page_count} · {Math.round(progress.progress_basis_points / 100)}%</p>}
       {working && <button className="secondary-button" onClick={() => controller.current?.abort()}>Cancel</button>}

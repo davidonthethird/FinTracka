@@ -57,6 +57,7 @@ describe("receipt API and pages", () => {
     expect(html).toContain("Choose from photo library");
     expect(html.match(/capture="environment"/g)).toHaveLength(1);
     expect(html.match(/type="file"/g)).toHaveLength(2);
+    expect(html.match(/accept="image\/jpeg,image\/png"/g)).toHaveLength(2);
   });
 });
 
