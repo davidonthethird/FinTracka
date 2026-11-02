@@ -32,6 +32,8 @@ describe("receipt Shortcut pages", () => {
     }));
     expect(parsed.protocol).toBe("shortcuts:");
     expect(parsed.searchParams.get("name")).toBe("FinTracka Scan Receipt");
+    expect(url).toContain("name=FinTracka%20Scan%20Receipt");
+    expect(url).not.toContain("FinTracka+Scan+Receipt");
     expect(parsed.searchParams.get("input")).toBe("text");
     expect(JSON.parse(parsed.searchParams.get("text") ?? "")).toEqual(session);
     expect(url).not.toMatch(/^https?:/);
