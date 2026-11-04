@@ -31,8 +31,8 @@ describe("receipt Shortcut pages", () => {
       method: "POST", credentials: "same-origin", body: "{}",
     }));
     expect(parsed.protocol).toBe("shortcuts:");
-    expect(parsed.searchParams.get("name")).toBe("FinTracka Scan Receipt");
-    expect(url).toContain("name=FinTracka%20Scan%20Receipt");
+    expect(parsed.searchParams.get("name")).toBe("FinTracka Scan Receipt 3");
+    expect(url).toContain("name=FinTracka%20Scan%20Receipt%203");
     expect(url).not.toContain("FinTracka+Scan+Receipt");
     expect(parsed.searchParams.get("input")).toBe("text");
     expect(JSON.parse(parsed.searchParams.get("text") ?? "")).toEqual(session);

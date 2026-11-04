@@ -8,12 +8,15 @@ export const ReceiptShortcutPageSchema = z.object({
   text: z.string().max(30_000).refine((value) => value.trim().length > 0, "blank page"),
 }).strict();
 
-export const ReceiptShortcutCaptureSchema = z.object({
+const ReceiptShortcutCaptureBase = z.object({
   contract: z.literal("receipt_shortcut_capture/v1"),
   idempotency_key: z.string().refine((value) =>
     z.uuid().safeParse(value).success || /^[a-f0-9]{64}$/i.test(value),
   "idempotency key must be a UUID or SHA-256 digest"),
   shortcut_version: z.literal(1),
+});
+
+const ReceiptShortcutPagesCaptureSchema = ReceiptShortcutCaptureBase.extend({
   pages: z.array(ReceiptShortcutPageSchema).min(1).max(12),
 }).strict().superRefine((capture, context) => {
   let characters = 0;
@@ -28,6 +31,18 @@ export const ReceiptShortcutCaptureSchema = z.object({
     context.addIssue({ code: "custom", path: ["pages"], message: "receipt text is too large" });
   }
 });
+
+const ReceiptShortcutTextCaptureSchema = ReceiptShortcutCaptureBase.extend({
+  text: z.string().max(100_000).refine((value) => value.trim().length > 0, "blank receipt"),
+}).strict().transform(({ text, ...capture }) => ({
+  ...capture,
+  pages: [{ page_index: 0, text }],
+}));
+
+export const ReceiptShortcutCaptureSchema = z.union([
+  ReceiptShortcutPagesCaptureSchema,
+  ReceiptShortcutTextCaptureSchema,
+]);
 
 export type ReceiptShortcutCapture = z.infer<typeof ReceiptShortcutCaptureSchema>;
 

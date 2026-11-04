@@ -271,7 +271,7 @@ test("iPhone receipt Shortcut handoff imports populated text without loading bro
   await expect(launch).toBeVisible();
   const shortcutUrl = new URL(await launch.getAttribute("href") ?? "");
   expect(shortcutUrl.protocol).toBe("shortcuts:");
-  expect(shortcutUrl.searchParams.get("name")).toBe("FinTracka Scan Receipt");
+  expect(shortcutUrl.searchParams.get("name")).toBe("FinTracka Scan Receipt 3");
   expect(page.locator('input[type="file"]')).toHaveCount(0);
 
   const imported = { id: "00000000-0000-4000-8000-000000000001", shortcut_version: 1,

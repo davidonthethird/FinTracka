@@ -40,7 +40,7 @@ export async function deleteReceiptImport(id: string): Promise<void> {
 
 export function buildReceiptShortcutUrl(session: ReceiptScanSession): string {
   const query = [
-    `name=${encodeURIComponent("FinTracka Scan Receipt")}`,
+    `name=${encodeURIComponent("FinTracka Scan Receipt 3")}`,
     "input=text",
     `text=${encodeURIComponent(JSON.stringify(session))}`,
   ].join("&");
