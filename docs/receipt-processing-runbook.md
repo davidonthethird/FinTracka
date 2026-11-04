@@ -1,6 +1,6 @@
 # Receipt processing runbook
 
-FinTracka uses Apple's on-device text recognition through the reviewed `FinTracka Scan Receipt` iPhone Shortcut. Original images never leave the phone. The Shortcut uploads only ordered recognized text through a ten-minute, one-use, member-bound session; the temporary text import expires after 30 minutes. A reviewed structured draft is stored in household D1, and SQLite on the Mac remains the financial system of record. Build and deploy the Shortcut only from [receipt-shortcut-setup.md](receipt-shortcut-setup.md).
+FinTracka uses Apple's on-device text recognition and Apple Intelligence through the reviewed `FinTracka Receipt Scanner` iPhone Shortcut. The first pass uploads only recognized text plus evidence-citing structured fields through a ten-minute, one-use, member-bound session. Only a scan that fails deterministic evidence/arithmetic validation places its original pages in the private shared iCloud queue for Apple Vision and Foundation Models refinement on David's Mac. D1 never stores images. A reviewed structured draft is stored in household D1, and SQLite on the Mac remains the financial system of record. Build and deploy the Shortcut only from [receipt-shortcut-setup.md](receipt-shortcut-setup.md).
 
 ## Security and correctness boundaries
 
@@ -10,28 +10,31 @@ FinTracka uses Apple's on-device text recognition through the reviewed `FinTrack
 - The Mac fetches the immutable receipt revision with its dedicated Access service identity, recalculates the digest, and repeats all transaction eligibility checks.
 - Receipt application, detailed splits, audit data, and the permanent command receipt commit in one SQLite transaction. A retried command is a no-op.
 - D1 stores no images or full card numbers. Local browser images expire after 30 days; D1 drafts/revisions expire after 90 days. Permanent redacted applications remain in SQLite to guarantee replay safety.
+- Refinement claims use five-minute leases and a per-claim secret digest. Imports waiting for refinement live for at most seven days; successful refinement resets review expiry to 30 minutes. Exact completion replay is allowed, but a wrong claim token, changed input digest, or changed result is rejected.
+- Successful iCloud packages are deleted. Temporary iCloud/model failures retry in `pending`; terminal invalid packages remain in `failed` for seven days. The Mac compares UUID-named pending packages with live jobs so discarded/expired packages are removed without touching unrelated files.
 
 ## Safe deployment order
 
 1. Create and verify a local SQLite backup. Keep the once-per-minute command processor disabled.
 2. Build and test the Viewer against snapshot schemas 1, 2, and 3.
-3. Apply D1 migrations through `0005_receipt_shortcut_imports.sql` in staging. Run the command again and require “no migrations to apply.”
-4. Deploy the Viewer Worker with `FEATURE_RECEIPT_DRAFTS=false`, `FEATURE_RECEIPT_MATCHING=false`, and `FEATURE_RECEIPT_SHORTCUT=false`.
+3. Apply D1 migrations through `0006_receipt_refinements.sql` in staging. Run the command again and require “no migrations to apply.”
+4. Deploy the Viewer Worker with `FEATURE_RECEIPT_DRAFTS=false`, `FEATURE_RECEIPT_MATCHING=false`, `FEATURE_RECEIPT_SHORTCUT=false`, and `FEATURE_RECEIPT_REFINEMENT=false`.
 5. Migrate a copied/synthetic SQLite database through migration 021 and require `PRAGMA foreign_key_check` to return no rows.
 6. Publish a synthetic snapshot v3. Verify older snapshots still read and v3 advertises `transaction.apply_receipt_split:[1]` and `receipts.matching:[1]`.
-7. Enable drafts in staging only. Configure and test the exact receipt-upload Access path, then enable `FEATURE_RECEIPT_SHORTCUT` in staging and run the iPhone gate below. Keep financial matching false.
+7. Build/install the native refiner, verify Apple Intelligence availability, and enable the existing one-minute mobile-command LaunchAgent. Enable drafts and `FEATURE_RECEIPT_REFINEMENT` in staging only. Configure and test the exact receipt-upload Access path, then enable `FEATURE_RECEIPT_SHORTCUT` in staging and run the iPhone gate below. Keep financial matching false.
 8. Enable matching in staging and complete the controlled synthetic reconciliation.
 9. Repeat migrations, reader deployment, and idempotence checks in production with both flags false.
 10. Enable production drafts only after the iPhone gate. Enable production matching and the minute processor only after the user-selected live reconciliation.
 
 ## Required iPhone gate
 
-On each supported household iPhone in the protected staging Viewer, install the inspected version-1 Shortcut and use the normal camera and library flows:
+On each supported household iPhone in the protected staging Viewer, install the inspected canonical version-2 Shortcut and use the normal camera and library flows:
 
 - one page completes without Safari OCR or a page reload;
 - six ordered pages return without duplicate or missing lines;
-- the Shortcut performs **Extract Text from Image** while offline before its upload attempt;
-- Network inspection shows no image upload or third-party request; only recognized text reaches the exact Worker path;
+- the Shortcut performs **Extract Text from Image** and **Use Model → On-Device** before its upload attempt;
+- a passing scan makes no image upload or third-party request; only recognized text and evidence-citing fields reach the exact Worker path;
+- a deliberately unreconciled scan writes one opaque package to the private iCloud queue and completes when the Mac wakes;
 - a long overlap is either collapsed only when exact or visibly flagged for review;
 - camera and photo-library permissions appear only when used, and a cancelled/failed scan creates zero drafts.
 
@@ -53,6 +56,7 @@ The household user—not an agent—chooses a harmless receipt and its intended 
 
 ```sh
 ./scripts/verify.sh
+./scripts/verify-receipt-hybrid.sh
 cd remote
 npm run check:deployment
 npm run check:deployment -- --require-mac-access
@@ -68,13 +72,13 @@ The repository currently has two dated baseline test failures documented in the 
 
 ## Rollback
 
-1. Set `FEATURE_RECEIPT_SHORTCUT=false` and `FEATURE_RECEIPT_MATCHING=false` and redeploy. Remove only the exact receipt-upload public destination override from the Viewer Access application. Pending receipt commands remain inert if the Mac processor is also disabled.
+1. Set `FEATURE_RECEIPT_REFINEMENT=false`, `FEATURE_RECEIPT_SHORTCUT=false`, and `FEATURE_RECEIPT_MATCHING=false` and redeploy. Remove only the exact receipt-upload public destination override from the Viewer Access application. Pending receipt commands remain inert when refinement is disabled.
 2. Disable and remove the command schedule with the existing CLI commands.
 3. Keep `FEATURE_RECEIPT_DRAFTS=true` only if capture/review should remain available; set it false to hide the entire receipt surface.
 4. Do not reverse a D1 or SQLite migration in place. Restore the verified pre-migration SQLite backup if local rollback is necessary; D1 columns/tables may remain unused.
 5. Never delete local command receipts before restoring an older database: they are the exact-once evidence.
 
-Original-image cloud backup is explicitly out of scope. It requires a separate encrypted backup/recovery design and must not reuse the receipt draft store.
+The private shared iCloud folder is a transient refinement queue, not a receipt backup. It is the only approved image-cloud path and must not be reused as permanent storage.
 
 ## 2026-11-01 deployment evidence
 

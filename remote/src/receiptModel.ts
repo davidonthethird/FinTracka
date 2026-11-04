@@ -50,6 +50,8 @@ export const ReceiptDraftV1Schema = z.object({
   tip_minor: minor,
   fees_minor: minor,
   total_minor: minor,
+  review_flags: z.array(z.string().min(1).max(40)).max(16).optional().default([]),
+  source_text: z.string().max(100_000).nullable().optional().default(null),
   lines: z.array(ReceiptLineV1Schema).max(250),
 }).strict().superRefine((draft, context) => {
   const ids = new Set<string>();

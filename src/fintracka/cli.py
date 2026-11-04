@@ -35,6 +35,7 @@ from fintracka.mobile_command_config import (
     set_mobile_commands_enabled,
 )
 from fintracka.mobile_command_service import process_mobile_commands
+from fintracka.receipt_refinement_service import process_configured_receipt_refinements
 from fintracka.plaid_service import build_plaid_adapter, configure_plaid, sync_plaid_connections
 from fintracka.remote_config import configure_remote, load_remote_settings, set_remote_enabled
 from fintracka.remote_client import RemotePublishError
@@ -301,7 +302,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "remote" and args.remote_action == "commands":
         destination = Path.home() / "Library" / "LaunchAgents" / "com.fintracka.mobile-commands.plist"
         if args.command_action == "process":
-            result = process_mobile_commands(database_path, KeychainSecrets())
+            keychain = KeychainSecrets()
+            result = process_mobile_commands(database_path, keychain)
+            receipt_refinements = process_configured_receipt_refinements(
+                database_path, data_directory, keychain
+            )
             print(json.dumps({
                 "claimed": result.claimed,
                 "applied": result.applied,
@@ -312,6 +317,7 @@ def main(argv: list[str] | None = None) -> int:
                 "published": result.published,
                 "skipped": result.skipped,
                 "error_code": result.error_code,
+                "receipt_refinements": receipt_refinements,
             }, sort_keys=True))
             return 0
         if args.command_action in {"enable", "disable"}:

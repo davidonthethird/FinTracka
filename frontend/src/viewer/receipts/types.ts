@@ -112,6 +112,8 @@ export interface ReceiptDraftV1 {
   tip_minor: number;
   fees_minor: number;
   total_minor: number;
+  review_flags?: string[];
+  source_text?: string | null;
   lines: ReceiptLineV1[];
 }
 

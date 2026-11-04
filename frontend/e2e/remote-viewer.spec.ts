@@ -263,7 +263,8 @@ test("iPhone receipt Shortcut handoff imports populated text without loading bro
   const ocrRequests: string[] = [];
   page.on("request", (request) => { if (/receipt-ocr|paddle|onnx/i.test(request.url())) ocrRequests.push(request.url()); });
   await page.route("**/api/v1/mobile/receipt-scan-sessions", (route) => route.fulfill({ status: 201, json: {
-    contract: "receipt_scan_session/v1", token: "a".repeat(43),
+    contract: "receipt_scan_session/v1", shortcut_version: 2,
+    shortcut_name: "FinTracka Receipt Scanner", token: "a".repeat(43),
     upload_url: `${viewer}/api/v1/mobile/shortcut/receipt-imports`, expires_at: "2026-11-02T12:10:00.000Z",
   } }));
   await page.goto(`${viewer}/receipts/new`);
@@ -271,7 +272,7 @@ test("iPhone receipt Shortcut handoff imports populated text without loading bro
   await expect(launch).toBeVisible();
   const shortcutUrl = new URL(await launch.getAttribute("href") ?? "");
   expect(shortcutUrl.protocol).toBe("shortcuts:");
-  expect(shortcutUrl.searchParams.get("name")).toBe("FinTracka Scan Receipt");
+  expect(shortcutUrl.searchParams.get("name")).toBe("FinTracka Receipt Scanner");
   expect(page.locator('input[type="file"]')).toHaveCount(0);
 
   const imported = { id: "00000000-0000-4000-8000-000000000001", shortcut_version: 1,

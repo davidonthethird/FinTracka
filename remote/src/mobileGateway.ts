@@ -28,6 +28,8 @@ import {
   receiptShortcutEnabled,
 } from "./receiptShortcutGateway";
 import { ReceiptShortcutStore } from "./receiptShortcutStore";
+import { handleReceiptRefinementMac, mapReceiptRefinementError } from "./receiptRefinementGateway";
+import { ReceiptRefinementStore } from "./receiptRefinementStore";
 
 export interface MobileGatewayEnv {
   COMMANDS: D1Database;
@@ -40,6 +42,7 @@ export interface MobileGatewayEnv {
   FEATURE_RECEIPT_DRAFTS?: string;
   FEATURE_RECEIPT_MATCHING?: string;
   FEATURE_RECEIPT_SHORTCUT?: string;
+  FEATURE_RECEIPT_REFINEMENT?: string;
 }
 
 interface GatewayDependencies {
@@ -81,7 +84,9 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
       const url = new URL(request.url);
       const store = new MobileCommandStore(env.COMMANDS, now);
       const receiptStore = new ReceiptStore(env.COMMANDS, now);
-      const shortcutStore = new ReceiptShortcutStore(env.COMMANDS, now);
+      const refinementEnabled = receiptShortcutEnabled(env.FEATURE_RECEIPT_REFINEMENT);
+      const shortcutStore = new ReceiptShortcutStore(env.COMMANDS, now, { refinementEnabled });
+      const refinementStore = new ReceiptRefinementStore(env.COMMANDS, now);
       try {
         if (!validSeparateAudiences(env.ACCESS_USER_AUD, env.ACCESS_MAC_AUD)) {
           return errorResponse(503, "MOBILE_AUTH_MISCONFIGURED");
@@ -98,6 +103,12 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
             audience: env.ACCESS_MAC_AUD,
           }, verifier);
           if (!identity) return errorResponse(403, "PROCESSOR_NOT_AUTHORIZED");
+          if (refinementEnabled) {
+            const refinementResponse = await handleReceiptRefinementMac(request, refinementStore);
+            if (refinementResponse) return refinementResponse;
+          } else if (url.pathname.startsWith("/api/v1/mobile/mac/receipt-refinements")) {
+            return errorResponse(404, "NOT_FOUND");
+          }
           if (receiptDraftsEnabled(env.FEATURE_RECEIPT_DRAFTS)) {
             const receiptResponse = await handleReceiptMac(
               request, url, receiptStore, env.HOUSEHOLD_ID,
@@ -141,6 +152,8 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
           request, url, env, store, member, now, pendingLimit, recentLimit,
         );
       } catch (error) {
+        const refinementError = mapReceiptRefinementError(error);
+        if (refinementError) return refinementError;
         const shortcutError = mapReceiptShortcutError(error);
         if (shortcutError) return shortcutError;
         const receiptError = mapReceiptError(error);

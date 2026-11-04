@@ -70,9 +70,10 @@ describe("receipt API and pages", () => {
       <ReceiptProvider><ReceiptCapturePage navigate={() => undefined} /></ReceiptProvider>,
     );
     expect(html).toContain("Preparing secure scan");
-    expect(html).toContain("photos stay on your iPhone");
+    expect(html).toContain("private shared iCloud folder");
     expect(html).toContain("Shortcut not installed or out of date?");
-    expect(html).toContain("version 1");
+    expect(html).toContain("version 2");
+    expect(html).toContain("FinTracka Receipt Scanner");
     expect(html).not.toContain("type=\"file\"");
   });
 });

@@ -436,6 +436,19 @@ describe("mobile gateway", () => {
       .toMatchObject({ capabilities: { "receipts.drafts": [1] } });
   });
 
+  it("keeps Mac receipt refinement behind its independent rollout gate", async () => {
+    const gateway = makeGateway();
+    const disabled = gatewayEnv();
+    await expectError(await gateway.fetch(macRequest(
+      "/api/v1/mobile/mac/receipt-refinements/active"), disabled), 404, "NOT_FOUND");
+    const enabled = gatewayEnv();
+    enabled.FEATURE_RECEIPT_REFINEMENT = "true";
+    const response = await gateway.fetch(macRequest(
+      "/api/v1/mobile/mac/receipt-refinements/active"), enabled);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ refinement_ids: [] });
+  });
+
   it("creates, reads, replaces, lists, and dismisses household receipt drafts", async () => {
     const gateway = makeGateway();
     await provision(gateway);

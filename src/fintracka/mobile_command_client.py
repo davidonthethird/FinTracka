@@ -89,6 +89,14 @@ class MobileCommandStatus:
     status: str
 
 
+@dataclass(frozen=True)
+class ClaimedReceiptRefinement:
+    id: str
+    input_digest: str
+    claim_token: str
+    claimed_until: str
+
+
 class MobileCommandClientError(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
@@ -143,6 +151,53 @@ class MobileCommandClient:
         if not isinstance(commands, list) or len(commands) > 10:
             raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
         return tuple(_claimed_command(item) for item in commands)
+
+    def claim_receipt_refinements(self, limit: int = 3) -> tuple[ClaimedReceiptRefinement, ...]:
+        if not 1 <= limit <= 3:
+            raise ValueError("receipt refinement claim limit must be between 1 and 3")
+        value = self._request("/api/v1/mobile/mac/receipt-refinements/claim", {"limit": limit})
+        root = _exact_dict(value, {"refinements"})
+        items = root["refinements"]
+        if not isinstance(items, list) or len(items) > 3:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        return tuple(_claimed_receipt_refinement(item) for item in items)
+
+    def active_receipt_refinement_ids(self) -> frozenset[str]:
+        value = self._get("/api/v1/mobile/mac/receipt-refinements/active", maximum=64 * 1024)
+        root = _exact_dict(value, {"refinement_ids"})
+        items = root["refinement_ids"]
+        if not isinstance(items, list) or len(items) > 100:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        return frozenset(_bounded_string(item, 128) for item in items)
+
+    def complete_receipt_refinement(
+        self, job_id: str, claim_token: str, input_digest: str, text: str, model_result: str,
+    ) -> None:
+        _bounded_string(job_id, 128)
+        _bounded_string(claim_token, 128)
+        _digest(input_digest)
+        if not text or len(text) > 100_000 or not model_result or len(model_result) > 100_000:
+            raise ValueError("receipt refinement result is invalid")
+        value = self._request(
+            f"/api/v1/mobile/mac/receipt-refinements/{quote(job_id, safe='')}/complete",
+            {"claim_token": claim_token, "input_digest": input_digest, "text": text,
+             "model_result": model_result}, maximum_request=256 * 1024,
+        )
+        if _exact_dict(value, {"status"}) != {"status": "completed"}:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+
+    def fail_receipt_refinement(self, job_id: str, claim_token: str, error_code: str) -> str:
+        if error_code not in {"MODEL_UNAVAILABLE", "VISION_FAILED", "INVALID_PACKAGE", "UNRECONCILED",
+                              "PACKAGE_NOT_FOUND"}:
+            raise ValueError("invalid receipt refinement error")
+        value = self._request(
+            f"/api/v1/mobile/mac/receipt-refinements/{quote(_bounded_string(job_id, 128), safe='')}/fail",
+            {"claim_token": _bounded_string(claim_token, 128), "error_code": error_code},
+        )
+        status = _exact_dict(value, {"status"})["status"]
+        if status not in {"pending", "failed", "completed"}:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        return status
 
     def get_receipt_revision(
         self, draft_id: str, revision: int, expected_digest: str,
@@ -208,9 +263,9 @@ class MobileCommandClient:
         if root != {"member_id": member_id, "active": active}:
             raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
 
-    def _request(self, path: str, value: object) -> object:
+    def _request(self, path: str, value: object, *, maximum_request: int = MAX_REQUEST_BYTES) -> object:
         payload = json.dumps(value, separators=(",", ":"), ensure_ascii=True).encode()
-        if len(payload) > MAX_REQUEST_BYTES:
+        if len(payload) > maximum_request:
             raise ValueError("mobile command request is too large")
         request = urllib.request.Request(
             self.gateway_url + path,
@@ -251,6 +306,25 @@ class MobileCommandClient:
                     continue
                 raise MobileCommandClientError("MOBILE_NETWORK_ERROR") from error
         raise MobileCommandClientError("MOBILE_NETWORK_ERROR")
+
+    def _request_no_content(self, path: str, value: object) -> None:
+        payload = json.dumps(value, separators=(",", ":"), ensure_ascii=True).encode()
+        request = urllib.request.Request(self.gateway_url + path, data=payload, method="POST", headers={
+            "CF-Access-Client-Id": self.client_id, "CF-Access-Client-Secret": self.client_secret,
+            "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "FinTracka/0.1",
+        })
+        try:
+            with self.opener(request, self.timeout) as response:  # type: ignore[attr-defined]
+                if response.read(1):  # type: ignore[attr-defined]
+                    raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        except MobileCommandClientError:
+            raise
+        except HTTPError as error:
+            raise MobileCommandClientError(_http_error_code(error.code)) from error
+        except (socket.timeout, TimeoutError) as error:
+            raise MobileCommandClientError("MOBILE_TIMEOUT") from error
+        except URLError as error:
+            raise MobileCommandClientError("MOBILE_NETWORK_ERROR") from error
 
     def _get(self, path: str, *, maximum: int) -> object:
         request = urllib.request.Request(
@@ -346,6 +420,17 @@ def _claimed_command(value: object) -> ClaimedCommand:
         payload_digest=digest,
         claim_token=_bounded_string(item["claim_token"], 128),
         expires_at=_bounded_string(item["expires_at"], 40),
+    )
+
+
+def _claimed_receipt_refinement(value: object) -> ClaimedReceiptRefinement:
+    item = _exact_dict(value, {"id", "input_digest", "claim_token", "claimed_until"})
+    token = _bounded_string(item["claim_token"], 128)
+    if re.fullmatch(r"[A-Za-z0-9_-]{43}", token) is None:
+        raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+    return ClaimedReceiptRefinement(
+        id=_bounded_string(item["id"], 128), input_digest=_digest(item["input_digest"]),
+        claim_token=token, claimed_until=_bounded_string(item["claimed_until"], 40),
     )
 
 

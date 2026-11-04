@@ -2,9 +2,10 @@ import {
   ReceiptShortcutCaptureSchema,
   canonicalReceiptShortcutCapture,
   type PublicReceiptImport,
-  type ReceiptShortcutCapture,
   type ScanSession,
 } from "./receiptShortcutModel";
+import { validateReceiptInterpretation, type ReceiptValidationResult } from "./receiptInterpretation";
+import { ReceiptRefinementStore } from "./receiptRefinementStore";
 
 const TEN_MINUTES = 10 * 60_000;
 const THIRTY_MINUTES = 30 * 60_000;
@@ -14,6 +15,7 @@ const BODY_LIMIT = 128 * 1024;
 interface StoreOptions {
   hourlySessionLimit?: number;
   activeImportLimit?: number;
+  refinementEnabled?: boolean;
 }
 
 interface SessionRow {
@@ -28,8 +30,12 @@ interface SessionRow {
 
 interface ImportRow {
   id: string;
-  shortcut_version: 1;
+  shortcut_version: 1 | 2;
   pages_json: string;
+  validation_json: string | null;
+  refinement_id: string | null;
+  refinement_status: "pending" | "claimed" | "completed" | "failed" | null;
+  error_code: string | null;
   created_at: string;
   expires_at: string;
 }
@@ -41,6 +47,7 @@ export class ReceiptShortcutStoreError extends Error {
 export class ReceiptShortcutStore {
   private readonly hourlySessionLimit: number;
   private readonly activeImportLimit: number;
+  private readonly refinementEnabled: boolean;
 
   constructor(
     private readonly database: D1Database,
@@ -49,6 +56,7 @@ export class ReceiptShortcutStore {
   ) {
     this.hourlySessionLimit = options.hourlySessionLimit ?? 10;
     this.activeImportLimit = options.activeImportLimit ?? 5;
+    this.refinementEnabled = options.refinementEnabled ?? true;
   }
 
   async createSession(householdId: string, memberId: string): Promise<ScanSession> {
@@ -81,16 +89,19 @@ export class ReceiptShortcutStore {
 
   async createImport(
     token: string,
-    untrustedCapture: ReceiptShortcutCapture,
+    untrustedCapture: unknown,
   ): Promise<{ import: PublicReceiptImport; replayed: boolean }> {
     const parsed = ReceiptShortcutCaptureSchema.safeParse(untrustedCapture);
     if (!parsed.success) throw new ReceiptShortcutStoreError("INVALID_RECEIPT_SHORTCUT_CAPTURE");
-    const canonical = canonicalReceiptShortcutCapture(parsed.data);
+    const canonical = canonicalReceiptShortcutCapture(untrustedCapture);
     if (new TextEncoder().encode(canonical).byteLength > BODY_LIMIT) {
       throw new ReceiptShortcutStoreError("RECEIPT_SHORTCUT_BODY_TOO_LARGE");
     }
     const tokenDigest = await sha256Hex(token);
     const bodyDigest = await sha256Hex(canonical);
+    const validation = parsed.data.shortcut_version === 2
+      ? validateReceiptInterpretation(parsed.data.pages[0].text, parsed.data.model_result)
+      : null;
     const session = await this.database.prepare(`SELECT token_digest, household_id, actor_member_id,
       consumed_import_id, idempotency_key, body_digest, expires_at
       FROM receipt_scan_sessions WHERE token_digest = ?`).bind(tokenDigest).first<SessionRow>();
@@ -103,6 +114,8 @@ export class ReceiptShortcutStore {
       if (session.idempotency_key !== parsed.data.idempotency_key || session.body_digest !== bodyDigest) {
         throw new ReceiptShortcutStoreError("RECEIPT_SCAN_SESSION_CONSUMED");
       }
+      await this.ensureRefinement(validation, session.consumed_import_id, session.household_id,
+        session.actor_member_id, bodyDigest);
       return { import: await this.requireImport(session.household_id, session.actor_member_id,
         session.consumed_import_id), replayed: true };
     }
@@ -121,10 +134,13 @@ export class ReceiptShortcutStore {
       await this.database.batch([
         this.database.prepare(`INSERT INTO receipt_shortcut_imports
           (id, session_token_digest, household_id, actor_member_id, contract_version,
-           shortcut_version, pages_json, idempotency_key, body_digest, created_at, expires_at)
-          VALUES (?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?)`).bind(
+           shortcut_version, pages_json, model_result, validation_json, idempotency_key, body_digest,
+           created_at, expires_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
           id, tokenDigest, session.household_id, session.actor_member_id,
-          JSON.stringify(parsed.data.pages), parsed.data.idempotency_key, bodyDigest, now, expiresAt,
+          parsed.data.shortcut_version, parsed.data.shortcut_version,
+          JSON.stringify(parsed.data.pages), parsed.data.shortcut_version === 2 ? parsed.data.model_result : null,
+          validation ? JSON.stringify(validation) : null, parsed.data.idempotency_key, bodyDigest, now, expiresAt,
         ),
         this.database.prepare(`UPDATE receipt_scan_sessions SET consumed_import_id = ?,
           idempotency_key = ?, body_digest = ?, consumed_at = ?
@@ -141,11 +157,14 @@ export class ReceiptShortcutStore {
         FROM receipt_scan_sessions WHERE token_digest = ?`).bind(tokenDigest).first<SessionRow>();
       if (raced?.consumed_import_id && raced.idempotency_key === parsed.data.idempotency_key
           && raced.body_digest === bodyDigest) {
+        await this.ensureRefinement(validation, raced.consumed_import_id, raced.household_id,
+          raced.actor_member_id, bodyDigest);
         return { import: await this.requireImport(raced.household_id, raced.actor_member_id,
           raced.consumed_import_id), replayed: true };
       }
       throw new ReceiptShortcutStoreError("RECEIPT_SCAN_SESSION_CONSUMED");
     }
+    await this.ensureRefinement(validation, id, session.household_id, session.actor_member_id, bodyDigest);
     return { import: await this.requireImport(session.household_id, session.actor_member_id, id), replayed: false };
   }
 
@@ -160,6 +179,11 @@ export class ReceiptShortcutStore {
     if ((result.meta.changes ?? 0) !== 1) {
       throw new ReceiptShortcutStoreError("RECEIPT_IMPORT_NOT_FOUND");
     }
+  }
+
+  async retryImport(householdId: string, memberId: string, id: string): Promise<void> {
+    await new ReceiptRefinementStore(this.database, this.clock)
+      .retryImport(id, householdId, memberId);
   }
 
   private async cleanup(): Promise<void> {
@@ -180,13 +204,29 @@ export class ReceiptShortcutStore {
     if (!row) throw new ReceiptShortcutStoreError("MEMBER_NOT_AUTHORIZED");
   }
 
+  private async ensureRefinement(validation: ReceiptValidationResult | null, importId: string,
+    householdId: string, memberId: string, bodyDigest: string): Promise<void> {
+    if (this.refinementEnabled && validation?.status === "needs_refinement") {
+      await new ReceiptRefinementStore(this.database, this.clock)
+        .createForImport(importId, householdId, memberId, bodyDigest);
+    }
+  }
+
   private async requireImport(householdId: string, memberId: string, id: string): Promise<PublicReceiptImport> {
-    const row = await this.database.prepare(`SELECT id, shortcut_version, pages_json, created_at, expires_at
-      FROM receipt_shortcut_imports WHERE id = ? AND household_id = ? AND actor_member_id = ?
-      AND expires_at > ?`).bind(id, householdId, memberId, this.clock().toISOString()).first<ImportRow>();
+    const row = await this.database.prepare(`SELECT receipt_import.id, receipt_import.shortcut_version,
+      receipt_import.pages_json, receipt_import.validation_json, receipt_import.created_at,
+      receipt_import.expires_at, refinement.id AS refinement_id, refinement.status AS refinement_status,
+      refinement.error_code
+      FROM receipt_shortcut_imports receipt_import
+      LEFT JOIN receipt_refinements refinement ON refinement.import_id = receipt_import.id
+      WHERE receipt_import.id = ? AND receipt_import.household_id = ? AND receipt_import.actor_member_id = ?
+      AND receipt_import.expires_at > ?`).bind(id, householdId, memberId, this.clock().toISOString()).first<ImportRow>();
     if (!row) throw new ReceiptShortcutStoreError("RECEIPT_IMPORT_NOT_FOUND");
     return { id: row.id, shortcut_version: row.shortcut_version,
       pages: JSON.parse(row.pages_json) as PublicReceiptImport["pages"],
+      validation: row.validation_json ? JSON.parse(row.validation_json) as ReceiptValidationResult : null,
+      refinement: row.refinement_id && row.refinement_status ? { id: row.refinement_id,
+        status: row.refinement_status, error_code: row.error_code } : null,
       created_at: row.created_at, expires_at: row.expires_at };
   }
 }

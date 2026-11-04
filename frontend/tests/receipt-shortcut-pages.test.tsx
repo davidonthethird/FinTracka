@@ -5,12 +5,15 @@ import {
   createReceiptScanSession,
   deleteReceiptImport,
   getReceiptImport,
+  retryReceiptImport,
   type PublicReceiptImport,
 } from "../src/viewer/receipts/receiptShortcutApi";
 import { finalizeReceiptImport } from "../src/viewer/receipts/ReceiptShortcutImportPage";
 
 const session = {
   contract: "receipt_scan_session/v1" as const,
+  shortcut_version: 2 as const,
+  shortcut_name: "FinTracka Receipt Scanner" as const,
   token: "sensitive-one-time-token",
   upload_url: "https://viewer.example/api/v1/mobile/shortcut/receipt-imports",
   expires_at: "2026-11-02T12:10:00.000Z",
@@ -31,8 +34,8 @@ describe("receipt Shortcut pages", () => {
       method: "POST", credentials: "same-origin", body: "{}",
     }));
     expect(parsed.protocol).toBe("shortcuts:");
-    expect(parsed.searchParams.get("name")).toBe("FinTracka Scan Receipt");
-    expect(url).toContain("name=FinTracka%20Scan%20Receipt");
+    expect(parsed.searchParams.get("name")).toBe("FinTracka Receipt Scanner");
+    expect(url).toContain("name=FinTracka%20Receipt%20Scanner");
     expect(url).not.toContain("FinTracka+Scan+Receipt");
     expect(parsed.searchParams.get("input")).toBe("text");
     expect(JSON.parse(parsed.searchParams.get("text") ?? "")).toEqual(session);
@@ -40,18 +43,22 @@ describe("receipt Shortcut pages", () => {
     vi.unstubAllGlobals();
   });
 
-  it("gets and deletes only the opaque import URL", async () => {
+  it("gets, retries, and deletes only the opaque import URL", async () => {
     const imported = receiptImport("SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50");
     const fetchMock = vi.fn(async (_path: string, init?: RequestInit) => init?.method === "DELETE"
-      ? new Response(null, { status: 204 })
+      ? new Response(null, { status: 204 }) : String(_path).endsWith("/retry")
+        ? new Response(JSON.stringify({ status: "pending" }), { status: 200,
+          headers: { "Content-Type": "application/json" } })
       : new Response(JSON.stringify({ import: imported }), { status: 200,
         headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(getReceiptImport(imported.id)).resolves.toEqual(imported);
+    await retryReceiptImport(imported.id);
     await deleteReceiptImport(imported.id);
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       `/api/v1/mobile/receipt-imports/${imported.id}`,
+      `/api/v1/mobile/receipt-imports/${imported.id}/retry`,
       `/api/v1/mobile/receipt-imports/${imported.id}`,
     ]);
     expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("sensitive-one-time-token");
@@ -105,6 +112,58 @@ describe("receipt Shortcut pages", () => {
     expect(result).toEqual({ status: "cancelled" });
     expect(create).not.toHaveBeenCalled();
     expect(cleanup).not.toHaveBeenCalled();
+  });
+
+  it("waits for a pending refinement instead of creating an empty draft", async () => {
+    const imported: PublicReceiptImport = { ...receiptImport("###"), shortcut_version: 2,
+      validation: { status: "needs_refinement", issues: ["invalid_model_result"], receipt: null },
+      refinement: { id: "refinement-1", status: "pending", error_code: null } };
+    const create = vi.fn();
+    const result = await finalizeReceiptImport(imported, { create, cleanup: vi.fn() });
+    expect(result).toEqual({ status: "refining", imported });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("never falls back to the legacy parser after Mac refinement fails", async () => {
+    const imported: PublicReceiptImport = { ...receiptImport("SYNTHETIC MARKET\nTOTAL 4.50"),
+      shortcut_version: 2,
+      validation: { status: "needs_refinement", issues: ["invalid_model_result"], receipt: null },
+      refinement: { id: "refinement-1", status: "failed", error_code: "MODEL_UNAVAILABLE" } };
+    const create = vi.fn();
+    const result = await finalizeReceiptImport(imported, { create, cleanup: vi.fn() });
+    expect(result).toEqual({ status: "failed", imported });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when a v2 response has no validation payload", async () => {
+    const imported: PublicReceiptImport = { ...receiptImport("SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50"),
+      shortcut_version: 2, validation: null, refinement: null };
+    const create = vi.fn();
+    const result = await finalizeReceiptImport(imported, { create, cleanup: vi.fn() });
+    expect(result).toEqual({ status: "unusable", imported });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("creates directly from evidence-validated model fields without reparsing OCR text", async () => {
+    const imported: PublicReceiptImport = { ...receiptImport("garbled text that the legacy parser cannot use"),
+      shortcut_version: 2, validation: { status: "accepted", issues: [], receipt: {
+        merchant: { value: "Synthetic Market", evidence: "SYNTHETIC MARKET" },
+        date: { value: "2026-11-04", evidence: "11/04/2026" },
+        subtotal: { value_cents: 450, evidence: "SUBTOTAL 4.50" }, discounts: [],
+        tax: { value_cents: 36, evidence: "TAX 0.36" }, tip: null, fees: [],
+        total: { value_cents: 486, evidence: "TOTAL 4.86" }, lines: [{ description: "APPLES",
+          amount_cents: 450, description_evidence: "APPLES", amount_evidence: "4.50" }],
+      } }, refinement: null };
+    const create = vi.fn(async () => ({ id: "draft-v2" }) as never);
+
+    const result = await finalizeReceiptImport(imported, { create, cleanup: vi.fn() });
+
+    expect(result.status).toBe("created");
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ merchant: "Synthetic Market",
+      purchase_date: "2026-11-04", subtotal_minor: 450, tax_minor: 36, total_minor: 486,
+      source_text: expect.stringContaining("garbled text"),
+      lines: [expect.objectContaining({ description: "APPLES", item_total_minor: 450 })] }),
+    `shortcut-import-${imported.id}`);
   });
 });
 

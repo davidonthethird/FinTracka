@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { FileWarning, RotateCcw, Trash2, X } from "lucide-react";
 
 import { MobileCommandApiError } from "../api";
-import { draftFromParsedReceipt, isUsableParsedReceipt } from "./receiptDraftBuilder";
+import { draftFromParsedReceipt, draftFromValidatedReceipt, isUsableParsedReceipt,
+  isUsableValidatedReceipt } from "./receiptDraftBuilder";
 import { receiptPagesFromPlainText } from "./receiptPlainText";
 import { parseReceiptPages } from "./receiptParser";
-import { deleteReceiptImport, getReceiptImport, type PublicReceiptImport } from "./receiptShortcutApi";
+import { deleteReceiptImport, getReceiptImport, retryReceiptImport, type PublicReceiptImport } from "./receiptShortcutApi";
 import { useReceipts } from "./ReceiptProvider";
 import type { ReceiptDraft, ReceiptDraftV1 } from "./types";
 
@@ -17,16 +18,33 @@ interface FinalizerDependencies {
 
 export type ReceiptImportResult = { status: "created"; draft: ReceiptDraft }
   | { status: "unusable"; imported: PublicReceiptImport }
+  | { status: "refining"; imported: PublicReceiptImport }
+  | { status: "failed"; imported: PublicReceiptImport }
   | { status: "cancelled" };
 
 export async function finalizeReceiptImport(
   imported: PublicReceiptImport,
   dependencies: FinalizerDependencies,
 ): Promise<ReceiptImportResult> {
+  if (imported.refinement && ["pending", "claimed"].includes(imported.refinement.status)) {
+    return { status: "refining", imported };
+  }
+  if (imported.refinement?.status === "failed") return { status: "failed", imported };
+  if (imported.shortcut_version === 2) {
+    if (imported.validation?.receipt && imported.validation.status !== "needs_refinement"
+        && isUsableValidatedReceipt(imported.validation.receipt)) {
+      if (dependencies.cancelled?.()) return { status: "cancelled" };
+      const draft = await dependencies.create(draftFromValidatedReceipt(imported.validation.receipt,
+        imported.pages.length, imported.validation.issues, sourceText(imported)), `shortcut-import-${imported.id}`);
+      try { await dependencies.cleanup(); } catch { /* deterministic replay retries cleanup */ }
+      return { status: "created", draft };
+    }
+    return { status: imported.validation ? "failed" : "unusable", imported };
+  }
   const parsed = parseReceiptPages(receiptPagesFromPlainText(imported.pages));
   if (!isUsableParsedReceipt(parsed)) return { status: "unusable", imported };
   if (dependencies.cancelled?.()) return { status: "cancelled" };
-  const draft = await dependencies.create(draftFromParsedReceipt(parsed, imported.pages.length),
+  const draft = await dependencies.create(draftFromParsedReceipt(parsed, imported.pages.length, sourceText(imported)),
     `shortcut-import-${imported.id}`);
   try { await dependencies.cleanup(); } catch { /* deterministic replay retries cleanup */ }
   return { status: "created", draft };
@@ -53,9 +71,14 @@ export function ReceiptShortcutImportPage({ id, navigate }: { id: string; naviga
       if (!active) return;
       if (result.status === "created") {
         navigate(`/receipts/${encodeURIComponent(result.draft.id)}`);
-      } else if (result.status === "unusable") {
+      } else if (result.status === "unusable" || result.status === "refining" || result.status === "failed") {
+        const waiting = result.status === "refining";
         setImported(result.imported);
-        setError("The recognized text did not contain a usable merchant, total, or priced item.");
+        setError(waiting
+          ? "This receipt needs a closer look. Your Mac will refine it when it is awake; this page checks automatically."
+          : result.status === "failed"
+            ? "The Mac could not safely reconcile this receipt. Retake clearer photos or discard this scan."
+            : "The recognized text did not contain a usable merchant, total, or priced item.");
         setWorking(false);
       }
     }).catch((caught) => {
@@ -66,12 +89,43 @@ export function ReceiptShortcutImportPage({ id, navigate }: { id: string; naviga
   }, [attempt, id, navigate, receipts.create]);
 
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
+  useEffect(() => {
+    if (!imported?.refinement || !["pending", "claimed"].includes(imported.refinement.status)) return;
+    const timer = window.setTimeout(() => setAttempt((value) => value + 1), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [imported?.refinement]);
 
   async function discard() {
     if (!imported) { navigate("/receipts/new"); return; }
     setWorking(true); setError("");
     try { await deleteReceiptImport(imported.id); navigate("/receipts"); }
     catch (caught) { setWorking(false); setError(importErrorMessage(caught)); }
+  }
+
+  async function retry() {
+    if (imported?.refinement?.status === "failed") {
+      setWorking(true); setError("");
+      try { await retryReceiptImport(imported.id); setAttempt((value) => value + 1); }
+      catch (caught) { setWorking(false); setError(importErrorMessage(caught)); }
+      return;
+    }
+    setAttempt((value) => value + 1);
+  }
+
+  async function reviewNow() {
+    const validation = imported?.validation;
+    if (!imported || !validation?.receipt || !isUsableValidatedReceipt(validation.receipt)) {
+      setError("The phone result does not contain enough supported information to review safely.");
+      return;
+    }
+    setWorking(true); setError("");
+    try {
+      const draft = await receipts.create(draftFromValidatedReceipt(validation.receipt,
+        imported.pages.length, [...validation.issues, "manual_review_before_refinement"], sourceText(imported)),
+      `shortcut-import-${imported.id}`);
+      try { await deleteReceiptImport(imported.id); } catch { /* deterministic replay retries cleanup */ }
+      navigate(`/receipts/${encodeURIComponent(draft.id)}`);
+    } catch (caught) { setWorking(false); setError(importErrorMessage(caught)); }
   }
 
   return <div className="viewer-page"><header className="viewer-heading"><div><span>Apple Vision</span><h1>Import receipt</h1></div>
@@ -84,11 +138,18 @@ export function ReceiptShortcutImportPage({ id, navigate }: { id: string; naviga
       {imported && <details className="receipt-recognized-text"><summary>Show recognized text</summary>
         {imported.pages.map((page) => <pre key={page.page_index}>{page.text}</pre>)}</details>}
       {!working && <div className="receipt-import-actions">
-        <button className="receipt-camera" onClick={() => setAttempt((value) => value + 1)}><RotateCcw />Retry import</button>
+        {imported?.validation?.receipt && isUsableValidatedReceipt(imported.validation.receipt)
+          && <button className="receipt-camera" onClick={() => void reviewNow()}>Review phone result now</button>}
+        <button className="secondary-button" onClick={() => void retry()}><RotateCcw />
+          {imported?.refinement?.status === "failed" ? "Retry refinement" : "Refresh status"}</button>
         <button className="secondary-button" onClick={() => void discard()}><Trash2 />{imported ? "Discard text" : "Start a new scan"}</button>
       </div>}
     </section>
   </div>;
+}
+
+function sourceText(imported: PublicReceiptImport): string {
+  return imported.pages.map((page) => `--- PAGE ${page.page_index + 1} ---\n${page.text}`).join("\n");
 }
 
 function importErrorMessage(caught: unknown): string {
