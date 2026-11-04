@@ -56,17 +56,17 @@ def process_receipt_refinements(
             try:
                 status = client.fail_receipt_refinement(job.id, job.claim_token, code)
             except Exception:
+                # A terminal failure may have committed even when its response was lost. Preserve
+                # the package in failed so an explicit browser retry can restore it to pending.
+                if code not in RETRYABLE_ERRORS:
+                    _move_package_to_failed(queue_directory, job.id, package)
                 result["deferred"] += 1
                 continue
             if status == "completed":
                 _remove_package(package)
                 result["completed"] += 1
             elif status == "failed":
-                failed = queue_directory / "failed" / job.id
-                failed.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                _remove_package(failed)
-                if package.is_dir() and not package.is_symlink():
-                    package.replace(failed)
+                _move_package_to_failed(queue_directory, job.id, package)
                 result["failed"] += 1
             else:
                 result["deferred"] += 1
@@ -99,6 +99,14 @@ def _restore_failed_package(queue_directory: Path, job_id: str, pending: Path) -
             and JOB_ID.fullmatch(job_id)):
         pending.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         failed.replace(pending)
+
+
+def _move_package_to_failed(queue_directory: Path, job_id: str, package: Path) -> None:
+    failed = queue_directory / "failed" / job_id
+    failed.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _remove_package(failed)
+    if package.is_dir() and not package.is_symlink() and JOB_ID.fullmatch(job_id):
+        package.replace(failed)
 
 
 def _remove_package(package: Path) -> None:

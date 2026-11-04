@@ -16,6 +16,7 @@ class Client:
     completed: list[tuple[str, str, str, str, str]]
     failed: list[tuple[str, str, str]]
     complete_error: bool = False
+    fail_error: bool = False
 
     def active_receipt_refinement_ids(self):
         return frozenset(job.id for job in self.jobs)
@@ -31,6 +32,8 @@ class Client:
 
     def fail_receipt_refinement(self, job_id, claim_token, error_code):
         self.failed.append((job_id, claim_token, error_code))
+        if self.fail_error:
+            raise OSError("response lost")
         return "pending" if error_code in {"MODEL_UNAVAILABLE", "VISION_FAILED", "PACKAGE_NOT_FOUND"} else "failed"
 
 
@@ -87,6 +90,21 @@ def test_permanent_invalid_package_moves_to_failed(tmp_path: Path) -> None:
 
     result = process_receipt_refinements(client, tmp_path, helper)
     assert result["failed"] == 1
+    assert not package.exists()
+    assert (tmp_path / "failed" / job.id).is_dir()
+
+
+def test_lost_terminal_failure_response_preserves_package_for_browser_retry(tmp_path: Path) -> None:
+    job = claimed("00000000-0000-4000-8000-000000000018")
+    package = queue_package(tmp_path, job.id)
+    client = Client((job,), [], [], fail_error=True)
+
+    def helper(_: Path):
+        raise RuntimeError("UNRECONCILED")
+
+    result = process_receipt_refinements(client, tmp_path, helper)
+
+    assert result["deferred"] == 1
     assert not package.exists()
     assert (tmp_path / "failed" / job.id).is_dir()
 

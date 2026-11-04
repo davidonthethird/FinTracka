@@ -119,6 +119,20 @@ describe("receipt shortcut v2", () => {
     expect(result.receipt.lines).toEqual([]);
   });
 
+  it("rejects prices swapped between two real OCR item rows", () => {
+    const result = validateReceiptInterpretation(OCR, interpretation({
+      lines: [
+        { description: "MILK", amount_cents: 250,
+          description_evidence: "MILK", amount_evidence: "2.50" },
+        { description: "BREAD", amount_cents: 349,
+          description_evidence: "BREAD", amount_evidence: "3.49" },
+      ],
+    }));
+    expect(result.status).toBe("needs_refinement");
+    expect(result.issues).toContain("unsupported_line");
+    expect(result.receipt.lines).toEqual([]);
+  });
+
   it("requires a merchant, total, priced line, and reconciled arithmetic without subtotal", () => {
     const text = "SHOP\nITEM 5.99\nTAX 0.36\nTOTAL 6.35";
     const valid = validateReceiptInterpretation(text, interpretation({

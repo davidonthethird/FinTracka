@@ -51,6 +51,7 @@ export function validateReceiptInterpretation(rawText: string, modelResult: stri
   }
   const issues: ReceiptIssue[] = [];
   const text = normalize(rawText);
+  const rows = rawText.split(/\r?\n/).map(normalize).filter(Boolean);
   const receipt: ReceiptInterpretation = structuredClone(EMPTY);
 
   receipt.merchant = supportedText(parsed.data.merchant, text, "unsupported_merchant", issues);
@@ -78,7 +79,8 @@ export function validateReceiptInterpretation(rawText: string, modelResult: stri
       continue;
     }
     if (!descriptionEvidence || !amountEvidence || !text.includes(descriptionEvidence)
-        || !text.includes(amountEvidence) || line.amount_cents <= 0) {
+        || !text.includes(amountEvidence) || !sharesPrintedRow(rows, descriptionEvidence, amountEvidence)
+        || line.amount_cents <= 0) {
       addIssue(issues, "unsupported_line");
       continue;
     }
@@ -164,6 +166,10 @@ function supportedAmount<T extends z.infer<typeof amountField>>(value: T | null,
 function evidenceHasCents(evidence: string, cents: number): boolean {
   const values = evidence.match(/-?\(?\$?\s*\d[\d,]*\.\d{2}\)?|-?\(?\$?\s*\.\d{2}\)?/g) ?? [];
   return values.some((value) => moneyToCents(value) === cents);
+}
+
+function sharesPrintedRow(rows: string[], descriptionEvidence: string, amountEvidence: string): boolean {
+  return rows.some((row) => row.includes(descriptionEvidence) && row.includes(amountEvidence));
 }
 
 function moneyToCents(value: string): number | null {
