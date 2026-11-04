@@ -122,6 +122,20 @@ describe("receipt shortcut store", () => {
     })).rejects.toMatchObject({ code: "RECEIPT_SCAN_SESSION_CONSUMED" });
   });
 
+  it("keeps refinement imports alive and recreates a missing job on exact replay", async () => {
+    const store = makeStore();
+    const session = await store.createSession(HOUSEHOLD, MEMBER);
+    const created = await store.createImport(session.token, refinementCapture());
+    expect(created.import.refinement?.status).toBe("pending");
+    expect(created.import.expires_at).toBe("2026-11-09T12:00:00.000Z");
+
+    await env.COMMANDS.prepare("DELETE FROM receipt_refinements WHERE import_id = ?")
+      .bind(created.import.id).run();
+    const replay = await store.createImport(session.token, refinementCapture());
+    expect(replay.replayed).toBe(true);
+    expect(replay.import.refinement?.status).toBe("pending");
+  });
+
   it("does not let an invalid public token trigger cleanup writes", async () => {
     let now = NOW;
     const store = new ReceiptShortcutStore(env.COMMANDS, () => now);
@@ -222,6 +236,16 @@ function capture() {
     idempotency_key: "f3ad6254-e6ab-4a4c-bbb8-810cfde7d530",
     shortcut_version: 1 as const,
     pages: [{ page_index: 0, text: "Synthetic Market\nITEM 10.00\nTOTAL 10.00" }],
+  };
+}
+
+function refinementCapture() {
+  return {
+    contract: "receipt_shortcut_capture/v2" as const,
+    idempotency_key: "a".repeat(64),
+    shortcut_version: 2 as const,
+    text: "Synthetic Market\nTOTAL 10.00",
+    model_result: "not json",
   };
 }
 

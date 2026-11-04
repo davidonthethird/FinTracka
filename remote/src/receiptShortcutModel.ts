@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { ReceiptInterpretationSchema, type ReceiptValidationResult } from "./receiptInterpretation";
+
 export const ReceiptShortcutPageSchema = z.object({
   page_index: z.preprocess(
     (value) => typeof value === "string" && /^(0|[1-9]\d*)$/.test(value) ? Number(value) : value,
@@ -39,9 +41,22 @@ const ReceiptShortcutTextCaptureSchema = ReceiptShortcutCaptureBase.extend({
   pages: [{ page_index: 0, text }],
 }));
 
+export const ReceiptShortcutCaptureV2Schema = z.object({
+  contract: z.literal("receipt_shortcut_capture/v2"),
+  idempotency_key: ReceiptShortcutCaptureBase.shape.idempotency_key,
+  shortcut_version: z.literal(2),
+  text: z.string().max(100_000).refine((value) => value.trim().length > 0, "blank receipt"),
+  model_result: z.union([z.string().max(100_000), ReceiptInterpretationSchema])
+    .transform((value) => typeof value === "string" ? value : JSON.stringify(value)),
+}).strict().transform(({ text, ...capture }) => ({
+  ...capture,
+  pages: [{ page_index: 0, text }],
+}));
+
 export const ReceiptShortcutCaptureSchema = z.union([
   ReceiptShortcutPagesCaptureSchema,
   ReceiptShortcutTextCaptureSchema,
+  ReceiptShortcutCaptureV2Schema,
 ]);
 
 export type ReceiptShortcutCapture = z.infer<typeof ReceiptShortcutCaptureSchema>;
@@ -53,8 +68,11 @@ export interface ScanSession {
 
 export interface PublicReceiptImport {
   id: string;
-  shortcut_version: 1;
+  shortcut_version: 1 | 2;
   pages: ReceiptShortcutCapture["pages"];
+  validation: ReceiptValidationResult | null;
+  refinement: { id: string; status: "pending" | "claimed" | "completed" | "failed";
+    error_code: string | null } | null;
   created_at: string;
   expires_at: string;
 }
@@ -66,5 +84,6 @@ export function canonicalReceiptShortcutCapture(value: unknown): string {
     idempotency_key: capture.idempotency_key,
     shortcut_version: capture.shortcut_version,
     pages: capture.pages.map((page) => ({ page_index: page.page_index, text: page.text })),
+    ...(capture.shortcut_version === 2 ? { model_result: capture.model_result } : {}),
   });
 }

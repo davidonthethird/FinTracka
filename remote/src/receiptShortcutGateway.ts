@@ -26,6 +26,8 @@ export async function handleReceiptShortcutUpload(
   return json(result.replayed ? 200 : 201, {
     import_id: result.import.id,
     review_url: `${origin}/receipts/import/${encodeURIComponent(result.import.id)}`,
+    validation_status: result.import.validation?.status ?? "legacy",
+    refinement_id: result.import.refinement?.id ?? null,
   });
 }
 
