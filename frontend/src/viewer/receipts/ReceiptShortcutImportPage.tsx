@@ -6,7 +6,7 @@ import { draftFromParsedReceipt, draftFromValidatedReceipt, isUsableParsedReceip
   isUsableValidatedReceipt } from "./receiptDraftBuilder";
 import { receiptPagesFromPlainText } from "./receiptPlainText";
 import { parseReceiptPages } from "./receiptParser";
-import { deleteReceiptImport, getReceiptImport, type PublicReceiptImport } from "./receiptShortcutApi";
+import { deleteReceiptImport, getReceiptImport, retryReceiptImport, type PublicReceiptImport } from "./receiptShortcutApi";
 import { useReceipts } from "./ReceiptProvider";
 import type { ReceiptDraft, ReceiptDraftV1 } from "./types";
 
@@ -30,21 +30,21 @@ export async function finalizeReceiptImport(
     return { status: "refining", imported };
   }
   if (imported.refinement?.status === "failed") return { status: "failed", imported };
-  if (imported.shortcut_version === 2 && imported.validation?.status === "needs_refinement") {
-    return { status: "failed", imported };
-  }
-  if (imported.validation?.receipt && imported.validation.status !== "needs_refinement"
-      && isUsableValidatedReceipt(imported.validation.receipt)) {
-    if (dependencies.cancelled?.()) return { status: "cancelled" };
-    const draft = await dependencies.create(draftFromValidatedReceipt(imported.validation.receipt,
-      imported.pages.length, imported.validation.issues), `shortcut-import-${imported.id}`);
-    try { await dependencies.cleanup(); } catch { /* deterministic replay retries cleanup */ }
-    return { status: "created", draft };
+  if (imported.shortcut_version === 2) {
+    if (imported.validation?.receipt && imported.validation.status !== "needs_refinement"
+        && isUsableValidatedReceipt(imported.validation.receipt)) {
+      if (dependencies.cancelled?.()) return { status: "cancelled" };
+      const draft = await dependencies.create(draftFromValidatedReceipt(imported.validation.receipt,
+        imported.pages.length, imported.validation.issues, sourceText(imported)), `shortcut-import-${imported.id}`);
+      try { await dependencies.cleanup(); } catch { /* deterministic replay retries cleanup */ }
+      return { status: "created", draft };
+    }
+    return { status: imported.validation ? "failed" : "unusable", imported };
   }
   const parsed = parseReceiptPages(receiptPagesFromPlainText(imported.pages));
   if (!isUsableParsedReceipt(parsed)) return { status: "unusable", imported };
   if (dependencies.cancelled?.()) return { status: "cancelled" };
-  const draft = await dependencies.create(draftFromParsedReceipt(parsed, imported.pages.length),
+  const draft = await dependencies.create(draftFromParsedReceipt(parsed, imported.pages.length, sourceText(imported)),
     `shortcut-import-${imported.id}`);
   try { await dependencies.cleanup(); } catch { /* deterministic replay retries cleanup */ }
   return { status: "created", draft };
@@ -102,6 +102,32 @@ export function ReceiptShortcutImportPage({ id, navigate }: { id: string; naviga
     catch (caught) { setWorking(false); setError(importErrorMessage(caught)); }
   }
 
+  async function retry() {
+    if (imported?.refinement?.status === "failed") {
+      setWorking(true); setError("");
+      try { await retryReceiptImport(imported.id); setAttempt((value) => value + 1); }
+      catch (caught) { setWorking(false); setError(importErrorMessage(caught)); }
+      return;
+    }
+    setAttempt((value) => value + 1);
+  }
+
+  async function reviewNow() {
+    const validation = imported?.validation;
+    if (!imported || !validation?.receipt || !isUsableValidatedReceipt(validation.receipt)) {
+      setError("The phone result does not contain enough supported information to review safely.");
+      return;
+    }
+    setWorking(true); setError("");
+    try {
+      const draft = await receipts.create(draftFromValidatedReceipt(validation.receipt,
+        imported.pages.length, [...validation.issues, "manual_review_before_refinement"], sourceText(imported)),
+      `shortcut-import-${imported.id}`);
+      try { await deleteReceiptImport(imported.id); } catch { /* deterministic replay retries cleanup */ }
+      navigate(`/receipts/${encodeURIComponent(draft.id)}`);
+    } catch (caught) { setWorking(false); setError(importErrorMessage(caught)); }
+  }
+
   return <div className="viewer-page"><header className="viewer-heading"><div><span>Apple Vision</span><h1>Import receipt</h1></div>
     <button className="icon-button" disabled={working} onClick={() => navigate("/receipts")} aria-label="Close"><X /></button></header>
     <section className="receipt-capture receipt-shortcut-import" aria-busy={working}>
@@ -112,11 +138,18 @@ export function ReceiptShortcutImportPage({ id, navigate }: { id: string; naviga
       {imported && <details className="receipt-recognized-text"><summary>Show recognized text</summary>
         {imported.pages.map((page) => <pre key={page.page_index}>{page.text}</pre>)}</details>}
       {!working && <div className="receipt-import-actions">
-        <button className="receipt-camera" onClick={() => setAttempt((value) => value + 1)}><RotateCcw />Retry import</button>
+        {imported?.validation?.receipt && isUsableValidatedReceipt(imported.validation.receipt)
+          && <button className="receipt-camera" onClick={() => void reviewNow()}>Review phone result now</button>}
+        <button className="secondary-button" onClick={() => void retry()}><RotateCcw />
+          {imported?.refinement?.status === "failed" ? "Retry refinement" : "Refresh status"}</button>
         <button className="secondary-button" onClick={() => void discard()}><Trash2 />{imported ? "Discard text" : "Start a new scan"}</button>
       </div>}
     </section>
   </div>;
+}
+
+function sourceText(imported: PublicReceiptImport): string {
+  return imported.pages.map((page) => `--- PAGE ${page.page_index + 1} ---\n${page.text}`).join("\n");
 }
 
 function importErrorMessage(caught: unknown): string {

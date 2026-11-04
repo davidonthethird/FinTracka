@@ -66,6 +66,8 @@ describe("receipt shortcut gateway", () => {
     expect(session.status).toBe(201);
     expect(await session.json()).toMatchObject({
       contract: "receipt_scan_session/v1",
+      shortcut_version: 2,
+      shortcut_name: "FinTracka Receipt Scanner",
       token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
       upload_url: `${ORIGIN}/api/v1/mobile/shortcut/receipt-imports`,
       expires_at: "2026-11-02T12:10:00.000Z",

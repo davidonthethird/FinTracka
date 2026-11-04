@@ -10,7 +10,7 @@ The Shortcut must be named exactly **FinTracka Receipt Scanner** on both phones.
 - The first upload contains recognized text and structured fields, never an image.
 - If the Worker returns `needs_refinement`, the Shortcut saves the original pages to the private shared iCloud Drive folder `FinTracka Receipt Queue/pending/<opaque-id>/`.
 - The queue manifest contains no token, host, identity, OCR text, bank data, or transaction data.
-- The Mac runs Apple Vision `RecognizeDocumentsRequest` and Apple Foundation Models locally. A successful package is deleted. A failed package is retained for seven days, then deleted.
+- The Mac runs Apple Vision `RecognizeDocumentsRequest` and Apple Foundation Models locally. A successful package is deleted. Temporary iCloud/model failures retry automatically; terminal invalid packages are retained for seven days, then deleted.
 - The model output is never trusted by itself. The Worker requires exact OCR evidence for each field, validates integer cents, rejects duplicate evidence, and checks summary/item arithmetic.
 
 Apple documents that Shortcuts can explicitly select the on-device Apple Intelligence model and choose its output type. Apple also documents native Dictionary values and `Get Dictionary from Input`; this recipe uses those native values and does not hand-build JSON strings.
@@ -51,7 +51,7 @@ Amounts must be signed integer cents. Never invent, correct, categorize, or calc
 Lines are purchased items only; exclude subtotal, discount, tax, tip, fee, tender, payment, and total rows.
 Return a Dictionary with exactly these keys:
 merchant: Dictionary {value: Text, evidence: Text} or null
-date: Dictionary {value: Text in YYYY-MM-DD only when printed, evidence: Text} or null
+date: Dictionary {value: printed US date normalized to YYYY-MM-DD, evidence: exact printed date Text} or null
 subtotal: Dictionary {value_cents: Number, evidence: Text} or null
 discounts: List of Dictionary {value_cents: Number, evidence: Text}
 tax: Dictionary {value_cents: Number, evidence: Text} or null
@@ -137,7 +137,7 @@ Test both **Take photos** and **Choose from photo library** on David's and Ariel
 4. An intentionally invalid model result creates one refinement job and one opaque iCloud package; exact upload replay creates neither a second import nor a second job.
 5. With the Mac awake, the job completes within two processor intervals, the review becomes populated, and the successful image package is gone.
 6. With the Mac off, the job remains pending. When it wakes, processing resumes without a new scan.
-7. A model-unavailable failure remains in `failed` and disappears after seven days. An unrelated file remains untouched.
+7. A model-unavailable or iCloud-delay failure remains in `pending` and retries. A terminal invalid package moves to `failed` and disappears after seven days. An unrelated file remains untouched.
 8. The user can always edit every field before saving. No receipt changes the ledger until the user explicitly matches it to an exact posted transaction.
 
 Record pass/fail and timestamps only. Never record tokens, host/account identifiers, receipt text, or photos.
@@ -148,7 +148,7 @@ Apply D1 migration `0006_receipt_refinements.sql` in staging twice, deploy, and 
 
 Rollback is fail-closed:
 
-1. Set `FEATURE_RECEIPT_SHORTCUT=false` and redeploy.
+1. Set `FEATURE_RECEIPT_REFINEMENT=false` first, then set `FEATURE_RECEIPT_SHORTCUT=false` if capture must also stop, and redeploy.
 2. Remove only the exact public destination override for `/api/v1/mobile/shortcut/receipt-imports` if capture must be fully disabled.
 3. Disable the existing mobile-command schedule if Mac processing must stop.
 4. Leave additive migrations in place; do not reverse D1 in production.

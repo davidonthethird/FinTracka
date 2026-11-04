@@ -11,17 +11,17 @@ FinTracka uses Apple's on-device text recognition and Apple Intelligence through
 - Receipt application, detailed splits, audit data, and the permanent command receipt commit in one SQLite transaction. A retried command is a no-op.
 - D1 stores no images or full card numbers. Local browser images expire after 30 days; D1 drafts/revisions expire after 90 days. Permanent redacted applications remain in SQLite to guarantee replay safety.
 - Refinement claims use five-minute leases and a per-claim secret digest. Imports waiting for refinement live for at most seven days; successful refinement resets review expiry to 30 minutes. Exact completion replay is allowed, but a wrong claim token, changed input digest, or changed result is rejected.
-- Successful iCloud packages are deleted. Safe failures keep their images for seven days; cleanup deletes only UUID-named directories under the private `failed` folder.
+- Successful iCloud packages are deleted. Temporary iCloud/model failures retry in `pending`; terminal invalid packages remain in `failed` for seven days. The Mac compares UUID-named pending packages with live jobs so discarded/expired packages are removed without touching unrelated files.
 
 ## Safe deployment order
 
 1. Create and verify a local SQLite backup. Keep the once-per-minute command processor disabled.
 2. Build and test the Viewer against snapshot schemas 1, 2, and 3.
 3. Apply D1 migrations through `0006_receipt_refinements.sql` in staging. Run the command again and require “no migrations to apply.”
-4. Deploy the Viewer Worker with `FEATURE_RECEIPT_DRAFTS=false`, `FEATURE_RECEIPT_MATCHING=false`, and `FEATURE_RECEIPT_SHORTCUT=false`.
+4. Deploy the Viewer Worker with `FEATURE_RECEIPT_DRAFTS=false`, `FEATURE_RECEIPT_MATCHING=false`, `FEATURE_RECEIPT_SHORTCUT=false`, and `FEATURE_RECEIPT_REFINEMENT=false`.
 5. Migrate a copied/synthetic SQLite database through migration 021 and require `PRAGMA foreign_key_check` to return no rows.
 6. Publish a synthetic snapshot v3. Verify older snapshots still read and v3 advertises `transaction.apply_receipt_split:[1]` and `receipts.matching:[1]`.
-7. Build/install the native refiner, verify Apple Intelligence availability, and enable the existing one-minute mobile-command LaunchAgent. Enable drafts in staging only. Configure and test the exact receipt-upload Access path, then enable `FEATURE_RECEIPT_SHORTCUT` in staging and run the iPhone gate below. Keep financial matching false.
+7. Build/install the native refiner, verify Apple Intelligence availability, and enable the existing one-minute mobile-command LaunchAgent. Enable drafts and `FEATURE_RECEIPT_REFINEMENT` in staging only. Configure and test the exact receipt-upload Access path, then enable `FEATURE_RECEIPT_SHORTCUT` in staging and run the iPhone gate below. Keep financial matching false.
 8. Enable matching in staging and complete the controlled synthetic reconciliation.
 9. Repeat migrations, reader deployment, and idempotence checks in production with both flags false.
 10. Enable production drafts only after the iPhone gate. Enable production matching and the minute processor only after the user-selected live reconciliation.
@@ -72,7 +72,7 @@ The repository currently has two dated baseline test failures documented in the 
 
 ## Rollback
 
-1. Set `FEATURE_RECEIPT_SHORTCUT=false` and `FEATURE_RECEIPT_MATCHING=false` and redeploy. Remove only the exact receipt-upload public destination override from the Viewer Access application. Pending receipt commands remain inert if the Mac processor is also disabled.
+1. Set `FEATURE_RECEIPT_REFINEMENT=false`, `FEATURE_RECEIPT_SHORTCUT=false`, and `FEATURE_RECEIPT_MATCHING=false` and redeploy. Remove only the exact receipt-upload public destination override from the Viewer Access application. Pending receipt commands remain inert when refinement is disabled.
 2. Disable and remove the command schedule with the existing CLI commands.
 3. Keep `FEATURE_RECEIPT_DRAFTS=true` only if capture/review should remain available; set it false to hide the entire receipt surface.
 4. Do not reverse a D1 or SQLite migration in place. Restore the verified pre-migration SQLite backup if local rollback is necessary; D1 columns/tables may remain unused.

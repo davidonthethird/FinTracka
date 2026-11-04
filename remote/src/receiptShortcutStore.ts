@@ -15,6 +15,7 @@ const BODY_LIMIT = 128 * 1024;
 interface StoreOptions {
   hourlySessionLimit?: number;
   activeImportLimit?: number;
+  refinementEnabled?: boolean;
 }
 
 interface SessionRow {
@@ -46,6 +47,7 @@ export class ReceiptShortcutStoreError extends Error {
 export class ReceiptShortcutStore {
   private readonly hourlySessionLimit: number;
   private readonly activeImportLimit: number;
+  private readonly refinementEnabled: boolean;
 
   constructor(
     private readonly database: D1Database,
@@ -54,6 +56,7 @@ export class ReceiptShortcutStore {
   ) {
     this.hourlySessionLimit = options.hourlySessionLimit ?? 10;
     this.activeImportLimit = options.activeImportLimit ?? 5;
+    this.refinementEnabled = options.refinementEnabled ?? true;
   }
 
   async createSession(householdId: string, memberId: string): Promise<ScanSession> {
@@ -178,6 +181,11 @@ export class ReceiptShortcutStore {
     }
   }
 
+  async retryImport(householdId: string, memberId: string, id: string): Promise<void> {
+    await new ReceiptRefinementStore(this.database, this.clock)
+      .retryImport(id, householdId, memberId);
+  }
+
   private async cleanup(): Promise<void> {
     const now = this.clock();
     await this.database.batch([
@@ -198,7 +206,7 @@ export class ReceiptShortcutStore {
 
   private async ensureRefinement(validation: ReceiptValidationResult | null, importId: string,
     householdId: string, memberId: string, bodyDigest: string): Promise<void> {
-    if (validation?.status === "needs_refinement") {
+    if (this.refinementEnabled && validation?.status === "needs_refinement") {
       await new ReceiptRefinementStore(this.database, this.clock)
         .createForImport(importId, householdId, memberId, bodyDigest);
     }

@@ -54,7 +54,7 @@ export function validateReceiptInterpretation(rawText: string, modelResult: stri
   const receipt: ReceiptInterpretation = structuredClone(EMPTY);
 
   receipt.merchant = supportedText(parsed.data.merchant, text, "unsupported_merchant", issues);
-  receipt.date = supportedText(parsed.data.date, text, "unsupported_date", issues);
+  receipt.date = supportedDate(parsed.data.date, text, issues);
   receipt.subtotal = supportedAmount(parsed.data.subtotal, text, "unsupported_subtotal", issues);
   receipt.discounts = parsed.data.discounts.flatMap((value) => {
     const supported = supportedAmount(value, text, "unsupported_discount", issues);
@@ -78,8 +78,12 @@ export function validateReceiptInterpretation(rawText: string, modelResult: stri
       continue;
     }
     if (!descriptionEvidence || !amountEvidence || !text.includes(descriptionEvidence)
-        || !text.includes(amountEvidence)) {
+        || !text.includes(amountEvidence) || line.amount_cents <= 0) {
       addIssue(issues, "unsupported_line");
+      continue;
+    }
+    if (!descriptionEvidence.includes(normalize(line.description))) {
+      addIssue(issues, "evidence_value_mismatch");
       continue;
     }
     if (!evidenceHasCents(amountEvidence, line.amount_cents)) {
@@ -90,22 +94,51 @@ export function validateReceiptInterpretation(rawText: string, modelResult: stri
     receipt.lines.push(line);
   }
 
-  if (receipt.subtotal && receipt.total) {
-    const calculated = receipt.subtotal.value_cents
+  if (receipt.total && receipt.lines.length > 0) {
+    const itemTotal = receipt.lines.reduce((sum, item) => sum + item.amount_cents, 0);
+    const calculated = (receipt.subtotal?.value_cents ?? itemTotal)
       - receipt.discounts.reduce((sum, item) => sum + Math.abs(item.value_cents), 0)
       + (receipt.tax?.value_cents ?? 0) + (receipt.tip?.value_cents ?? 0)
       + receipt.fees.reduce((sum, item) => sum + item.value_cents, 0);
     if (calculated !== receipt.total.value_cents) addIssue(issues, "summary_arithmetic_mismatch");
-  }
-  if (receipt.subtotal && receipt.lines.length > 0
-      && receipt.lines.reduce((sum, item) => sum + item.amount_cents, 0) !== receipt.subtotal.value_cents) {
-    addIssue(issues, "item_arithmetic_mismatch");
+    if (receipt.subtotal && itemTotal !== receipt.subtotal.value_cents) {
+      addIssue(issues, "item_arithmetic_mismatch");
+    }
   }
 
-  const unusable = !receipt.merchant || (!receipt.total && receipt.lines.length === 0);
+  const unusable = !receipt.merchant || !receipt.total || receipt.lines.length === 0;
   const material = issues.some((issue) => issue !== "unsupported_date");
   return { status: unusable || material ? "needs_refinement" : issues.length ? "needs_review" : "accepted",
     issues, receipt };
+}
+
+function supportedDate<T extends z.infer<typeof textField>>(value: T | null, raw: string,
+  issues: ReceiptIssue[]): T | null {
+  if (!value) return null;
+  const evidence = normalize(value.evidence);
+  const normalizedDate = parseDateEvidence(evidence);
+  if (!evidence || !raw.includes(evidence) || !normalizedDate || normalize(value.value) !== normalizedDate) {
+    addIssue(issues, "unsupported_date");
+    return null;
+  }
+  return { ...value, value: normalizedDate };
+}
+
+function parseDateEvidence(evidence: string): string | null {
+  const iso = evidence.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+  if (iso) return validDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
+  const us = evidence.match(/\b(\d{1,2})[\/-](\d{1,2})[\/-](\d{2}|\d{4})\b/);
+  if (!us) return null;
+  const year = Number(us[3]) < 100 ? 2_000 + Number(us[3]) : Number(us[3]);
+  return validDate(year, Number(us[1]), Number(us[2]));
+}
+
+function validDate(year: number, month: number, day: number): string | null {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    return null;
+  }
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 function supportedText<T extends z.infer<typeof textField>>(value: T | null, raw: string,

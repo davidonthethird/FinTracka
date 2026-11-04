@@ -7,23 +7,18 @@ if [ ! -x "$python" ]; then
   python="$repo_dir/.venv/bin/python"
 fi
 
-(cd "$repo_dir/remote" && npx vitest run \
-  tests/receipt-interpretation.test.ts \
-  tests/receipt-refinement-store.test.ts \
-  tests/receipt-refinement-gateway.test.ts \
-  tests/receipt-shortcut-store.test.ts \
-  tests/receipt-shortcut-gateway.test.ts && npx tsc --noEmit)
+(cd "$repo_dir/remote" && npm test -- --run && npm run typecheck && npm run check:deployment)
 
-(cd "$repo_dir/frontend" && npx vitest run tests/receipt-shortcut-pages.test.tsx && npx tsc --noEmit)
+(cd "$repo_dir/frontend" && npm test -- --run && npm run typecheck && npm run build && \
+  PATH="$(dirname "$python"):$PATH" npm run test:e2e)
 
-"$python" -m pytest \
-  "$repo_dir/tests/test_receipt_refinement_service.py" \
-  "$repo_dir/tests/test_mobile_command_client.py" -q
+PYTHONPATH="$repo_dir" "$python" -m pytest "$repo_dir/tests" -q
 
-(cd "$repo_dir/native/receipt-refiner" && swift build -c release)
+(cd "$repo_dir/native/receipt-refiner" && swift build -c release && \
+  .build/release/fintracka-receipt-refiner --self-test)
 
 scratch=$(mktemp -d)
-trap 'rm -rf "$scratch"' EXIT HUP INT TERM
+trap 'find "$scratch" -depth -delete' EXIT HUP INT TERM
 package="$scratch/00000000-0000-4000-8000-000000000001"
 mkdir -p "$package"
 echo '{"contract":"receipt_refinement_package/v1","refinement_id":"wrong-job","page_count":1,"created_at":"2026-11-04T12:00:00Z"}' > "$package/manifest.json"

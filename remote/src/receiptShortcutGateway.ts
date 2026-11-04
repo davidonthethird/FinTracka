@@ -44,12 +44,21 @@ export async function handleReceiptShortcutBrowser(
     const session = await store.createSession(member.household_id, member.id);
     return json(201, {
       contract: "receipt_scan_session/v1",
+      shortcut_version: 2,
+      shortcut_name: "FinTracka Receipt Scanner",
       token: session.token,
       upload_url: `${url.origin}/api/v1/mobile/shortcut/receipt-imports`,
       expires_at: session.expires_at,
     });
   }
   const item = url.pathname.match(/^\/api\/v1\/mobile\/receipt-imports\/([^/]+)$/);
+  const retry = url.pathname.match(/^\/api\/v1\/mobile\/receipt-imports\/([^/]+)\/retry$/);
+  if (retry) {
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    assertSameOrigin(request);
+    await store.retryImport(member.household_id, member.id, decodeURIComponent(retry[1]));
+    return json(200, { status: "pending" });
+  }
   if (!item) return null;
   const id = decodeURIComponent(item[1]);
   if (request.method === "GET") {

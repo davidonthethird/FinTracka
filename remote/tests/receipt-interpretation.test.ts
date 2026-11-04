@@ -108,4 +108,61 @@ describe("receipt shortcut v2", () => {
     expect(malformed.status).toBe("needs_refinement");
     expect(malformed.issues).toEqual(["invalid_model_result"]);
   });
+
+  it("rejects a hallucinated line description even when its evidence exists", () => {
+    const result = validateReceiptInterpretation(OCR, interpretation({
+      lines: [{ description: "GIFT CARD", amount_cents: 349,
+        description_evidence: "MILK", amount_evidence: "3.49" }],
+    }));
+    expect(result.status).toBe("needs_refinement");
+    expect(result.issues).toContain("evidence_value_mismatch");
+    expect(result.receipt.lines).toEqual([]);
+  });
+
+  it("requires a merchant, total, priced line, and reconciled arithmetic without subtotal", () => {
+    const text = "SHOP\nITEM 5.99\nTAX 0.36\nTOTAL 6.35";
+    const valid = validateReceiptInterpretation(text, interpretation({
+      merchant: { value: "SHOP", evidence: "SHOP" }, subtotal: null,
+      tax: { value_cents: 36, evidence: "TAX 0.36" },
+      total: { value_cents: 635, evidence: "TOTAL 6.35" },
+      lines: [{ description: "ITEM", amount_cents: 599,
+        description_evidence: "ITEM", amount_evidence: "5.99" }],
+    }));
+    expect(valid.status).toBe("accepted");
+
+    const contradictory = validateReceiptInterpretation(text, interpretation({
+      merchant: { value: "SHOP", evidence: "SHOP" }, subtotal: null,
+      tax: { value_cents: 36, evidence: "TAX 0.36" },
+      total: { value_cents: 999, evidence: "TOTAL 6.35" },
+      lines: [{ description: "ITEM", amount_cents: 599,
+        description_evidence: "ITEM", amount_evidence: "5.99" }],
+    }));
+    expect(contradictory.status).toBe("needs_refinement");
+
+    const totalOnly = validateReceiptInterpretation("SHOP\nTOTAL 6.35", interpretation({
+      merchant: { value: "SHOP", evidence: "SHOP" }, subtotal: null, tax: null,
+      total: { value_cents: 635, evidence: "TOTAL 6.35" }, lines: [],
+    }));
+    expect(totalOnly.status).toBe("needs_refinement");
+  });
+
+  it("rejects non-positive item lines", () => {
+    const result = validateReceiptInterpretation("SHOP\nRETURN -1.00\nTOTAL -1.00", interpretation({
+      merchant: { value: "SHOP", evidence: "SHOP" }, subtotal: null, tax: null,
+      total: { value_cents: -100, evidence: "TOTAL -1.00" },
+      lines: [{ description: "RETURN", amount_cents: -100,
+        description_evidence: "RETURN", amount_evidence: "-1.00" }],
+    }));
+    expect(result.status).toBe("needs_refinement");
+    expect(result.issues).toContain("unsupported_line");
+  });
+
+  it("normalizes an evidence-backed US date in trusted code", () => {
+    const text = `${OCR}\n11/04/2026`;
+    const result = validateReceiptInterpretation(text, interpretation({
+      date: { value: "2026-11-04", evidence: "11/04/2026" },
+    }));
+    expect(result.status).toBe("accepted");
+    expect(result.receipt.date?.value).toBe("2026-11-04");
+  });
 });

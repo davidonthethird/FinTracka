@@ -2,6 +2,8 @@ import { MobileCommandApiError, mobileJson } from "../api";
 
 export interface ReceiptScanSession {
   contract: "receipt_scan_session/v1";
+  shortcut_version: 2;
+  shortcut_name: "FinTracka Receipt Scanner";
   token: string;
   upload_url: string;
   expires_at: string;
@@ -60,9 +62,15 @@ export async function deleteReceiptImport(id: string): Promise<void> {
   }
 }
 
+export async function retryReceiptImport(id: string): Promise<void> {
+  await mobileJson(`/api/v1/mobile/receipt-imports/${encodeURIComponent(id)}/retry`, {
+    method: "POST", body: JSON.stringify({}),
+  });
+}
+
 export function buildReceiptShortcutUrl(session: ReceiptScanSession): string {
   const query = [
-    `name=${encodeURIComponent("FinTracka Receipt Scanner")}`,
+    `name=${encodeURIComponent(session.shortcut_name)}`,
     "input=text",
     `text=${encodeURIComponent(JSON.stringify(session))}`,
   ].join("&");

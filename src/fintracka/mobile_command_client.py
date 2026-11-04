@@ -162,6 +162,14 @@ class MobileCommandClient:
             raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
         return tuple(_claimed_receipt_refinement(item) for item in items)
 
+    def active_receipt_refinement_ids(self) -> frozenset[str]:
+        value = self._get("/api/v1/mobile/mac/receipt-refinements/active", maximum=64 * 1024)
+        root = _exact_dict(value, {"refinement_ids"})
+        items = root["refinement_ids"]
+        if not isinstance(items, list) or len(items) > 100:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        return frozenset(_bounded_string(item, 128) for item in items)
+
     def complete_receipt_refinement(
         self, job_id: str, claim_token: str, input_digest: str, text: str, model_result: str,
     ) -> None:
@@ -178,14 +186,18 @@ class MobileCommandClient:
         if _exact_dict(value, {"status"}) != {"status": "completed"}:
             raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
 
-    def fail_receipt_refinement(self, job_id: str, claim_token: str, error_code: str) -> None:
+    def fail_receipt_refinement(self, job_id: str, claim_token: str, error_code: str) -> str:
         if error_code not in {"MODEL_UNAVAILABLE", "VISION_FAILED", "INVALID_PACKAGE", "UNRECONCILED",
                               "PACKAGE_NOT_FOUND"}:
             raise ValueError("invalid receipt refinement error")
-        self._request_no_content(
+        value = self._request(
             f"/api/v1/mobile/mac/receipt-refinements/{quote(_bounded_string(job_id, 128), safe='')}/fail",
             {"claim_token": _bounded_string(claim_token, 128), "error_code": error_code},
         )
+        status = _exact_dict(value, {"status"})["status"]
+        if status not in {"pending", "failed", "completed"}:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        return status
 
     def get_receipt_revision(
         self, draft_id: str, revision: int, expected_digest: str,

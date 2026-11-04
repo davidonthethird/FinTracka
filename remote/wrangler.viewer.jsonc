@@ -30,7 +30,8 @@
         "HOUSEHOLD_NAME": "FinTracka household",
         "FEATURE_RECEIPT_DRAFTS": "true",
         "FEATURE_RECEIPT_MATCHING": "true",
-        "FEATURE_RECEIPT_SHORTCUT": "true"
+        "FEATURE_RECEIPT_SHORTCUT": "true",
+        "FEATURE_RECEIPT_REFINEMENT": "false"
       }
     },
     "production": {
@@ -51,7 +52,8 @@
         "HOUSEHOLD_NAME": "FinTracka household",
         "FEATURE_RECEIPT_DRAFTS": "true",
         "FEATURE_RECEIPT_MATCHING": "true",
-        "FEATURE_RECEIPT_SHORTCUT": "true"
+        "FEATURE_RECEIPT_SHORTCUT": "true",
+        "FEATURE_RECEIPT_REFINEMENT": "false"
       }
     }
   }

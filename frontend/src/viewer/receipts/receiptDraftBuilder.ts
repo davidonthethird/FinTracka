@@ -7,7 +7,8 @@ export function isUsableParsedReceipt(parsed: ParsedReceiptCandidate): boolean {
   return Boolean(parsed.merchant || parsed.total_minor || parsed.lines.length);
 }
 
-export function draftFromParsedReceipt(parsed: ParsedReceiptCandidate, pageCount: number): ReceiptDraftV1 {
+export function draftFromParsedReceipt(parsed: ParsedReceiptCandidate, pageCount: number,
+  sourceText: string | null = null): ReceiptDraftV1 {
   if (!isUsableParsedReceipt(parsed)) throw new Error("No usable receipt text was recognized.");
   const bases = parsed.lines.map((line) => ({ id: line.id, item_total_minor: line.item_total_minor,
     line_discount_minor: 0, taxable: true }));
@@ -26,6 +27,7 @@ export function draftFromParsedReceipt(parsed: ParsedReceiptCandidate, pageCount
     subtotal_minor: parsed.subtotal_minor?.value ?? bases.reduce((sum, line) => sum + line.item_total_minor, 0),
     discount_minor: parsed.discount_minor?.value ?? 0, tax_minor: parsed.tax_minor?.value ?? 0,
     tip_minor: parsed.tip_minor?.value ?? 0, fees_minor: parsed.fees_minor?.value ?? 0,
+    review_flags: [], source_text: sourceText,
     total_minor: total, lines: parsed.lines.map((line, index) => ({ id: line.id, order: index,
       source_page: line.page_index, description: line.description, quantity: "1",
       unit_amount_minor: line.item_total_minor, item_total_minor: line.item_total_minor,
@@ -44,7 +46,7 @@ export function isUsableValidatedReceipt(receipt: ValidatedReceipt): boolean {
 }
 
 export function draftFromValidatedReceipt(receipt: ValidatedReceipt, pageCount: number,
-  reviewIssues: string[] = []): ReceiptDraftV1 {
+  reviewIssues: string[] = [], sourceText: string | null = null): ReceiptDraftV1 {
   if (!isUsableValidatedReceipt(receipt)) throw new Error("No usable validated receipt was recognized.");
   const lines = receipt.lines.map((line, index) => ({ id: `validated-${index}`,
     item_total_minor: line.amount_cents, line_discount_minor: 0, taxable: true }));
@@ -64,6 +66,7 @@ export function draftFromValidatedReceipt(receipt: ValidatedReceipt, pageCount: 
     purchase_date: /^\d{4}-\d{2}-\d{2}$/.test(receipt.date?.value ?? "") ? receipt.date!.value : null,
     currency: "USD", masked_payment_hint: null, page_count: pageCount, subtotal_minor: subtotal,
     discount_minor: discount, tax_minor: tax, tip_minor: tip, fees_minor: fees, total_minor: total,
+    review_flags: reviewIssues, source_text: sourceText,
     lines: receipt.lines.map((line, index) => { const id = `validated-${index}`; return { id, order: index,
       source_page: null, description: line.description, quantity: "1", unit_amount_minor: line.amount_cents,
       item_total_minor: line.amount_cents, line_discount_minor: allocated.get(id)?.receipt_discount_minor ?? 0,

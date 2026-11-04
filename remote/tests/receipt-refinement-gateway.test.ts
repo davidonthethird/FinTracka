@@ -16,10 +16,18 @@ describe("receipt refinement Mac gateway", () => {
       store as never))?.status).toBe(405);
   });
 
+  it("lists active refinement ids for private queue reconciliation", async () => {
+    const store = { active: vi.fn(async () => ["r1", "r2"]) };
+    const response = await handleReceiptRefinementMac(
+      new Request(`${ORIGIN}/api/v1/mobile/mac/receipt-refinements/active`), store as never);
+    expect(response?.status).toBe(200);
+    expect(await response?.json()).toEqual({ refinement_ids: ["r1", "r2"] });
+  });
+
   it("strictly completes or safely fails a claimed job", async () => {
     const store = {
       complete: vi.fn(async () => ({ status: "completed" })),
-      fail: vi.fn(async () => undefined),
+      fail: vi.fn(async () => "pending"),
     };
     const complete = await handleReceiptRefinementMac(request("/job/complete", {
       claim_token: "t".repeat(43), input_digest: "d".repeat(64), text: "SHOP TOTAL 1.00",
@@ -31,7 +39,8 @@ describe("receipt refinement Mac gateway", () => {
     const failed = await handleReceiptRefinementMac(request("/job/fail", {
       claim_token: "t".repeat(43), error_code: "MODEL_UNAVAILABLE",
     }), store as never);
-    expect(failed?.status).toBe(204);
+    expect(failed?.status).toBe(200);
+    expect(await failed?.json()).toEqual({ status: "pending" });
     expect(store.fail).toHaveBeenCalledWith("job", "t".repeat(43), "MODEL_UNAVAILABLE");
   });
 

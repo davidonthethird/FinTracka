@@ -25,7 +25,7 @@ export function ReceiptCapturePage({ navigate }: { navigate: (path: string) => v
     <button className="icon-button" onClick={() => navigate("/receipts")} aria-label="Close"><X /></button></header>
     <section className="receipt-capture" aria-busy={!session && !error}>
       <Camera aria-hidden="true" /><h2>{session ? "Open the receipt scanner" : "Preparing secure scan"}</h2>
-      <p>Take photos or choose them from your library. Recognition and photos stay on your iPhone; only the recognized text returns to FinTracka.</p>
+      <p>Take photos or choose them from your library. Recognition stays on your Apple devices. Only scans that need help are placed temporarily in your private shared iCloud folder for your Mac to refine.</p>
       {!session && !error && <p role="status">Creating a private, one-time connection…</p>}
       {session && <a className="receipt-shortcut-launch" href={buildReceiptShortcutUrl(session)}>
         <ExternalLink aria-hidden="true" />Scan with iPhone</a>}
@@ -33,7 +33,7 @@ export function ReceiptCapturePage({ navigate }: { navigate: (path: string) => v
         <button className="secondary-button" onClick={() => setAttempt((value) => value + 1)}><RotateCcw />Try again</button></>}
       <small className="receipt-session-note">The one-time connection expires in 10 minutes and is never saved in this browser.</small>
       <details className="receipt-shortcut-help"><summary>Shortcut not installed or out of date?</summary>
-        <p>Install version 1 and name it exactly <strong>FinTracka Scan Receipt 3</strong>. If it still will not open, run it once in the Shortcuts app to accept permissions, return here, and start a new scan.</p>
+        <p>Install version {session?.shortcut_version ?? 2} and name it exactly <strong>{session?.shortcut_name ?? "FinTracka Receipt Scanner"}</strong>. If it still will not open, run it once in the Shortcuts app to accept permissions, return here, and start a new scan.</p>
       </details>
     </section>
   </div>;

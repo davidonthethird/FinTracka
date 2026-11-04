@@ -4,6 +4,7 @@ const FIVE_MINUTES = 5 * 60_000;
 const SEVEN_DAYS = 7 * 24 * 60 * 60_000;
 const SAFE_ERRORS = new Set(["MODEL_UNAVAILABLE", "VISION_FAILED", "INVALID_PACKAGE", "UNRECONCILED",
   "PACKAGE_NOT_FOUND"]);
+const RETRYABLE_ERRORS = new Set(["MODEL_UNAVAILABLE", "VISION_FAILED", "PACKAGE_NOT_FOUND"]);
 
 export class ReceiptRefinementStoreError extends Error {
   constructor(readonly code: string) { super(code); this.name = "ReceiptRefinementStoreError"; }
@@ -71,22 +72,40 @@ export class ReceiptRefinementStore {
     return jobs;
   }
 
+  async active(): Promise<string[]> {
+    const rows = await this.database.prepare(`SELECT id FROM receipt_refinements
+      WHERE status IN ('pending', 'claimed') AND expires_at > ? ORDER BY created_at`)
+      .bind(this.clock().toISOString()).all<{ id: string }>();
+    return rows.results.map((row) => row.id);
+  }
+
+  async retryImport(importId: string, householdId: string, memberId: string): Promise<void> {
+    const result = await this.database.prepare(`UPDATE receipt_refinements SET status = 'pending',
+      claim_token_digest = NULL, claimed_until = NULL, error_code = NULL, updated_at = ?
+      WHERE import_id = ? AND household_id = ? AND actor_member_id = ? AND status = 'failed'
+      AND expires_at > ?`).bind(this.clock().toISOString(), importId, householdId, memberId,
+      this.clock().toISOString()).run();
+    if ((result.meta.changes ?? 0) !== 1) {
+      throw new ReceiptRefinementStoreError("REFINEMENT_NOT_RETRYABLE");
+    }
+  }
+
   async complete(id: string, claimToken: string, inputDigest: string, text: string, modelResult: string) {
     const row = await this.claimed(id, claimToken);
     if (row.input_digest !== inputDigest) throw new ReceiptRefinementStoreError("REFINEMENT_INPUT_CHANGED");
-    const validation = validateReceiptInterpretation(text, modelResult);
-    if (validation.status === "needs_refinement") throw new ReceiptRefinementStoreError("REFINEMENT_UNRECONCILED");
     const resultDigest = await sha256(JSON.stringify({ text, modelResult }));
     if (row.status === "completed") {
       if (row.result_digest !== resultDigest) throw new ReceiptRefinementStoreError("REFINEMENT_ALREADY_COMPLETED");
       return { status: "completed" as const };
     }
+    const validation = validateReceiptInterpretation(text, modelResult);
+    if (validation.status === "needs_refinement") throw new ReceiptRefinementStoreError("REFINEMENT_UNRECONCILED");
     const nowDate = this.clock();
     const now = nowDate.toISOString();
     await this.database.batch([
       this.database.prepare(`UPDATE receipt_shortcut_imports SET pages_json = ?, model_result = ?, validation_json = ?,
         expires_at = ?
-        WHERE id = ?`).bind(JSON.stringify([{ page_index: 0, text }]), modelResult,
+        WHERE id = ?`).bind(JSON.stringify(refinedPages(text)), modelResult,
         JSON.stringify(validation), new Date(nowDate.getTime() + 30 * 60_000).toISOString(), row.import_id),
       this.database.prepare(`UPDATE receipt_refinements SET status = 'completed', result_digest = ?,
         updated_at = ?, error_code = NULL WHERE id = ?`).bind(resultDigest, now, id),
@@ -94,11 +113,15 @@ export class ReceiptRefinementStore {
     return { status: "completed" as const };
   }
 
-  async fail(id: string, claimToken: string, errorCode: string): Promise<void> {
+  async fail(id: string, claimToken: string, errorCode: string): Promise<"pending" | "failed" | "completed"> {
     if (!SAFE_ERRORS.has(errorCode)) throw new ReceiptRefinementStoreError("REFINEMENT_ERROR_INVALID");
-    await this.claimed(id, claimToken);
-    await this.database.prepare(`UPDATE receipt_refinements SET status = 'failed', error_code = ?, updated_at = ?
-      WHERE id = ?`).bind(errorCode, this.clock().toISOString(), id).run();
+    const row = await this.claimed(id, claimToken);
+    if (row.status === "completed") return "completed";
+    const status = RETRYABLE_ERRORS.has(errorCode) ? "pending" : "failed";
+    await this.database.prepare(`UPDATE receipt_refinements SET status = ?, error_code = ?, updated_at = ?,
+      claim_token_digest = NULL, claimed_until = NULL WHERE id = ? AND status = 'claimed'`)
+      .bind(status, errorCode, this.clock().toISOString(), id).run();
+    return status;
   }
 
   private async claimed(id: string, claimToken: string): Promise<Row> {
@@ -120,6 +143,14 @@ export class ReceiptRefinementStore {
       CASE WHEN expires_at < ? THEN ? ELSE expires_at END WHERE id = ?`)
       .bind(expiresAt, expiresAt, importId).run();
   }
+}
+
+function refinedPages(text: string): { page_index: number; text: string }[] {
+  const marker = /^--- PAGE (\d+) ---\n/gm;
+  const matches = [...text.matchAll(marker)];
+  if (!matches.length) return [{ page_index: 0, text }];
+  return matches.map((match, index) => ({ page_index: Number(match[1]) - 1,
+    text: text.slice((match.index ?? 0) + match[0].length, matches[index + 1]?.index ?? text.length).trim() }));
 }
 
 function base64Url(bytes: Uint8Array): string {

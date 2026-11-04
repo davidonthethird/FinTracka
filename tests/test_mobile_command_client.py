@@ -120,6 +120,21 @@ def test_claims_and_completes_receipt_refinements_with_access_headers() -> None:
     assert b"SHOP TOTAL 1.00" in requests[1].data
 
 
+def test_lists_active_refinements_and_parses_retry_status() -> None:
+    requests = []
+    responses = [Response({"refinement_ids": ["job-1", "job-2"]}), Response({"status": "pending"})]
+
+    def opener(request, _timeout):
+        requests.append(request)
+        return responses.pop(0)
+
+    client = MobileCommandClient("https://viewer.example.test", "id", "secret", opener=opener)
+    assert client.active_receipt_refinement_ids() == frozenset({"job-1", "job-2"})
+    assert client.fail_receipt_refinement("job-1", "t" * 43, "MODEL_UNAVAILABLE") == "pending"
+    assert requests[0].method == "GET"
+    assert requests[0].full_url.endswith("/receipt-refinements/active")
+
+
 def test_claim_parses_v2_scope_and_normalizes_v1_to_one_time() -> None:
     def command(version: int, scope: str) -> dict[str, object]:
         return {

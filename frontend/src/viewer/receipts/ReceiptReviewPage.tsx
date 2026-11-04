@@ -61,6 +61,10 @@ export function ReceiptReviewForm({ draft, taxonomy, saving, onChange, onSave }:
   const updateLine = (id: string, update: Partial<ReceiptLineV1>) => onChange({ ...editable,
     lines: editable.lines.map((line) => line.id === id ? { ...line, ...update } : line) });
   return <div className="receipt-review">
+    {Boolean(editable.review_flags?.length) && <p className="receipt-error" role="status">
+      Some fields could not be verified automatically. Compare every amount with the recognized text before saving.</p>}
+    {editable.source_text && <details className="receipt-recognized-text"><summary>Show recognized receipt text</summary>
+      <pre>{editable.source_text}</pre></details>}
     <section className="receipt-fields">
       <label>Merchant<input value={editable.merchant} onChange={(event) => onChange({ ...editable, merchant: event.target.value })} /></label>
       <label>Date<input type="date" value={editable.purchase_date ?? ""} onChange={(event) => onChange({ ...editable, purchase_date: event.target.value || null })} /></label>

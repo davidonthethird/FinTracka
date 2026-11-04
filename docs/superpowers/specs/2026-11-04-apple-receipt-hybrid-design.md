@@ -117,7 +117,7 @@ It contains no bearer token, Access credential, household/member identity, host,
 The Mac reuses the existing dedicated Access client ID and secret stored in macOS Keychain.
 
 - `POST /api/v1/mobile/mac/receipt-refinements/claim` returns at most three pending opaque jobs.
-- `POST /api/v1/mobile/mac/receipt-refinements/{id}/complete` accepts the v2 structured result plus its evidence text digest; D1 rejects the wrong claimed job, expired lease, changed input digest, or second different completion.
+- `POST /api/v1/mobile/mac/receipt-refinements/{id}/complete` accepts the v2 structured result and the server-issued capture-body digest; D1 rejects the wrong claimed job, expired lease, changed capture identity, or second different completion. Package safety is enforced separately with strict regular-file, symlink, filename, and size checks.
 - `POST /api/v1/mobile/mac/receipt-refinements/{id}/fail` records a safe error code only.
 
 Claims lease a job for five minutes. Identical completion is idempotent. Jobs expire after seven days. D1 stores recognized text and structured output, never images.
@@ -149,10 +149,10 @@ The LaunchAgent runs at login and every 60 seconds while the Mac is awake. It pr
 - Network interruption: replay the same token, idempotency key, and body during the original session.
 - iCloud unavailable: show that manual review is ready and that automatic refinement was not queued; never report success falsely.
 - Mac asleep/offline: keep the package pending.
-- Missing package after a D1 job exists: fail safely with `PACKAGE_NOT_FOUND`; do not fabricate a receipt.
+- Missing package after a D1 job exists: retry safely with `PACKAGE_NOT_FOUND` during the seven-day window; do not fabricate a receipt.
 - Helper/model unavailable: retry later, retain for seven days, and expose manual review.
 - Successful Mac result: update idempotently, delete the pending package, and retain no image copy.
-- Repeated failure for seven days: move the package to `failed`, show it in review, and let the member delete or retry it.
+- Temporary failure retries for seven days, then the expired job and matching pending package are removed. A terminal invalid/unreconciled package moves to `failed`, remains reviewable for seven days, and can be retried explicitly.
 
 ## Security and privacy boundaries
 

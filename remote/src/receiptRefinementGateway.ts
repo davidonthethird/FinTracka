@@ -18,6 +18,10 @@ const failSchema = z.object({
 export async function handleReceiptRefinementMac(request: Request, store: ReceiptRefinementStore) {
   const url = new URL(request.url);
   if (!url.pathname.startsWith("/api/v1/mobile/mac/receipt-refinements")) return null;
+  if (url.pathname === "/api/v1/mobile/mac/receipt-refinements/active") {
+    if (request.method !== "GET") return response(405, { error_code: "METHOD_NOT_ALLOWED" }, { Allow: "GET" });
+    return response(200, { refinement_ids: await store.active() });
+  }
   if (request.method !== "POST") return response(405, { error_code: "METHOD_NOT_ALLOWED" }, { Allow: "POST" });
   if (url.pathname === "/api/v1/mobile/mac/receipt-refinements/claim") {
     const input = claimSchema.safeParse(await readJson(request));
@@ -35,8 +39,7 @@ export async function handleReceiptRefinementMac(request: Request, store: Receip
   }
   const input = failSchema.safeParse(await readJson(request));
   if (!input.success) return response(400, { error_code: "INVALID_REFINEMENT_FAILURE" });
-  await store.fail(id, input.data.claim_token, input.data.error_code);
-  return new Response(null, { status: 204, headers: headers() });
+  return response(200, { status: await store.fail(id, input.data.claim_token, input.data.error_code) });
 }
 
 export function mapReceiptRefinementError(error: unknown): Response | null {

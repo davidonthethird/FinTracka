@@ -8,6 +8,12 @@ import { ReceiptRefinementStore } from "../src/receiptRefinementStore";
 declare global { namespace Cloudflare { interface Env { COMMANDS: D1Database; TEST_MIGRATIONS: D1Migration[] } } }
 
 const NOW = new Date("2026-11-04T12:00:00.000Z");
+const REFINED_TEXT = "SHOP\nITEM 1.00\nTOTAL 1.00";
+const REFINED_MODEL = JSON.stringify({ merchant: { value: "SHOP", evidence: "SHOP" }, date: null,
+  subtotal: null, discounts: [], tax: null, tip: null, fees: [],
+  total: { value_cents: 100, evidence: "TOTAL 1.00" },
+  lines: [{ description: "ITEM", amount_cents: 100,
+    description_evidence: "ITEM", amount_evidence: "1.00" }] });
 
 beforeAll(async () => { await applyD1Migrations(env.COMMANDS, env.TEST_MIGRATIONS); });
 beforeEach(async () => {
@@ -49,18 +55,12 @@ describe("receipt refinement store", () => {
     expect(claim).toMatchObject({ id: created.id, input_digest: "d".repeat(64) });
     expect(claim.claim_token).toMatch(/^[A-Za-z0-9_-]{43}$/);
     const result = await store.complete(created.id, claim.claim_token, "d".repeat(64),
-      "SHOP\nTOTAL 1.00", JSON.stringify({ merchant: { value: "SHOP", evidence: "SHOP" }, date: null,
-        subtotal: null, discounts: [], tax: null, tip: null, fees: [],
-        total: { value_cents: 100, evidence: "TOTAL 1.00" }, lines: [] }));
+      REFINED_TEXT, REFINED_MODEL);
     expect(result.status).toBe("completed");
     expect((await store.complete(created.id, claim.claim_token, "d".repeat(64),
-      "SHOP\nTOTAL 1.00", JSON.stringify({ merchant: { value: "SHOP", evidence: "SHOP" }, date: null,
-        subtotal: null, discounts: [], tax: null, tip: null, fees: [],
-        total: { value_cents: 100, evidence: "TOTAL 1.00" }, lines: [] }))).status).toBe("completed");
+      REFINED_TEXT, REFINED_MODEL)).status).toBe("completed");
     await expect(store.complete(created.id, "x".repeat(43), "d".repeat(64),
-      "SHOP\nTOTAL 1.00", JSON.stringify({ merchant: { value: "SHOP", evidence: "SHOP" }, date: null,
-        subtotal: null, discounts: [], tax: null, tip: null, fees: [],
-        total: { value_cents: 100, evidence: "TOTAL 1.00" }, lines: [] })))
+      REFINED_TEXT, REFINED_MODEL))
       .rejects.toThrow("REFINEMENT_CLAIM_INVALID");
     expect((await env.COMMANDS.prepare("SELECT expires_at FROM receipt_shortcut_imports WHERE id = 'i'")
       .first<{ expires_at: string }>())?.expires_at).toBe("2026-11-04T12:30:00.000Z");
@@ -74,10 +74,8 @@ describe("receipt refinement store", () => {
       .rejects.toThrow("REFINEMENT_CLAIM_INVALID");
     await expect(store.complete(job.id, claim.claim_token, "e".repeat(64), "x", "{}"))
       .rejects.toThrow("REFINEMENT_INPUT_CHANGED");
-    const firstText = "SHOP\nTOTAL 1.00";
-    const firstModel = JSON.stringify({ merchant: { value: "SHOP", evidence: "SHOP" }, date: null,
-      subtotal: null, discounts: [], tax: null, tip: null, fees: [],
-      total: { value_cents: 100, evidence: "TOTAL 1.00" }, lines: [] });
+    const firstText = REFINED_TEXT;
+    const firstModel = REFINED_MODEL;
     await store.complete(job.id, claim.claim_token, "d".repeat(64), firstText, firstModel);
     await expect(store.complete(job.id, claim.claim_token, "d".repeat(64),
       "SHOP\nTOTAL 2.00", JSON.stringify({ merchant: { value: "SHOP", evidence: "SHOP" }, date: null,
@@ -86,7 +84,7 @@ describe("receipt refinement store", () => {
       .rejects.toThrow("REFINEMENT_ALREADY_COMPLETED");
   });
 
-  it("returns at most three jobs and records only safe failure codes", async () => {
+  it("returns at most three jobs, retries transient failures, and records terminal failures", async () => {
     const store = new ReceiptRefinementStore(env.COMMANDS, () => NOW);
     const job = await store.createForImport("i", "h", "m", "d".repeat(64));
     const [claim] = await store.claim(99);
@@ -94,8 +92,25 @@ describe("receipt refinement store", () => {
     await store.fail(job.id, claim.claim_token, "MODEL_UNAVAILABLE");
     const row = await env.COMMANDS.prepare("SELECT status, error_code FROM receipt_refinements WHERE id = ?")
       .bind(job.id).first<{ status: string; error_code: string }>();
-    expect(row).toEqual({ status: "failed", error_code: "MODEL_UNAVAILABLE" });
+    expect(row).toEqual({ status: "pending", error_code: "MODEL_UNAVAILABLE" });
+    const [retry] = await store.claim(1);
+    await store.fail(job.id, retry.claim_token, "UNRECONCILED");
+    expect(await env.COMMANDS.prepare("SELECT status FROM receipt_refinements WHERE id = ?")
+      .bind(job.id).first()).toEqual({ status: "failed" });
+    await store.retryImport("i", "h", "m");
+    expect(await env.COMMANDS.prepare("SELECT status FROM receipt_refinements WHERE id = ?")
+      .bind(job.id).first()).toEqual({ status: "pending" });
     await expect(store.fail(job.id, claim.claim_token, "private receipt text"))
       .rejects.toThrow("REFINEMENT_ERROR_INVALID");
+  });
+
+  it("never downgrades a completed job when failure arrives after a lost response", async () => {
+    const store = new ReceiptRefinementStore(env.COMMANDS, () => NOW);
+    const job = await store.createForImport("i", "h", "m", "d".repeat(64));
+    const [claim] = await store.claim(1);
+    await store.complete(job.id, claim.claim_token, "d".repeat(64), REFINED_TEXT, REFINED_MODEL);
+    expect(await store.fail(job.id, claim.claim_token, "VISION_FAILED")).toBe("completed");
+    expect(await env.COMMANDS.prepare("SELECT status FROM receipt_refinements WHERE id = ?")
+      .bind(job.id).first()).toEqual({ status: "completed" });
   });
 });
