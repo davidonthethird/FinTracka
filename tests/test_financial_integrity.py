@@ -444,6 +444,81 @@ def test_sync_auto_archives_credit_card_payments_even_when_bank_side_is_duplicat
     }
 
 
+def test_sync_auto_archives_delayed_bank_side_of_credit_card_payment(
+    ledger: sqlite3.Connection,
+) -> None:
+    connection_id = ledger.execute(
+        "SELECT id FROM provider_connections WHERE provider = 'synthetic'"
+    ).fetchone()[0]
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(
+            accounts=(
+                NormalizedAccount(
+                    "cash-back-card", "Cash Back", "credit", "credit_card", "liability"
+                ),
+            ),
+            added=(
+                NormalizedTransaction(
+                    "card-side-first",
+                    "cash-back-card",
+                    "2026-10-30T12:00:00Z",
+                    10_353,
+                    "USD",
+                    "ONLINE/MOBILE PAYMENT CONF#xw82kdq0n",
+                    provider_category_primary="LOAN_PAYMENTS",
+                    provider_category_detailed="LOAN_PAYMENTS_CREDIT_CARD_PAYMENT",
+                ),
+            ),
+            next_checkpoint="card-side-first",
+        ),
+    )
+    assert ledger.execute(
+        "SELECT user_archived FROM transactions WHERE id = ?",
+        (_transaction_id(ledger, "card-side-first"),),
+    ).fetchone()[0] == 1
+
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(
+            added=(
+                NormalizedTransaction(
+                    "bank-side-later",
+                    "checking-1",
+                    "2026-11-02T12:00:00Z",
+                    -10_353,
+                    "USD",
+                    "BANK OF AMERICA",
+                    provider_category_primary="LOAN_PAYMENTS",
+                    provider_category_detailed="LOAN_PAYMENTS_OTHER_PAYMENT",
+                ),
+                NormalizedTransaction(
+                    "unrelated-zelle-payment",
+                    "checking-1",
+                    "2026-11-01T12:00:00Z",
+                    -10_353,
+                    "USD",
+                    "Zelle payment to someone else",
+                    provider_category_primary="TRANSFER_OUT",
+                    provider_category_detailed="TRANSFER_OUT_TRANSFER_OUT_FROM_APPS",
+                ),
+            ),
+            next_checkpoint="bank-side-later",
+        ),
+    )
+
+    assert ledger.execute(
+        "SELECT user_archived FROM transactions WHERE id = ?",
+        (_transaction_id(ledger, "bank-side-later"),),
+    ).fetchone()[0] == 1
+    assert ledger.execute(
+        "SELECT user_archived FROM transactions WHERE id = ?",
+        (_transaction_id(ledger, "unrelated-zelle-payment"),),
+    ).fetchone()[0] == 0
+
+
 def test_reconciliation_is_exact_to_one_cent(ledger: sqlite3.Connection) -> None:
     account_id = ledger.execute("SELECT id FROM accounts WHERE provider_account_id = 'checking-1'").fetchone()[0]
     activity = ledger.execute(
