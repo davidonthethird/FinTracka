@@ -76,11 +76,11 @@ export function watchReceiptScanSession(
         return;
       }
     } catch (error) {
-      if (active) {
+      if (active && !(error instanceof TypeError)) {
         active = false;
         callbacks.onError(error);
+        return;
       }
-      return;
     } finally {
       checking = false;
     }
