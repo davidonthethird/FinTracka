@@ -15,8 +15,10 @@ from fintracka.ledger import (
     confirm_transfer,
     create_rule,
     reconcile,
+    reject_transfer,
     set_splits,
     transfer_candidates,
+    transfer_match_options,
     update_transaction,
 )
 from fintracka.providers import NormalizedAccount, NormalizedTransaction, SyncBatch
@@ -150,6 +152,51 @@ def test_transfer_candidates_require_opposite_amounts_and_confirmation_is_unique
         confirm_transfer(ledger, pair.transaction_a, _transaction_id(ledger, "same-sign"))
 
 
+def test_manual_transfer_options_find_distant_exact_match_and_exclude_unsafe_pairs(
+    ledger: sqlite3.Connection,
+) -> None:
+    connection_id = ledger.execute(
+        "SELECT id FROM provider_connections WHERE provider = 'synthetic'"
+    ).fetchone()[0]
+    _add_account(ledger, connection_id, "savings-extra")
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(
+            added=(
+                NormalizedTransaction("manual-anchor", "checking-1", "2026-10-01T12:00:00Z", -20_000, "USD", "ZELLE TO ARIELA"),
+                NormalizedTransaction("manual-valid", "savings-extra", "2026-10-08T12:00:00Z", 20_000, "USD", "ZELLE FROM DAVID"),
+                NormalizedTransaction("manual-rejected", "savings-extra", "2026-10-02T12:00:00Z", 20_000, "USD", "ZELLE FROM SOMEONE ELSE"),
+                NormalizedTransaction("manual-same-sign", "savings-extra", "2026-10-03T12:00:00Z", -20_000, "USD", "ZELLE TO ARIELA"),
+                NormalizedTransaction("manual-same-account", "checking-1", "2026-10-04T12:00:00Z", 20_000, "USD", "TRANSFER CREDIT"),
+                NormalizedTransaction("manual-pending", "savings-extra", "2026-10-05T12:00:00Z", 20_000, "USD", "PENDING CREDIT", pending=True),
+                NormalizedTransaction("manual-archived", "savings-extra", "2026-10-06T12:00:00Z", 20_000, "USD", "ARCHIVED CREDIT"),
+            ),
+            next_checkpoint="manual-transfer-options",
+        ),
+    )
+    anchor = _transaction_id(ledger, "manual-anchor")
+    rejected = _transaction_id(ledger, "manual-rejected")
+    reject_transfer(ledger, anchor, rejected)
+    ledger.execute(
+        "UPDATE transactions SET user_archived = 1 WHERE id = ?",
+        (_transaction_id(ledger, "manual-archived"),),
+    )
+
+    assert transfer_match_options(ledger, anchor) == [
+        _transaction_id(ledger, "manual-valid")
+    ]
+    assert all(
+        {candidate.external_a, candidate.external_b}
+        != {"manual-anchor", "manual-valid"}
+        for candidate in transfer_candidates(ledger)
+    )
+
+    confirm_transfer(ledger, anchor, _transaction_id(ledger, "manual-valid"))
+    with pytest.raises(IntegrityError, match="already"):
+        transfer_match_options(ledger, anchor)
+
+
 def test_confirmed_counterparty_pattern_auto_confirms_matching_history_only(
     ledger: sqlite3.Connection,
 ) -> None:
@@ -165,7 +212,7 @@ def test_confirmed_counterparty_pattern_auto_confirms_matching_history_only(
                 NormalizedTransaction("learn-out-1", "checking-1", "2026-09-01T12:00:00Z", -20_000, "USD", "ZELLE TO FAMILY SAVINGS"),
                 NormalizedTransaction("learn-in-1", "savings-extra", "2026-09-01T13:00:00Z", 20_000, "USD", "ZELLE FROM DAVID"),
                 NormalizedTransaction("learn-out-2", "checking-1", "2026-10-01T12:00:00Z", -30_000, "USD", "ZELLE TO FAMILY SAVINGS"),
-                NormalizedTransaction("learn-in-2", "savings-extra", "2026-10-02T13:00:00Z", 30_000, "USD", "ZELLE FROM DAVID"),
+                NormalizedTransaction("learn-in-2", "savings-extra", "2026-10-06T13:00:00Z", 30_000, "USD", "ZELLE FROM DAVID"),
                 NormalizedTransaction("other-out", "checking-1", "2026-10-03T12:00:00Z", -40_000, "USD", "ZELLE TO DEBBIE YOUNG ISRAEL"),
                 NormalizedTransaction("other-in", "savings-extra", "2026-10-03T13:00:00Z", 40_000, "USD", "ZELLE FROM SOMEONE ELSE"),
             ),
@@ -195,7 +242,7 @@ def test_confirmed_counterparty_pattern_auto_confirms_matching_history_only(
         SyncBatch(
             added=(
                 NormalizedTransaction("learn-out-3", "checking-1", "2026-10-10T12:00:00Z", -60_000, "USD", "ZELLE TO FAMILY SAVINGS"),
-                NormalizedTransaction("learn-in-3", "savings-extra", "2026-10-11T13:00:00Z", 60_000, "USD", "ZELLE FROM DAVID"),
+                NormalizedTransaction("learn-in-3", "savings-extra", "2026-10-15T13:00:00Z", 60_000, "USD", "ZELLE FROM DAVID"),
             ),
             next_checkpoint="future-learned-transfer",
         ),
