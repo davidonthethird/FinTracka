@@ -64,6 +64,7 @@ from fintracka.ledger import (
     reject_transfer,
     set_splits,
     transfer_candidates,
+    transfer_match_options,
     undo_categorization,
     update_transaction,
 )
@@ -1323,6 +1324,20 @@ def create_app(
     @app.get("/api/v1/transfers/candidates")
     def transfer_candidate_route(database: Database) -> list[dict[str, object]]:
         return [asdict(candidate) for candidate in transfer_candidates(database)]
+
+    @app.get(
+        "/api/v1/transfers/{transaction_id}/matches",
+        response_model=list[TransactionResponse],
+    )
+    def transfer_match_route(
+        transaction_id: str, database: Database
+    ) -> list[TransactionResponse]:
+        try:
+            identifiers = transfer_match_options(database, transaction_id)
+        except IntegrityError as error:
+            status_code = 404 if str(error) == "transaction not found" else 422
+            raise HTTPException(status_code=status_code, detail=str(error)) from error
+        return [_transaction_response(database, identifier) for identifier in identifiers]
 
     @app.post("/api/v1/transfers/{candidate_id}/confirm", status_code=201)
     def transfer_confirm_route(
