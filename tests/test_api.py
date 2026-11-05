@@ -1214,6 +1214,60 @@ def test_rule_split_and_transfer_workflow_routes(tmp_path: Path) -> None:
         assert client.post("/api/v1/rules/preview", json={}, headers=headers).status_code == 200
 
 
+def test_manual_transfer_match_route_returns_complete_closest_exact_options(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    connection = connect(path)
+    migrate(connection)
+    connection_id = create_synthetic_ledger(connection, count=1)[0]
+    apply_batch(connection, connection_id, synthetic_batches([connection_id])[connection_id])
+    apply_batch(
+        connection,
+        connection_id,
+        SyncBatch(
+            accounts=(
+                NormalizedAccount(
+                    "manual-savings",
+                    "Ariela Savings",
+                    "depository",
+                    "savings",
+                    "asset",
+                ),
+            ),
+            added=(
+                NormalizedTransaction("manual-api-anchor", "checking-1", "2026-10-01T12:00:00Z", -20_000, "USD", "ZELLE TO ARIELA"),
+                NormalizedTransaction("manual-api-near", "manual-savings", "2026-10-05T12:00:00Z", 20_000, "USD", "ZELLE FROM DAVID"),
+                NormalizedTransaction("manual-api-far", "manual-savings", "2026-10-20T12:00:00Z", 20_000, "USD", "ZELLE FROM DAVID"),
+                NormalizedTransaction("manual-api-wrong", "manual-savings", "2026-10-02T12:00:00Z", 19_999, "USD", "WRONG AMOUNT"),
+            ),
+            next_checkpoint="manual-api-matches",
+        ),
+    )
+    anchor = connection.execute(
+        "SELECT transaction_id FROM transaction_external_ids WHERE external_id = 'manual-api-anchor'"
+    ).fetchone()[0]
+    connection.close()
+
+    app = create_app(path, bootstrap_token="bootstrap")
+    with TestClient(app) as client:
+        client.post("/api/v1/session/bootstrap", json={"token": "bootstrap"})
+        response = client.get(f"/api/v1/transfers/{anchor}/matches")
+
+        assert response.status_code == 200
+        assert [item["description"] for item in response.json()] == [
+            "ZELLE FROM DAVID",
+            "ZELLE FROM DAVID",
+        ]
+        assert [item["local_date"] for item in response.json()] == [
+            "2026-10-05",
+            "2026-10-20",
+        ]
+        assert response.json()[0]["account_name"] == "Ariela Savings"
+        assert response.json()[0]["amount_minor"] == 20_000
+        assert client.get("/api/v1/transfers/missing/matches").status_code == 404
+
+
 def test_management_reports_reconciliation_and_local_operation_jobs(tmp_path: Path) -> None:
     path = tmp_path / "ledger.sqlite3"
     connection = connect(path)

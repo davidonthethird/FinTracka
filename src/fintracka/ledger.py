@@ -380,6 +380,73 @@ def preview_rules(connection: sqlite3.Connection) -> list[dict[str, str | int]]:
 
 
 def transfer_candidates(connection: sqlite3.Connection) -> list[TransferCandidate]:
+    return _transfer_candidates(connection, max_days=3)
+
+
+def transfer_match_options(connection: sqlite3.Connection, transaction_id: str) -> list[str]:
+    anchor = connection.execute(
+        """
+        SELECT id, account_id, local_date, amount_minor, currency,
+               tombstoned, user_archived, pending
+        FROM transactions
+        WHERE id = ?
+        """,
+        (transaction_id,),
+    ).fetchone()
+    if anchor is None:
+        raise IntegrityError("transaction not found")
+    if anchor["tombstoned"] or anchor["user_archived"] or anchor["pending"]:
+        raise IntegrityError("transaction is not eligible for transfer matching")
+    if connection.execute(
+        """
+        SELECT 1 FROM transfer_links
+        WHERE status = 'confirmed'
+          AND (transaction_a_id = ? OR transaction_b_id = ?)
+        """,
+        (transaction_id, transaction_id),
+    ).fetchone():
+        raise IntegrityError("transaction is already in a confirmed transfer")
+    rows = connection.execute(
+        """
+        SELECT candidate.id
+        FROM transactions candidate
+        WHERE candidate.id != ?
+          AND candidate.tombstoned = 0
+          AND candidate.user_archived = 0
+          AND candidate.pending = 0
+          AND candidate.account_id != ?
+          AND candidate.currency = ?
+          AND candidate.amount_minor = ?
+          AND NOT EXISTS (
+              SELECT 1 FROM transfer_links link
+              WHERE link.status = 'confirmed'
+                AND (link.transaction_a_id = candidate.id OR link.transaction_b_id = candidate.id)
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM transfer_links link
+              WHERE link.status = 'rejected'
+                AND ((link.transaction_a_id = ? AND link.transaction_b_id = candidate.id)
+                  OR (link.transaction_b_id = ? AND link.transaction_a_id = candidate.id))
+          )
+        ORDER BY ABS(julianday(candidate.local_date) - julianday(?)),
+                 candidate.local_date DESC, candidate.id
+        """,
+        (
+            transaction_id,
+            anchor["account_id"],
+            anchor["currency"],
+            -anchor["amount_minor"],
+            transaction_id,
+            transaction_id,
+            anchor["local_date"],
+        ),
+    ).fetchall()
+    return [str(row["id"]) for row in rows]
+
+
+def _transfer_candidates(
+    connection: sqlite3.Connection, *, max_days: int
+) -> list[TransferCandidate]:
     rows = connection.execute(
         """
         SELECT t.id, t.account_id, t.local_date, t.amount_minor, t.currency,
@@ -400,7 +467,7 @@ def transfer_candidates(connection: sqlite3.Connection) -> list[TransferCandidat
             "SELECT transaction_a_id, transaction_b_id FROM transfer_links WHERE status = 'rejected'"
         )
     }
-    candidates: list[TransferCandidate] = []
+    candidates: list[tuple[int, TransferCandidate]] = []
     for index, left in enumerate(rows):
         for right in rows[index + 1 :]:
             if left["account_id"] == right["account_id"] or left["currency"] != right["currency"]:
@@ -410,9 +477,9 @@ def transfer_candidates(connection: sqlite3.Connection) -> list[TransferCandidat
             if tuple(sorted((left["id"], right["id"]))) in rejected:
                 continue
             days = abs((date.fromisoformat(left["local_date"]) - date.fromisoformat(right["local_date"])).days)
-            if days <= 3:
+            if days <= max_days:
                 candidates.append(
-                    TransferCandidate(
+                    (days, TransferCandidate(
                         left["id"],
                         right["id"],
                         left["external_id"] or left["id"],
@@ -424,9 +491,10 @@ def transfer_candidates(connection: sqlite3.Connection) -> list[TransferCandidat
                         abs(left["amount_minor"]),
                         left["currency"],
                         "high" if days <= 1 else "medium",
-                    )
+                    ))
                 )
-    return candidates
+    candidates.sort(key=lambda item: (item[0], item[1].date_a, item[1].date_b, item[1].transaction_a, item[1].transaction_b))
+    return [candidate for _, candidate in candidates]
 
 
 def confirm_transfer(connection: sqlite3.Connection, transaction_a: str, transaction_b: str) -> str:
@@ -484,7 +552,7 @@ def reject_transfer(connection: sqlite3.Connection, transaction_a: str, transact
 
 
 def confirm_learned_transfers(connection: sqlite3.Connection) -> int:
-    candidates = transfer_candidates(connection)
+    candidates = _transfer_candidates(connection, max_days=14)
     archived = _archive_credit_card_payments(connection, candidates)
     learned = {
         signature
