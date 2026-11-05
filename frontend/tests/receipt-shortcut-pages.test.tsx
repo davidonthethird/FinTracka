@@ -4,8 +4,10 @@ import {
   buildReceiptShortcutUrl,
   createReceiptScanSession,
   deleteReceiptImport,
+  getReceiptScanResult,
   getReceiptImport,
   retryReceiptImport,
+  watchReceiptScanSession,
   type PublicReceiptImport,
 } from "../src/viewer/receipts/receiptShortcutApi";
 import { finalizeReceiptImport } from "../src/viewer/receipts/ReceiptShortcutImportPage";
@@ -62,6 +64,43 @@ describe("receipt Shortcut pages", () => {
       `/api/v1/mobile/receipt-imports/${imported.id}`,
     ]);
     expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("sensitive-one-time-token");
+    vi.unstubAllGlobals();
+  });
+
+  it("polls the private session and returns an internal review path when the scan is ready", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: "pending" }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: "ready", review_path: "/receipts/import/import-123",
+      }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onReady = vi.fn();
+
+    const stop = watchReceiptScanSession(session.token, { onReady, onError: vi.fn() }, 1_500);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onReady).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(onReady).toHaveBeenCalledWith("/receipts/import/import-123");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/mobile/receipt-scan-sessions/result",
+      expect.objectContaining({ method: "POST", credentials: "same-origin",
+        body: JSON.stringify({ token: session.token }) }),
+    );
+    expect(fetchMock.mock.calls.every(([path]) => !String(path).includes(session.token))).toBe(true);
+    stop();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("returns pending and ready scan results from the authenticated browser endpoint", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: "pending" }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(getReceiptScanResult(session.token)).resolves.toEqual({ status: "pending" });
     vi.unstubAllGlobals();
   });
 

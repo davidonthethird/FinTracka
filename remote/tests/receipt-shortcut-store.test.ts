@@ -122,6 +122,19 @@ describe("receipt shortcut store", () => {
     })).rejects.toMatchObject({ code: "RECEIPT_SCAN_SESSION_CONSUMED" });
   });
 
+  it("reports a member-owned session as pending and then ready after upload", async () => {
+    const store = makeStore();
+    const session = await store.createSession(HOUSEHOLD, MEMBER);
+    await expect(store.getSessionResult(HOUSEHOLD, MEMBER, session.token))
+      .resolves.toEqual({ status: "pending" });
+
+    const created = await store.createImport(session.token, capture());
+    await expect(store.getSessionResult(HOUSEHOLD, MEMBER, session.token))
+      .resolves.toEqual({ status: "ready", importId: created.import.id });
+    await expect(store.getSessionResult(HOUSEHOLD, OTHER_MEMBER, session.token))
+      .rejects.toMatchObject({ code: "RECEIPT_SCAN_SESSION_INVALID" });
+  });
+
   it("keeps refinement imports alive and recreates a missing job on exact replay", async () => {
     const store = makeStore();
     const session = await store.createSession(HOUSEHOLD, MEMBER);

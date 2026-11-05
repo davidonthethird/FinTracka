@@ -80,12 +80,12 @@ RECEIPT TEXT:
     - Method: POST
     - Headers: `Authorization` = `Bearer ` immediately followed by `token`; `Content-Type` = `application/json`
     - Body: JSON Dictionary `Capture`
-13. Name the response `UploadResponse`. Read `review_url`, `validation_status`, and `refinement_id` specifically from `UploadResponse`—not from the request Dictionary and not from `Contents of URL` chosen by proximity.
-14. Require `review_url` to be HTTPS and on the same host as `upload_url`. Otherwise show `FinTracka did not return a safe review link. Start a new scan.` and stop.
+13. Name the response `UploadResponse`. Read `validation_status` and `refinement_id` specifically from `UploadResponse`—not from the request Dictionary and not from `Contents of URL` chosen by proximity.
+14. Do not use **Open URL**. A normal HTTPS URL from Shortcuts opens a separate Safari page instead of returning to the installed FinTracka web app.
 
 ### 5. Queue only failed first-pass scans
 
-15. If `validation_status` is not `needs_refinement`, open `review_url` and finish.
+15. If `validation_status` is not `needs_refinement`, show `Receipt sent. Tap Back to FinTracka.` and finish. The waiting FinTracka screen detects this exact scan and opens its review internally.
 16. If it is `needs_refinement`, require `refinement_id` to be a UUID. Create this exact private iCloud Drive structure:
 
 ```text
@@ -103,7 +103,7 @@ FinTracka Receipt Queue/
 {"contract":"receipt_refinement_package/v1","refinement_id":"<refinement_id>","page_count":2,"created_at":"<ISO-8601 current date>"}
 ```
 
-19. Open `review_url`. FinTracka will say the Mac is refining the receipt. Retry there after the Mac has processed the package.
+19. Show `Receipt sent for refinement. Tap Back to FinTracka.` and finish. FinTracka will say the Mac is refining the receipt after you return. Retry there after the Mac has processed the package.
 
 If any queue save fails, show `The on-device scan needs the Mac, but its private queue could not be saved. Check iCloud Drive and retry this scan.` Do not upload images to the Worker as a fallback.
 
@@ -139,6 +139,7 @@ Test both **Take photos** and **Choose from photo library** on David's and Ariel
 6. With the Mac off, the job remains pending. When it wakes, processing resumes without a new scan.
 7. A model-unavailable or iCloud-delay failure remains in `pending` and retries. A terminal invalid package moves to `failed` and disappears after seven days. An unrelated file remains untouched.
 8. The user can always edit every field before saving. No receipt changes the ledger until the user explicitly matches it to an exact posted transaction.
+9. Completing the Shortcut does not open Safari. Tapping iOS's **Back to FinTracka** returns to the existing installed web app, which automatically opens the matching receipt review.
 
 Record pass/fail and timestamps only. Never record tokens, host/account identifiers, receipt text, or photos.
 
