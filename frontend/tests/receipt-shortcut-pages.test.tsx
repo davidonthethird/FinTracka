@@ -95,6 +95,33 @@ describe("receipt Shortcut pages", () => {
     vi.unstubAllGlobals();
   });
 
+  it("keeps polling after Safari interrupts one request while returning from Shortcuts", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: "pending" }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      }))
+      .mockRejectedValueOnce(new TypeError("Load failed"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: "ready", review_path: "/receipts/import/import-after-resume",
+      }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onReady = vi.fn();
+    const onError = vi.fn();
+
+    const stop = watchReceiptScanSession(session.token, { onReady, onError }, 1_500);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(onError).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(onReady).toHaveBeenCalledWith("/receipts/import/import-after-resume");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    stop();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
   it("returns pending and ready scan results from the authenticated browser endpoint", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: "pending" }), {
       status: 200, headers: { "Content-Type": "application/json" },
