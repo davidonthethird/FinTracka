@@ -184,7 +184,8 @@ def test_manual_transfer_options_find_distant_exact_match_and_exclude_unsafe_pai
     )
 
     assert transfer_match_options(ledger, anchor) == [
-        _transaction_id(ledger, "manual-valid")
+        _transaction_id(ledger, "manual-same-account"),
+        _transaction_id(ledger, "manual-valid"),
     ]
     assert all(
         {candidate.external_a, candidate.external_b}
@@ -250,6 +251,77 @@ def test_confirmed_counterparty_pattern_auto_confirms_matching_history_only(
     assert ledger.execute(
         "SELECT COUNT(*) FROM transfer_links WHERE status = 'confirmed'"
     ).fetchone()[0] == 3
+
+
+def test_manual_same_account_passthrough_match_is_offered_and_learned(
+    ledger: sqlite3.Connection,
+) -> None:
+    connection_id = ledger.execute(
+        "SELECT id FROM provider_connections WHERE provider = 'synthetic'"
+    ).fetchone()[0]
+    apply_batch(
+        ledger,
+        connection_id,
+        SyncBatch(
+            added=(
+                NormalizedTransaction(
+                    "passthrough-in-1",
+                    "checking-1",
+                    "2026-10-26T12:00:00Z",
+                    120_000,
+                    "USD",
+                    "Online Transfer from CHK 1750 transaction 313",
+                ),
+                NormalizedTransaction(
+                    "passthrough-out-1",
+                    "checking-1",
+                    "2026-11-02T12:00:00Z",
+                    -120_000,
+                    "USD",
+                    "Zelle payment to JISSACHAR FESSEL 31456140697",
+                ),
+                NormalizedTransaction(
+                    "passthrough-in-2",
+                    "checking-1",
+                    "2026-11-10T12:00:00Z",
+                    30_000,
+                    "USD",
+                    "Online Transfer from CHK 1750 transaction 999",
+                ),
+                NormalizedTransaction(
+                    "passthrough-out-2",
+                    "checking-1",
+                    "2026-11-12T12:00:00Z",
+                    -30_000,
+                    "USD",
+                    "Zelle payment to JISSACHAR FESSEL 888",
+                ),
+            ),
+            next_checkpoint="same-account-passthrough",
+        ),
+    )
+    first_in = _transaction_id(ledger, "passthrough-in-1")
+    first_out = _transaction_id(ledger, "passthrough-out-1")
+    second_in = _transaction_id(ledger, "passthrough-in-2")
+    second_out = _transaction_id(ledger, "passthrough-out-2")
+
+    assert transfer_match_options(ledger, first_out) == [first_in]
+    assert not any(
+        {candidate.transaction_a, candidate.transaction_b} == {first_in, first_out}
+        for candidate in transfer_candidates(ledger)
+    )
+
+    confirm_transfer(ledger, first_out, first_in)
+
+    confirmed_pairs = {
+        frozenset((row[0], row[1]))
+        for row in ledger.execute(
+            "SELECT transaction_a_id, transaction_b_id FROM transfer_links "
+            "WHERE status = 'confirmed'"
+        )
+    }
+    assert frozenset((first_in, first_out)) in confirmed_pairs
+    assert frozenset((second_in, second_out)) in confirmed_pairs
 
 
 def test_sync_auto_archives_credit_card_payments_even_when_bank_side_is_duplicated(

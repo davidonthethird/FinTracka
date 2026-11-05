@@ -414,7 +414,6 @@ def transfer_match_options(connection: sqlite3.Connection, transaction_id: str) 
           AND candidate.tombstoned = 0
           AND candidate.user_archived = 0
           AND candidate.pending = 0
-          AND candidate.account_id != ?
           AND candidate.currency = ?
           AND candidate.amount_minor = ?
           AND NOT EXISTS (
@@ -433,7 +432,6 @@ def transfer_match_options(connection: sqlite3.Connection, transaction_id: str) 
         """,
         (
             transaction_id,
-            anchor["account_id"],
             anchor["currency"],
             -anchor["amount_minor"],
             transaction_id,
@@ -445,7 +443,7 @@ def transfer_match_options(connection: sqlite3.Connection, transaction_id: str) 
 
 
 def _transfer_candidates(
-    connection: sqlite3.Connection, *, max_days: int
+    connection: sqlite3.Connection, *, max_days: int, allow_same_account: bool = False
 ) -> list[TransferCandidate]:
     rows = connection.execute(
         """
@@ -470,7 +468,10 @@ def _transfer_candidates(
     candidates: list[tuple[int, TransferCandidate]] = []
     for index, left in enumerate(rows):
         for right in rows[index + 1 :]:
-            if left["account_id"] == right["account_id"] or left["currency"] != right["currency"]:
+            if (
+                (not allow_same_account and left["account_id"] == right["account_id"])
+                or left["currency"] != right["currency"]
+            ):
                 continue
             if left["amount_minor"] != -right["amount_minor"]:
                 continue
@@ -510,8 +511,8 @@ def confirm_transfer(connection: sqlite3.Connection, transaction_a: str, transac
         "SELECT id, account_id, amount_minor, currency FROM transactions WHERE user_archived = 0 AND id IN (?, ?)",
         (transaction_a, transaction_b),
     ).fetchall()
-    if len(rows) != 2 or rows[0]["account_id"] == rows[1]["account_id"]:
-        raise IntegrityError("transfer transactions must use different owned accounts")
+    if len(rows) != 2:
+        raise IntegrityError("transfer transactions were not found")
     if rows[0]["currency"] != rows[1]["currency"] or rows[0]["amount_minor"] != -rows[1]["amount_minor"]:
         raise IntegrityError("transfer amounts must be exact opposites")
     link_id = _create_transfer_link(
@@ -519,7 +520,7 @@ def confirm_transfer(connection: sqlite3.Connection, transaction_a: str, transac
         transaction_a,
         transaction_b,
         status="confirmed",
-        reason="user confirmed exact owned-account match",
+        reason="user confirmed exact transaction match",
         actor="user",
         action="transfer_confirm",
     )
@@ -552,7 +553,7 @@ def reject_transfer(connection: sqlite3.Connection, transaction_a: str, transact
 
 
 def confirm_learned_transfers(connection: sqlite3.Connection) -> int:
-    candidates = _transfer_candidates(connection, max_days=14)
+    candidates = _transfer_candidates(connection, max_days=14, allow_same_account=True)
     archived = _archive_credit_card_payments(connection, candidates)
     learned = {
         signature
