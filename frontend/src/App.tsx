@@ -15,6 +15,7 @@ import { ManualCashDialog } from "./transactions/ManualCashDialog";
 import { SubcategoryEditor, type Subcategory } from "./transactions/SubcategoryEditor";
 import { CategorizationScopeControl } from "./transactions/CategorizationScopeControl";
 import { effectiveCategorizationScope, readCategorizationScope, scopeMessage, writeCategorizationScope, type CategorizationScope } from "./transactions/categorization";
+import { TransferConnectDialog, transferConfirmationRequest } from "./transactions/TransferConnectDialog";
 
 type OverviewData = { cash_minor: number; card_liabilities_minor: number; net_position_minor: number; income_minor: number; spending_minor: number; cash_income_minor: number; cash_spending_minor: number; cash_transfer_minor: number; off_bank_cash_spending_minor: number; opening_cash_minor: number | null };
 type SpendingOwner = "David" | "Ariela" | "Shared";
@@ -150,6 +151,11 @@ function TransactionsPage() {
   const [undoId, setUndoId] = useState("");
   const [showAllTransfers, setShowAllTransfers] = useState(false);
   const [cashDialog, setCashDialog] = useState<Transaction | "new">();
+  const [connectTransaction, setConnectTransaction] = useState<Transaction>();
+  const [connectMatches, setConnectMatches] = useState<Transaction[]>();
+  const [connectSelection, setConnectSelection] = useState("");
+  const [connectLoading, setConnectLoading] = useState(false);
+  const [connectError, setConnectError] = useState("");
   const transactions = useTransactionPages(query, categoryFilter, subcategoryFilter, ownerFilter, accountFilter, includeTransfers, includeArchived, `${refresh}:${pageRevision}`);
   const categories = useData<Category[]>("/categories", refresh);
   const subcategories = useData<Subcategory[]>("/subcategories", refresh);
@@ -205,6 +211,40 @@ function TransactionsPage() {
     setMessage("Both transactions will stay visible and continue to count.");
     setRefresh((value) => value + 1);
   }
+  async function openTransferConnect(transaction: Transaction) {
+    setConnectTransaction(transaction);
+    setConnectMatches(undefined);
+    setConnectSelection("");
+    setConnectError("");
+    setConnectLoading(true);
+    try {
+      const matches = await api<Transaction[]>(`/transfers/${transaction.id}/matches`);
+      setConnectMatches(matches);
+    } catch (caught) {
+      setConnectError(caught instanceof Error ? caught.message : "Unable to load matching transactions");
+    } finally {
+      setConnectLoading(false);
+    }
+  }
+  function closeTransferConnect() {
+    setConnectTransaction(undefined);
+    setConnectMatches(undefined);
+    setConnectSelection("");
+    setConnectError("");
+  }
+  async function connectTransfer() {
+    if (!connectTransaction || !connectSelection) return;
+    const request = transferConfirmationRequest(connectTransaction.id, connectSelection);
+    try {
+      await api(request.path, request.init);
+      closeTransferConnect();
+      setSelected({});
+      setMessage("Transfer connected. Matching account and counterparty patterns will be learned for history and future.");
+      setRefresh((value) => value + 1);
+    } catch (caught) {
+      setConnectError(caught instanceof Error ? caught.message : "Unable to connect transfer");
+    }
+  }
   async function deleteCash(transaction: Transaction) {
     if (!window.confirm(`Delete ${transaction.description}? The audit history will be retained.`)) return;
     await api(`/transactions/${transaction.id}?expected_updated_at=${encodeURIComponent(transaction.updated_at)}`, { method: "DELETE" });
@@ -221,13 +261,14 @@ function TransactionsPage() {
   return <Page title="Transactions" note="Provider facts stay separate from your edits">
     <div className="sticky-tools">
       <div className="transaction-primary"><form onSubmit={(event) => { event.preventDefault(); transactions.cancelPending(); setQuery(search); setPageRevision((value) => value + 1); }}><input aria-label="Search transactions" placeholder="Search merchant, category, or subcategory" value={search} onChange={(event) => setSearch(event.target.value)} /><button>Search</button></form><button onClick={() => setCashDialog("new")}>Add cash spending</button></div>
-      <div className="transaction-filters"><select aria-label="Filter by account" value={accountFilter} onChange={(event) => { transactions.cancelPending(); setSelected({}); setAccountFilter(event.target.value); }}><option value="">All accounts</option>{accounts.data?.filter((account) => !account.hidden).map((account) => <option key={account.id} value={account.id}>{account.nickname || account.name}</option>)}</select><select aria-label="Filter by category" value={categoryFilter} onChange={(event) => { transactions.cancelPending(); setSelected({}); setSubcategoryFilter(""); setCategoryFilter(event.target.value); }}><option value="">All categories</option><option value="review">Review uncertain</option><option value="uncategorized">Uncategorized</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><select aria-label="Filter by subcategory" value={subcategoryFilter} onChange={(event) => { transactions.cancelPending(); setSelected({}); setSubcategoryFilter(event.target.value); }}><option value="">All subcategories</option>{subcategories.data?.filter((item) => !categoryFilter || item.category_id === categoryFilter).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select aria-label="Filter spending owner" value={ownerFilter} onChange={(event) => { transactions.cancelPending(); setSelected({}); setOwnerFilter(event.target.value); }}><option value="">Everyone</option><option value="David">David</option><option value="Ariela">Ariela</option><option value="Shared">Shared</option></select><CategorizationScopeControl value={learningScope} onChange={(scope) => { setLearningScope(scope); writeCategorizationScope(scope); }} /><select aria-label="Categorize selected" value="" disabled={!selectedRows.length} onChange={(event) => event.target.value && categorize(event.target.value)}><option value="">Categorize selected…</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><button disabled={selectedRows.length !== 1} onClick={() => setSplitTransaction(selectedRows[0])}>Split</button><span>{selectedRows.length} selected</span><label className="transfer-toggle"><input type="checkbox" checked={includeTransfers} onChange={(event) => { transactions.cancelPending(); setSelected({}); setIncludeTransfers(event.target.checked); }} />Include confirmed transfers</label><label className="transfer-toggle"><input type="checkbox" checked={includeArchived} onChange={(event) => { transactions.cancelPending(); setSelected({}); setIncludeArchived(event.target.checked); }} />Include archived transactions</label></div>
+      <div className="transaction-filters"><select aria-label="Filter by account" value={accountFilter} onChange={(event) => { transactions.cancelPending(); setSelected({}); setAccountFilter(event.target.value); }}><option value="">All accounts</option>{accounts.data?.filter((account) => !account.hidden).map((account) => <option key={account.id} value={account.id}>{account.nickname || account.name}</option>)}</select><select aria-label="Filter by category" value={categoryFilter} onChange={(event) => { transactions.cancelPending(); setSelected({}); setSubcategoryFilter(""); setCategoryFilter(event.target.value); }}><option value="">All categories</option><option value="review">Review uncertain</option><option value="uncategorized">Uncategorized</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><select aria-label="Filter by subcategory" value={subcategoryFilter} onChange={(event) => { transactions.cancelPending(); setSelected({}); setSubcategoryFilter(event.target.value); }}><option value="">All subcategories</option>{subcategories.data?.filter((item) => !categoryFilter || item.category_id === categoryFilter).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select aria-label="Filter spending owner" value={ownerFilter} onChange={(event) => { transactions.cancelPending(); setSelected({}); setOwnerFilter(event.target.value); }}><option value="">Everyone</option><option value="David">David</option><option value="Ariela">Ariela</option><option value="Shared">Shared</option></select><CategorizationScopeControl value={learningScope} onChange={(scope) => { setLearningScope(scope); writeCategorizationScope(scope); }} /><select aria-label="Categorize selected" value="" disabled={!selectedRows.length} onChange={(event) => event.target.value && categorize(event.target.value)}><option value="">Categorize selected…</option>{categories.data?.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><button disabled={selectedRows.length !== 1} onClick={() => setSplitTransaction(selectedRows[0])}>Split</button><button disabled={selectedRows.length !== 1} onClick={() => openTransferConnect(selectedRows[0])}>Connect transfer</button><span>{selectedRows.length} selected</span><label className="transfer-toggle"><input type="checkbox" checked={includeTransfers} onChange={(event) => { transactions.cancelPending(); setSelected({}); setIncludeTransfers(event.target.checked); }} />Include confirmed transfers</label><label className="transfer-toggle"><input type="checkbox" checked={includeArchived} onChange={(event) => { transactions.cancelPending(); setSelected({}); setIncludeArchived(event.target.checked); }} />Include archived transactions</label></div>
     </div>
     {message && <div className="notice success" role="status"><strong>Ledger updated.</strong><span>{message}</span>{undoId && <button className="quiet-button" onClick={undoLastCategorization}>Undo</button>}</div>}
     {transfers.data && transfers.data.length > 0 && <section className={`review-strip ${showAllTransfers ? "expanded" : ""}`}><div><p className="eyebrow">Review</p><strong>{transfers.data.length} possible transfer{transfers.data.length === 1 ? "" : "s"}</strong>{transfers.data.length > 3 && <button className="text-button" onClick={() => setShowAllTransfers(!showAllTransfers)}>{showAllTransfers ? "Show fewer" : "Review all"}</button>}</div>{transfers.data.slice(0, showAllTransfers ? undefined : 3).map((candidate) => <div className="transfer-candidate" role="button" tabIndex={0} aria-label={`View transfer details for ${candidate.label_a} and ${candidate.label_b}`} key={`${candidate.transaction_a}-${candidate.transaction_b}`} onClick={(event) => { if (!(event.target as HTMLElement).closest("button")) setDetailTransfer(candidate); }} onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && !(event.target as HTMLElement).closest("button")) { event.preventDefault(); setDetailTransfer(candidate); } }}><span><strong>{candidate.label_a} ↔ {candidate.label_b}</strong><small>{candidate.date_a}–{candidate.date_b} · {formatMoney(candidate.amount_minor, candidate.currency)} · {candidate.confidence}</small></span><span className="transfer-actions"><button aria-label="Confirm transfer" title="Confirm and hide" onClick={() => confirmTransfer(candidate)}>✓</button><button aria-label="Keep visible" title="Keep visible" onClick={() => rejectTransfer(candidate)}>×</button></span></div>)}</section>}
     {transactions.loading ? <PageState text="Loading register…" /> : transactions.error ? <PageState error text={transactions.error} /> : <div className="table-wrap"><table className="register"><thead>{table.getHeaderGroups().map((group) => <tr key={group.id}>{group.headers.map((header) => <th key={header.id}>{flexRender(header.column.columnDef.header, header.getContext())}</th>)}</tr>)}</thead><tbody>{table.getRowModel().rows.map((row) => <tr key={row.id} tabIndex={0} aria-label={`View ${row.original.merchant || row.original.description} transaction details`} className={`clickable-row${row.original.archived ? " archived-row" : ""}`} onClick={(event) => { if (!(event.target as HTMLElement).closest("button, input, select, a")) setDetailTransaction(row.original); }} onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && !(event.target as HTMLElement).closest("button, input, select, a")) { event.preventDefault(); setDetailTransaction(row.original); } }}>{row.getVisibleCells().map((cell) => <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}</tr>)}</tbody></table>{!table.getRowModel().rows.length && <PageState text="No transactions match these filters." />}{transactions.data?.next_cursor && <div className="load-more"><button disabled={transactions.loadingMore} onClick={transactions.loadMore}>{transactions.loadingMore ? "Loading…" : "Load older transactions"}</button></div>}</div>}
     {splitTransaction && <SplitEditor transaction={splitTransaction} categories={categories.data || []} onClose={() => setSplitTransaction(undefined)} onSaved={() => { setSplitTransaction(undefined); setSelected({}); setRefresh((value) => value + 1); }} />}
     {cashDialog && <ManualCashDialog categories={categories.data || []} transaction={cashDialog === "new" ? undefined : cashDialog} onClose={() => setCashDialog(undefined)} onSaved={() => { setCashDialog(undefined); setRefresh((value) => value + 1); }} />}
+    {connectTransaction && <TransferConnectDialog source={connectTransaction} matches={connectMatches} selectedId={connectSelection} loading={connectLoading} error={connectError} onSelect={setConnectSelection} onConfirm={connectTransfer} onClose={closeTransferConnect} />}
     {detailTransaction && <TransactionDetails transaction={detailTransaction} onClose={() => setDetailTransaction(undefined)} />}
     {detailTransfer && <TransferDetails candidate={detailTransfer} onClose={() => setDetailTransfer(undefined)} />}
   </Page>;
