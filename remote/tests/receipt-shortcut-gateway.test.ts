@@ -106,6 +106,32 @@ describe("receipt shortcut gateway", () => {
     ), testEnv)).status).toBe(404);
   });
 
+  it("lets the originating web app discover the completed scan without a browser redirect", async () => {
+    const gateway = makeGateway();
+    const testEnv = gatewayEnv(true);
+    const session = await createSession(gateway, testEnv);
+    const resultPath = "/api/v1/mobile/receipt-scan-sessions/result";
+
+    const pending = await gateway.fetch(userRequest(resultPath, json({ token: session.token })), testEnv);
+    expect(pending.status).toBe(200);
+    expect(await pending.json()).toEqual({ status: "pending" });
+
+    const uploaded = await gateway.fetch(shortcutRequest(capture(), session.token), testEnv);
+    const uploadedBody = await uploaded.json() as { import_id: string };
+    const ready = await gateway.fetch(userRequest(resultPath, json({ token: session.token })), testEnv);
+    expect(ready.status).toBe(200);
+    expect(await ready.json()).toEqual({
+      status: "ready",
+      review_path: `/receipts/import/${uploadedBody.import_id}`,
+    });
+    expect(ready.url).not.toContain(session.token);
+
+    const other = await gateway.fetch(userRequest(
+      resultPath, json({ token: session.token }), "other-token",
+    ), testEnv);
+    expect(other.status).toBe(401);
+  });
+
   it("replays an identical upload and rejects changed reuse without leaking text or token", async () => {
     const gateway = makeGateway();
     const testEnv = gatewayEnv(true);

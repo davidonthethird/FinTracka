@@ -28,6 +28,10 @@ interface SessionRow {
   expires_at: string;
 }
 
+export type ReceiptScanResult =
+  | { status: "pending" }
+  | { status: "ready"; importId: string };
+
 interface ImportRow {
   id: string;
   shortcut_version: 1 | 2;
@@ -166,6 +170,26 @@ export class ReceiptShortcutStore {
     }
     await this.ensureRefinement(validation, id, session.household_id, session.actor_member_id, bodyDigest);
     return { import: await this.requireImport(session.household_id, session.actor_member_id, id), replayed: false };
+  }
+
+  async getSessionResult(
+    householdId: string,
+    memberId: string,
+    token: string,
+  ): Promise<ReceiptScanResult> {
+    const tokenDigest = await sha256Hex(token);
+    const session = await this.database.prepare(`SELECT token_digest, household_id, actor_member_id,
+      consumed_import_id, idempotency_key, body_digest, expires_at
+      FROM receipt_scan_sessions
+      WHERE token_digest = ? AND household_id = ? AND actor_member_id = ?`)
+      .bind(tokenDigest, householdId, memberId).first<SessionRow>();
+    if (!session) throw new ReceiptShortcutStoreError("RECEIPT_SCAN_SESSION_INVALID");
+    if (session.expires_at <= this.clock().toISOString()) {
+      throw new ReceiptShortcutStoreError("RECEIPT_SCAN_SESSION_EXPIRED");
+    }
+    return session.consumed_import_id
+      ? { status: "ready", importId: session.consumed_import_id }
+      : { status: "pending" };
   }
 
   async getImport(householdId: string, memberId: string, id: string): Promise<PublicReceiptImport> {

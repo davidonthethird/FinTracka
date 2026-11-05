@@ -4,6 +4,9 @@ import { ReceiptShortcutStore, ReceiptShortcutStoreError } from "./receiptShortc
 
 const BODY_LIMIT = 128 * 1024;
 const emptyObject = z.object({}).strict();
+const sessionResultInput = z.object({
+  token: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+}).strict();
 
 export class ReceiptShortcutGatewayError extends Error {
   constructor(readonly status: number, readonly code: string) { super(code); }
@@ -37,6 +40,16 @@ export async function handleReceiptShortcutBrowser(
   store: ReceiptShortcutStore,
   member: { id: string; household_id: string },
 ): Promise<Response | null> {
+  if (url.pathname === "/api/v1/mobile/receipt-scan-sessions/result") {
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    const input = sessionResultInput.safeParse(await readBrowserJson(request, 4_096));
+    if (!input.success) throw new ReceiptShortcutGatewayError(400, "INVALID_RECEIPT_SCAN_SESSION");
+    const result = await store.getSessionResult(member.household_id, member.id, input.data.token);
+    return result.status === "ready"
+      ? json(200, { status: "ready",
+        review_path: `/receipts/import/${encodeURIComponent(result.importId)}` })
+      : json(200, { status: "pending" });
+  }
   if (url.pathname === "/api/v1/mobile/receipt-scan-sessions") {
     if (request.method !== "POST") return methodNotAllowed("POST");
     const input = emptyObject.safeParse(await readBrowserJson(request, 4_096));

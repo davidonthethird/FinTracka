@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Camera, ExternalLink, RotateCcw, X } from "lucide-react";
 
 import { MobileCommandApiError } from "../api";
-import { buildReceiptShortcutUrl, createReceiptScanSession, type ReceiptScanSession } from "./receiptShortcutApi";
+import { buildReceiptShortcutUrl, createReceiptScanSession, type ReceiptScanSession,
+  watchReceiptScanSession } from "./receiptShortcutApi";
 
 export function ReceiptCapturePage({ navigate }: { navigate: (path: string) => void }) {
   const [session, setSession] = useState<ReceiptScanSession>();
@@ -20,6 +21,14 @@ export function ReceiptCapturePage({ navigate }: { navigate: (path: string) => v
     return () => { active = false; };
   }, [attempt]);
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
+  useEffect(() => {
+    if (!session) return;
+    return watchReceiptScanSession(session.token, {
+      onReady: navigate,
+      onError: (caught) => setError(caught instanceof Error
+        ? caught.message : "The receipt scan could not be checked."),
+    });
+  }, [navigate, session]);
 
   return <div className="viewer-page"><header className="viewer-heading"><div><span>Apple Vision</span><h1>Scan receipt</h1></div>
     <button className="icon-button" onClick={() => navigate("/receipts")} aria-label="Close"><X /></button></header>
@@ -29,6 +38,8 @@ export function ReceiptCapturePage({ navigate }: { navigate: (path: string) => v
       {!session && !error && <p role="status">Creating a private, one-time connection…</p>}
       {session && <a className="receipt-shortcut-launch" href={buildReceiptShortcutUrl(session)}>
         <ExternalLink aria-hidden="true" />Scan with iPhone</a>}
+      {session && <p role="status">After the scan finishes, tap <strong>Back to FinTracka</strong>.
+        This page will open the receipt automatically.</p>}
       {error && <><p className="receipt-error" role="alert" tabIndex={-1} ref={errorRef}>{error}</p>
         <button className="secondary-button" onClick={() => setAttempt((value) => value + 1)}><RotateCcw />Try again</button></>}
       <small className="receipt-session-note">The one-time connection expires in 10 minutes and is never saved in this browser.</small>

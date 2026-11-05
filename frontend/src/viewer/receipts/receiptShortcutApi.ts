@@ -9,6 +9,10 @@ export interface ReceiptScanSession {
   expires_at: string;
 }
 
+export type ReceiptScanResult =
+  | { status: "pending" }
+  | { status: "ready"; review_path: string };
+
 export interface PublicReceiptImport {
   id: string;
   shortcut_version: 1 | 2;
@@ -43,6 +47,58 @@ export async function createReceiptScanSession(): Promise<ReceiptScanSession> {
   return await mobileJson<ReceiptScanSession>("/api/v1/mobile/receipt-scan-sessions", {
     method: "POST", body: "{}",
   });
+}
+
+export async function getReceiptScanResult(token: string): Promise<ReceiptScanResult> {
+  return await mobileJson<ReceiptScanResult>("/api/v1/mobile/receipt-scan-sessions/result", {
+    method: "POST", body: JSON.stringify({ token }),
+  });
+}
+
+export function watchReceiptScanSession(
+  token: string,
+  callbacks: { onReady: (path: string) => void; onError: (error: unknown) => void },
+  intervalMs = 1_500,
+): () => void {
+  let active = true;
+  let checking = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const check = async () => {
+    if (!active || checking) return;
+    checking = true;
+    try {
+      const result = await getReceiptScanResult(token);
+      if (!active) return;
+      if (result.status === "ready") {
+        active = false;
+        callbacks.onReady(result.review_path);
+        return;
+      }
+    } catch (error) {
+      if (active) {
+        active = false;
+        callbacks.onError(error);
+      }
+      return;
+    } finally {
+      checking = false;
+    }
+    if (active) timer = setTimeout(check, intervalMs);
+  };
+  const resume = () => {
+    if (typeof document === "undefined" || document.visibilityState === "visible") void check();
+  };
+
+  if (typeof window !== "undefined") window.addEventListener("focus", resume);
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", resume);
+  void check();
+  return () => {
+    active = false;
+    if (timer) clearTimeout(timer);
+    if (typeof window !== "undefined") window.removeEventListener("focus", resume);
+    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", resume);
+  };
 }
 
 export async function getReceiptImport(id: string): Promise<PublicReceiptImport> {
