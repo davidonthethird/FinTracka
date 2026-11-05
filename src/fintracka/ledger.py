@@ -643,26 +643,52 @@ def classify_savings_transfers(connection: sqlite3.Connection) -> int:
 def _archive_credit_card_payments(
     connection: sqlite3.Connection, candidates: list[TransferCandidate]
 ) -> set[str]:
-    transaction_ids = {
-        row["id"]
-        for row in connection.execute(
+    payment_rows = connection.execute(
+        """
+        SELECT t.id, t.local_date, t.amount_minor, t.currency,
+               t.provider_description, t.provider_category_detailed,
+               a.type account_type, c.name category
+        FROM transactions t
+        JOIN accounts a ON a.id = t.account_id
+        LEFT JOIN categories c ON c.id = t.category_id
+        WHERE t.tombstoned = 0
+          AND (t.provider_category_detailed LIKE '%CREDIT_CARD_PAYMENT%'
+               OR (a.type = 'credit' AND t.amount_minor > 0)
+               OR c.name = 'Credit card payment')
+        """
+    ).fetchall()
+    recognized_payments = [
+        row for row in payment_rows
+        if row["category"] == "Credit card payment"
+        or "CREDIT_CARD_PAYMENT" in (row["provider_category_detailed"] or "")
+        or _PAYMENT_DESCRIPTION.search(row["provider_description"]) is not None
+    ]
+    transaction_ids = {row["id"] for row in recognized_payments}
+    for payment in recognized_payments:
+        if payment["account_type"] != "credit" or payment["amount_minor"] <= 0:
+            continue
+        for counterpart in connection.execute(
             """
-            SELECT t.id, t.amount_minor, t.provider_description,
-                   t.provider_category_detailed, a.type account_type,
+            SELECT t.id, t.provider_description, t.provider_category_detailed,
                    c.name category
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
             LEFT JOIN categories c ON c.id = t.category_id
-            WHERE t.tombstoned = 0 AND t.user_archived = 0
-              AND (t.provider_category_detailed LIKE '%CREDIT_CARD_PAYMENT%'
-                   OR (a.type = 'credit' AND t.amount_minor > 0)
-                   OR c.name = 'Credit card payment')
-            """
-        )
-        if row["category"] == "Credit card payment"
-        or "CREDIT_CARD_PAYMENT" in (row["provider_category_detailed"] or "")
-        or _PAYMENT_DESCRIPTION.search(row["provider_description"]) is not None
-    }
+            WHERE t.tombstoned = 0 AND t.user_archived = 0 AND t.pending = 0
+              AND t.amount_minor = ? AND t.currency = ? AND a.nature = 'asset'
+              AND ABS(julianday(t.local_date) - julianday(?)) <= 14
+            """,
+            (-payment["amount_minor"], payment["currency"], payment["local_date"]),
+        ):
+            detailed = (counterpart["provider_category_detailed"] or "").upper()
+            description = counterpart["provider_description"].upper()
+            if (
+                counterpart["category"] == "Credit card payment"
+                or "CREDIT_CARD_PAYMENT" in detailed
+                or detailed.startswith("LOAN_PAYMENTS")
+                or ("CARD" in description and _PAYMENT_DESCRIPTION.search(description))
+            ):
+                transaction_ids.add(counterpart["id"])
     transaction_ids.update(
         transaction_id
         for candidate in candidates
