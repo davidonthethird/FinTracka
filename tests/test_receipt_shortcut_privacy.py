@@ -38,6 +38,12 @@ def test_receipt_handoff_is_local_and_contains_only_plain_text_snapshots() -> No
         and action["WFWorkflowActionParameters"].get("CustomOutputName") == "FinTracka Receipt Handoff")
     handoff_bytes = plistlib.dumps(handoff)
     assert b"fintracka_receipt_handoff/v1" in handoff_bytes
+    handoff_value = handoff["WFWorkflowActionParameters"]["WFTextActionText"]["Value"]
+    assert handoff_value["string"].count('"duration_ms":"\ufffc"') == 2
+    assert set(handoff_value["attachmentsByRange"]) == {
+        f"{{{index}, 1}}" for index, character in enumerate(handoff_value["string"])
+        if character == "\ufffc"
+    }
     for forbidden_uuid in (PHOTO_UUID, RAW_OCR_UUID, RAW_ON_DEVICE_UUID, RAW_CLOUD_UUID):
         assert forbidden_uuid.encode() not in handoff_bytes
 

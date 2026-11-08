@@ -52,9 +52,9 @@ describe("receipt Shortcut pages", () => {
   it("imports a matching text-only clipboard handoff and clears it after success", async () => {
     const capture = { contract: "receipt_shortcut_capture/v3", idempotency_key: "a".repeat(64),
       shortcut_version: 3, text: "SYNTHETIC MARKET\nTOTAL 4.50", runs: [
-        { model: "on_device", status: "completed", duration_ms: 125,
+        { model: "on_device", status: "completed", duration_ms: 1_125,
           model_result: "{\"merchant\":\"SYNTHETIC MARKET\"}" },
-        { model: "private_cloud_compute", status: "completed", duration_ms: 240,
+        { model: "private_cloud_compute", status: "completed", duration_ms: 2_240,
           model_result: "{\"merchant\":\"SYNTHETIC MARKET\",\"total\":4.5}" },
       ] };
     const encodedCapture = {
@@ -62,7 +62,8 @@ describe("receipt Shortcut pages", () => {
       shortcut_version: capture.shortcut_version,
       text_base64: btoa(capture.text),
       runs: capture.runs.map(({ model, status, duration_ms, model_result }) => ({
-        model, status, duration_ms, model_result_base64: btoa(model_result),
+        model, status, duration_ms: duration_ms.toLocaleString("en-US"),
+        model_result_base64: btoa(model_result),
       })),
     };
     const clipboard = {

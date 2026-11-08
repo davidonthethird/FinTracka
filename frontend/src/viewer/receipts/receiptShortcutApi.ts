@@ -241,15 +241,15 @@ function parseReceiptHandoff(value: unknown): {
   const text = decodeBase64Text(capture.text_base64);
   if (text === null) return null;
   const runs = capture.runs.map((run) => {
+    const durationMs = isRecord(run) ? parseDuration(run.duration_ms) : null;
     if (!isRecord(run)
       || (run.model !== "on_device" && run.model !== "private_cloud_compute")
       || run.status !== "completed"
-      || typeof run.duration_ms !== "number" || !Number.isFinite(run.duration_ms)
-      || run.duration_ms < 0
+      || durationMs === null
       || typeof run.model_result_base64 !== "string") return null;
     const modelResult = decodeBase64Text(run.model_result_base64);
     return modelResult === null ? null : {
-      model: run.model, status: run.status, duration_ms: run.duration_ms,
+      model: run.model, status: run.status, duration_ms: durationMs,
       model_result: modelResult,
     };
   });
@@ -279,4 +279,13 @@ function decodeBase64Text(value: string): string | null {
     const bytes = Uint8Array.from(atob(compact), (character) => character.charCodeAt(0));
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch { return null; }
+}
+
+function parseDuration(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) && value >= 0 ? value : null;
+  if (typeof value !== "string") return null;
+  const compact = value.replace(/,/g, "").trim();
+  if (!/^\d+(?:\.\d+)?$/.test(compact)) return null;
+  const duration = Number(compact);
+  return Number.isFinite(duration) ? duration : null;
 }
