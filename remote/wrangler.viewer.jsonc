@@ -55,7 +55,7 @@
         "FEATURE_RECEIPT_MATCHING": "true",
         "FEATURE_RECEIPT_SHORTCUT": "true",
         "FEATURE_RECEIPT_REFINEMENT": "false",
-        "FEATURE_RECEIPT_MODEL_COMPARISON": "false"
+        "FEATURE_RECEIPT_MODEL_COMPARISON": "true"
       }
     }
   }

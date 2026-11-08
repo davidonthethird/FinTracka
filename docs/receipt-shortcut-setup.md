@@ -1,6 +1,6 @@
 # FinTracka Receipt Scanner
 
-> **Temporary comparison build:** The signed version-3 benchmark artifact and exact action list are documented in [receipt-shortcut-v3-actions.md](receipt-shortcut-v3-actions.md). Do not replace the canonical version-2 scanner until `FEATURE_RECEIPT_MODEL_COMPARISON` is deliberately enabled for the private household benchmark. With the flag off, all existing version-2 behavior below is unchanged.
+> **Current private benchmark:** Production deliberately advertises contract version 3. Install the signed `shortcuts/FinTracka Receipt Scanner.shortcut` artifact. Its inspected source is `shortcuts/FinTracka Receipt Model Comparison.xml`, and its action design is documented in [receipt-shortcut-v3-actions.md](receipt-shortcut-v3-actions.md). The version-2 recipe below is retained only as a legacy reference.
 
 This is the only supported receipt Shortcut. It uses Apple Vision and Apple Intelligence on the iPhone first, then queues only scans that fail deterministic evidence and arithmetic checks for a second on-device pass on David's Mac. No paid OCR or cloud LLM is used.
 
@@ -9,7 +9,8 @@ The Shortcut must be named exactly **FinTracka Receipt Scanner** on both phones.
 ## Privacy boundary
 
 - Apple **Extract Text from Image** and **Use Model → On-Device** run on the iPhone.
-- The first upload contains recognized text and structured fields, never an image.
+- The Shortcut makes no network request. It copies a versioned envelope containing only recognized text and model text to the local clipboard.
+- The authenticated Viewer reads that clipboard only after the user taps **Import scan results**, submits it same-origin through the one-use session, and clears it after success.
 - If the Worker returns `needs_refinement`, the Shortcut saves the original pages to the private shared iCloud Drive folder `FinTracka Receipt Queue/pending/<opaque-id>/`.
 - The queue manifest contains no token, host, identity, OCR text, bank data, or transaction data.
 - The Mac runs Apple Vision `RecognizeDocumentsRequest` and Apple Foundation Models locally. A successful package is deleted. Temporary iCloud/model failures retry automatically; terminal invalid packages are retained for seven days, then deleted.
@@ -17,7 +18,7 @@ The Shortcut must be named exactly **FinTracka Receipt Scanner** on both phones.
 
 Apple documents that Shortcuts can explicitly select the on-device Apple Intelligence model and choose its output type. Apple also documents native Dictionary values and `Get Dictionary from Input`; this recipe uses those native values and does not hand-build JSON strings.
 
-## Build the canonical version-2 Shortcut
+## Legacy version-2 reference (do not install for the active benchmark)
 
 Create a Shortcut named exactly **FinTracka Receipt Scanner**. It accepts **Text** input and is not exposed in the Share Sheet. Add the actions below in this order. Action labels vary slightly by iOS release; the required inputs and outputs are authoritative.
 
