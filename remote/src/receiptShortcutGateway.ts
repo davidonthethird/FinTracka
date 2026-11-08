@@ -8,6 +8,11 @@ const emptyObject = z.object({}).strict();
 const sessionResultInput = z.object({
   token: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
 }).strict();
+const handoffInput = z.object({
+  contract: z.literal("fintracka_receipt_handoff/v1"),
+  token: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  capture: z.unknown(),
+}).strict();
 const selectionInput = z.object({
   selection: z.enum(["on_device", "private_cloud_compute", "tie", "neither"]),
 }).strict();
@@ -67,6 +72,15 @@ export async function handleReceiptShortcutBrowser(
         review_path: `/receipts/import/${encodeURIComponent(result.importId)}` })
       : json(200, { status: "pending" });
   }
+  if (url.pathname === "/api/v1/mobile/receipt-scan-sessions/complete") {
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    const input = handoffInput.safeParse(await readBrowserJson(request, BODY_LIMIT));
+    if (!input.success) throw new ReceiptShortcutGatewayError(400, "INVALID_RECEIPT_HANDOFF");
+    const result = await store.createImport(input.data.token, input.data.capture as never);
+    return json(result.replayed ? 200 : 201, {
+      review_path: `/receipts/import/${encodeURIComponent(result.import.id)}`,
+    });
+  }
   if (url.pathname === "/api/v1/mobile/receipt-scan-sessions") {
     if (request.method !== "POST") return methodNotAllowed("POST");
     const input = emptyObject.safeParse(await readBrowserJson(request, 4_096));
@@ -78,7 +92,7 @@ export async function handleReceiptShortcutBrowser(
       comparison_enabled: options.comparisonEnabled ?? false,
       shortcut_name: "FinTracka Receipt Scanner",
       token: session.token,
-      upload_url: `${url.origin}/api/v1/mobile/shortcut/receipt-imports`,
+      handoff_contract: "fintracka_receipt_handoff/v1",
       expires_at: session.expires_at,
     });
   }

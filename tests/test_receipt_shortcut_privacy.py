@@ -16,35 +16,41 @@ PLAIN_TEXT_UUIDS = {
 }
 
 
-def _dictionary_items(field: dict) -> list[dict]:
-    return field["Value"]["WFDictionaryFieldValueItems"]
-
-
-def _literal(field: dict) -> str:
-    return field["Value"]["string"]
-
-
-def test_receipt_upload_contains_only_plain_text_snapshots() -> None:
+def test_receipt_handoff_is_local_and_contains_only_plain_text_snapshots() -> None:
     with SHORTCUT.open("rb") as source:
         workflow = plistlib.load(source)
 
     actions = workflow["WFWorkflowActions"]
-    upload = next(
-        action for action in actions
-        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.downloadurl"
-    )
-    parameters = upload["WFWorkflowActionParameters"]
-    payload = {
-        _literal(item["WFKey"]): item["WFValue"]
-        for item in _dictionary_items(parameters["WFJSONValues"])
+    assert all(action["WFWorkflowActionIdentifier"] != "is.workflow.actions.downloadurl"
+               for action in actions)
+    serialized_workflow = plistlib.dumps(workflow)
+    assert b"upload_url" not in serialized_workflow
+
+    base64_inputs = {
+        action["WFWorkflowActionParameters"]["WFInput"]["Value"].get("OutputUUID")
+        for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.base64encode"
     }
+    assert set(PLAIN_TEXT_UUIDS.values()) <= base64_inputs
 
-    for key, expected_uuid in PLAIN_TEXT_UUIDS.items():
-        assert payload[key]["Value"]["OutputUUID"] == expected_uuid
-
-    serialized_upload = plistlib.dumps(upload)
+    handoff = next(action for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.gettext"
+        and action["WFWorkflowActionParameters"].get("CustomOutputName") == "FinTracka Receipt Handoff")
+    handoff_bytes = plistlib.dumps(handoff)
+    assert b"fintracka_receipt_handoff/v1" in handoff_bytes
+    handoff_value = handoff["WFWorkflowActionParameters"]["WFTextActionText"]["Value"]
+    assert handoff_value["string"].count('"duration_ms":"\ufffc"') == 2
+    assert set(handoff_value["attachmentsByRange"]) == {
+        f"{{{index}, 1}}" for index, character in enumerate(handoff_value["string"])
+        if character == "\ufffc"
+    }
     for forbidden_uuid in (PHOTO_UUID, RAW_OCR_UUID, RAW_ON_DEVICE_UUID, RAW_CLOUD_UUID):
-        assert forbidden_uuid.encode() not in serialized_upload
+        assert forbidden_uuid.encode() not in handoff_bytes
+
+    clipboard = next(action for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.setclipboard")
+    clipboard_input = clipboard["WFWorkflowActionParameters"]["WFInput"]["Value"]
+    assert clipboard_input["OutputUUID"] == handoff["WFWorkflowActionParameters"]["UUID"]
 
     text_actions = {
         action["WFWorkflowActionParameters"].get("UUID")

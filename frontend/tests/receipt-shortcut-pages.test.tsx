@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   buildReceiptShortcutUrl,
+  completeReceiptScanFromClipboard,
   createReceiptScanSession,
   deleteReceiptImport,
   getReceiptScanResult,
@@ -19,7 +20,7 @@ const session = {
   shortcut_version: 2 as const,
   shortcut_name: "FinTracka Receipt Scanner" as const,
   token: "sensitive-one-time-token",
-  upload_url: "https://viewer.example/api/v1/mobile/shortcut/receipt-imports",
+  handoff_contract: "fintracka_receipt_handoff/v1" as const,
   expires_at: "2026-11-02T12:10:00.000Z",
 };
 
@@ -43,8 +44,75 @@ describe("receipt Shortcut pages", () => {
     expect(url).not.toContain("FinTracka+Scan+Receipt");
     expect(parsed.searchParams.get("input")).toBe("text");
     expect(JSON.parse(parsed.searchParams.get("text") ?? "")).toEqual(session);
+    expect(parsed.searchParams.get("text")).not.toContain("upload_url");
     expect(url).not.toMatch(/^https?:/);
     vi.unstubAllGlobals();
+  });
+
+  it("imports a matching text-only clipboard handoff and clears it after success", async () => {
+    const capture = { contract: "receipt_shortcut_capture/v3", idempotency_key: "a".repeat(64),
+      shortcut_version: 3, text: "SYNTHETIC MARKET\nTOTAL 4.50", runs: [
+        { model: "on_device", status: "completed", duration_ms: 1_125,
+          model_result: "{\"merchant\":\"SYNTHETIC MARKET\"}" },
+        { model: "private_cloud_compute", status: "completed", duration_ms: 2_240,
+          model_result: "{\"merchant\":\"SYNTHETIC MARKET\",\"total\":4.5}" },
+      ] };
+    const encodedCapture = {
+      contract: capture.contract, idempotency_key: capture.idempotency_key,
+      shortcut_version: capture.shortcut_version,
+      text_base64: btoa(capture.text),
+      runs: capture.runs.map(({ model, status, duration_ms, model_result }) => ({
+        model, status, duration_ms: duration_ms.toLocaleString("en-US"),
+        model_result_base64: btoa(model_result),
+      })),
+    };
+    const clipboard = {
+      readText: vi.fn(async () => JSON.stringify({
+        contract: "fintracka_receipt_handoff/v1", token: session.token, capture: encodedCapture,
+      })),
+      writeText: vi.fn(async () => undefined),
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      review_path: "/receipts/import/import-123",
+    }), { status: 201, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(completeReceiptScanFromClipboard(session, clipboard))
+      .resolves.toBe("/receipts/import/import-123");
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/mobile/receipt-scan-sessions/complete",
+      expect.objectContaining({ method: "POST", credentials: "same-origin",
+        body: JSON.stringify({ contract: "fintracka_receipt_handoff/v1", token: session.token, capture }) }));
+    expect(clipboard.writeText).toHaveBeenCalledWith("");
+    vi.unstubAllGlobals();
+  });
+
+  it("does not submit or clear malformed and mismatched clipboard handoffs", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    for (const text of ["not json", JSON.stringify({ contract: "wrong" }), JSON.stringify({
+      contract: "fintracka_receipt_handoff/v1", token: "another-session", capture: {},
+    }), JSON.stringify({
+      contract: "fintracka_receipt_handoff/v1", token: session.token,
+      capture: { contract: "receipt_shortcut_capture/v3", idempotency_key: "a".repeat(64),
+        shortcut_version: 3, text_base64: "%%%", runs: [] },
+    })]) {
+      const clipboard = { readText: vi.fn(async () => text), writeText: vi.fn() };
+      await expect(completeReceiptScanFromClipboard(session, clipboard)).rejects.toThrow(
+        /FinTracka receipt scan results|current scan/i,
+      );
+      expect(clipboard.writeText).not.toHaveBeenCalled();
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the handoff recoverable when clipboard access is denied", async () => {
+    const clipboard = { readText: vi.fn(async () => { throw new DOMException("denied", "NotAllowedError"); }),
+      writeText: vi.fn() };
+    await expect(completeReceiptScanFromClipboard(session, clipboard)).rejects.toThrow(
+      "Allow clipboard access",
+    );
+    expect(clipboard.writeText).not.toHaveBeenCalled();
   });
 
   it("gets, retries, and deletes only the opaque import URL", async () => {
