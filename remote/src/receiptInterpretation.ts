@@ -27,7 +27,8 @@ export type ReceiptInterpretation = z.infer<typeof ReceiptInterpretationSchema>;
 export type ReceiptIssue = "invalid_model_result" | "unsupported_merchant" | "unsupported_date"
   | "unsupported_subtotal" | "unsupported_discount" | "unsupported_tax" | "unsupported_tip"
   | "unsupported_fee" | "unsupported_total" | "unsupported_line" | "evidence_value_mismatch"
-  | "duplicate_line_evidence" | "summary_arithmetic_mismatch" | "item_arithmetic_mismatch";
+  | "duplicate_line_evidence" | "summary_arithmetic_mismatch" | "item_arithmetic_mismatch"
+  | "layout_association_unverified";
 
 export interface ReceiptValidationResult {
   status: "accepted" | "needs_review" | "needs_refinement";
@@ -78,9 +79,18 @@ export function validateReceiptInterpretation(rawText: string, modelResult: stri
       addIssue(issues, "duplicate_line_evidence");
       continue;
     }
+    const sameRow = sharesPrintedRow(rows, descriptionEvidence, amountEvidence);
+    const conflictsWithPrintedPair = parsed.data.lines.some((other) => {
+      const otherDescription = normalize(other.description_evidence);
+      const otherAmount = normalize(other.amount_evidence);
+      return (otherDescription !== descriptionEvidence
+          && sharesPrintedRow(rows, otherDescription, amountEvidence))
+        || (otherAmount !== amountEvidence && sharesPrintedRow(rows, descriptionEvidence, otherAmount));
+    });
+    const uniqueFlattened = !sameRow && occursOnce(text, descriptionEvidence) && occursOnce(text, amountEvidence)
+      && !conflictsWithPrintedPair && evidenceHasCents(amountEvidence, line.amount_cents);
     if (!descriptionEvidence || !amountEvidence || !text.includes(descriptionEvidence)
-        || !text.includes(amountEvidence) || !sharesPrintedRow(rows, descriptionEvidence, amountEvidence)
-        || line.amount_cents <= 0) {
+        || !text.includes(amountEvidence) || (!sameRow && !uniqueFlattened) || line.amount_cents <= 0) {
       addIssue(issues, "unsupported_line");
       continue;
     }
@@ -94,6 +104,7 @@ export function validateReceiptInterpretation(rawText: string, modelResult: stri
     }
     usedEvidence.add(evidenceKey);
     receipt.lines.push(line);
+    if (uniqueFlattened) addIssue(issues, "layout_association_unverified");
   }
 
   if (receipt.total && receipt.lines.length > 0) {
@@ -109,7 +120,8 @@ export function validateReceiptInterpretation(rawText: string, modelResult: stri
   }
 
   const unusable = !receipt.merchant || !receipt.total || receipt.lines.length === 0;
-  const material = issues.some((issue) => issue !== "unsupported_date");
+  const material = issues.some((issue) => issue !== "unsupported_date"
+    && issue !== "layout_association_unverified");
   return { status: unusable || material ? "needs_refinement" : issues.length ? "needs_review" : "accepted",
     issues, receipt };
 }
@@ -170,6 +182,11 @@ function evidenceHasCents(evidence: string, cents: number): boolean {
 
 function sharesPrintedRow(rows: string[], descriptionEvidence: string, amountEvidence: string): boolean {
   return rows.some((row) => row.includes(descriptionEvidence) && row.includes(amountEvidence));
+}
+
+function occursOnce(text: string, evidence: string): boolean {
+  if (!evidence) return false;
+  return text.indexOf(evidence) >= 0 && text.indexOf(evidence) === text.lastIndexOf(evidence);
 }
 
 function moneyToCents(value: string): number | null {

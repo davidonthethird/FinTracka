@@ -1,0 +1,29 @@
+{
+  "contract": "receipt_benchmark_reviewed_results/v1",
+  "runs": [
+    {
+      "receipt_id": "target",
+      "route": "on_device",
+      "status": "completed",
+      "merchant": "",
+      "total_cents": null,
+      "lines": [],
+      "reconciled": true,
+      "duration_ms": 1200
+    },
+    {
+      "receipt_id": "target",
+      "route": "private_cloud_compute",
+      "status": "completed",
+      "merchant": "",
+      "total_cents": null,
+      "lines": [],
+      "reconciled": true,
+      "duration_ms": 1800
+    }
+  ],
+  "selections": {
+    "on_device": 0,
+    "private_cloud_compute": 0
+  }
+}

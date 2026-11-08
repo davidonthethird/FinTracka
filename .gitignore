@@ -36,3 +36,4 @@ service-account*.json
 data/
 backups/
 exports/
+.private/receipt-benchmark/

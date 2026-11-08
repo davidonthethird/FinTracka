@@ -1,16 +1,23 @@
 import {
   ReceiptShortcutCaptureSchema,
   canonicalReceiptShortcutCapture,
+  compareCapture,
   type PublicReceiptImport,
   type ScanSession,
 } from "./receiptShortcutModel";
 import { validateReceiptInterpretation, type ReceiptValidationResult } from "./receiptInterpretation";
+import {
+  ReceiptBenchmarkStore,
+  ReceiptBenchmarkStoreError,
+  type ReceiptBenchmarkSelection,
+} from "./receiptBenchmarkStore";
+import type { ReceiptModelComparison } from "./receiptModelComparison";
 import { ReceiptRefinementStore } from "./receiptRefinementStore";
 
 const TEN_MINUTES = 10 * 60_000;
 const THIRTY_MINUTES = 30 * 60_000;
 const ONE_HOUR = 60 * 60_000;
-const BODY_LIMIT = 128 * 1024;
+const BODY_LIMIT = 256 * 1024;
 
 interface StoreOptions {
   hourlySessionLimit?: number;
@@ -34,9 +41,12 @@ export type ReceiptScanResult =
 
 interface ImportRow {
   id: string;
-  shortcut_version: 1 | 2;
+  shortcut_version: 1 | 2 | 3;
   pages_json: string;
   validation_json: string | null;
+  comparison_json: string | null;
+  benchmark_id: string | null;
+  selection: ReceiptBenchmarkSelection | null;
   refinement_id: string | null;
   refinement_status: "pending" | "claimed" | "completed" | "failed" | null;
   error_code: string | null;
@@ -106,6 +116,7 @@ export class ReceiptShortcutStore {
     const validation = parsed.data.shortcut_version === 2
       ? validateReceiptInterpretation(parsed.data.pages[0].text, parsed.data.model_result)
       : null;
+    const comparison = parsed.data.shortcut_version === 3 ? compareCapture(parsed.data) : null;
     const session = await this.database.prepare(`SELECT token_digest, household_id, actor_member_id,
       consumed_import_id, idempotency_key, body_digest, expires_at
       FROM receipt_scan_sessions WHERE token_digest = ?`).bind(tokenDigest).first<SessionRow>();
@@ -120,6 +131,8 @@ export class ReceiptShortcutStore {
       }
       await this.ensureRefinement(validation, session.consumed_import_id, session.household_id,
         session.actor_member_id, bodyDigest);
+      await this.ensureBenchmark(comparison, session.consumed_import_id, session.household_id,
+        session.actor_member_id);
       return { import: await this.requireImport(session.household_id, session.actor_member_id,
         session.consumed_import_id), replayed: true };
     }
@@ -138,13 +151,16 @@ export class ReceiptShortcutStore {
       await this.database.batch([
         this.database.prepare(`INSERT INTO receipt_shortcut_imports
           (id, session_token_digest, household_id, actor_member_id, contract_version,
-           shortcut_version, pages_json, model_result, validation_json, idempotency_key, body_digest,
-           created_at, expires_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+           shortcut_version, pages_json, model_result, validation_json, model_runs_json,
+           comparison_json, idempotency_key, body_digest, created_at, expires_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
           id, tokenDigest, session.household_id, session.actor_member_id,
           parsed.data.shortcut_version, parsed.data.shortcut_version,
           JSON.stringify(parsed.data.pages), parsed.data.shortcut_version === 2 ? parsed.data.model_result : null,
-          validation ? JSON.stringify(validation) : null, parsed.data.idempotency_key, bodyDigest, now, expiresAt,
+          validation ? JSON.stringify(validation) : null,
+          parsed.data.shortcut_version === 3 ? JSON.stringify(parsed.data.runs) : null,
+          comparison ? JSON.stringify(comparison) : null,
+          parsed.data.idempotency_key, bodyDigest, now, expiresAt,
         ),
         this.database.prepare(`UPDATE receipt_scan_sessions SET consumed_import_id = ?,
           idempotency_key = ?, body_digest = ?, consumed_at = ?
@@ -163,12 +179,15 @@ export class ReceiptShortcutStore {
           && raced.body_digest === bodyDigest) {
         await this.ensureRefinement(validation, raced.consumed_import_id, raced.household_id,
           raced.actor_member_id, bodyDigest);
+        await this.ensureBenchmark(comparison, raced.consumed_import_id, raced.household_id,
+          raced.actor_member_id);
         return { import: await this.requireImport(raced.household_id, raced.actor_member_id,
           raced.consumed_import_id), replayed: true };
       }
       throw new ReceiptShortcutStoreError("RECEIPT_SCAN_SESSION_CONSUMED");
     }
     await this.ensureRefinement(validation, id, session.household_id, session.actor_member_id, bodyDigest);
+    await this.ensureBenchmark(comparison, id, session.household_id, session.actor_member_id);
     return { import: await this.requireImport(session.household_id, session.actor_member_id, id), replayed: false };
   }
 
@@ -210,6 +229,42 @@ export class ReceiptShortcutStore {
       .retryImport(id, householdId, memberId);
   }
 
+  async selectImport(
+    householdId: string,
+    memberId: string,
+    id: string,
+    selection: ReceiptBenchmarkSelection,
+  ): Promise<PublicReceiptImport> {
+    const current = await this.requireImport(householdId, memberId, id);
+    if (current.shortcut_version !== 3 || !current.comparison) {
+      throw new ReceiptShortcutStoreError("RECEIPT_COMPARISON_NOT_FOUND");
+    }
+    if (current.selection && current.selection !== selection) {
+      throw new ReceiptShortcutStoreError("RECEIPT_BENCHMARK_ALREADY_SELECTED");
+    }
+    const validation = selection === "on_device" || selection === "private_cloud_compute"
+      ? current.comparison.runs.find((run) => run.model === selection)?.validation ?? null
+      : null;
+    const row = await this.database.prepare(`SELECT benchmark_id FROM receipt_shortcut_imports
+      WHERE id = ? AND household_id = ? AND actor_member_id = ? AND expires_at > ?`)
+      .bind(id, householdId, memberId, this.clock().toISOString()).first<{ benchmark_id: string | null }>();
+    if (!row?.benchmark_id) throw new ReceiptShortcutStoreError("RECEIPT_BENCHMARK_NOT_FOUND");
+    try {
+      await new ReceiptBenchmarkStore(this.database, this.clock)
+        .select(householdId, memberId, row.benchmark_id, selection);
+    } catch (error) {
+      if (error instanceof ReceiptBenchmarkStoreError) {
+        throw new ReceiptShortcutStoreError(error.code);
+      }
+      throw error;
+    }
+    await this.database.prepare(`UPDATE receipt_shortcut_imports
+      SET selection = ?, selected_validation_json = ?
+      WHERE id = ? AND household_id = ? AND actor_member_id = ? AND selection IS NULL`)
+      .bind(selection, validation ? JSON.stringify(validation) : null, id, householdId, memberId).run();
+    return this.requireImport(householdId, memberId, id);
+  }
+
   private async cleanup(): Promise<void> {
     const now = this.clock();
     await this.database.batch([
@@ -236,9 +291,24 @@ export class ReceiptShortcutStore {
     }
   }
 
+  private async ensureBenchmark(comparison: ReceiptModelComparison | null, importId: string,
+    householdId: string, memberId: string): Promise<void> {
+    if (!comparison) return;
+    const existing = await this.database.prepare(`SELECT benchmark_id FROM receipt_shortcut_imports
+      WHERE id = ?`).bind(importId).first<{ benchmark_id: string | null }>();
+    if (existing?.benchmark_id) return;
+    const benchmarkId = await new ReceiptBenchmarkStore(this.database, this.clock)
+      .record(householdId, memberId, comparison);
+    await this.database.prepare(`UPDATE receipt_shortcut_imports SET benchmark_id = ?
+      WHERE id = ? AND benchmark_id IS NULL`).bind(benchmarkId, importId).run();
+  }
+
   private async requireImport(householdId: string, memberId: string, id: string): Promise<PublicReceiptImport> {
     const row = await this.database.prepare(`SELECT receipt_import.id, receipt_import.shortcut_version,
-      receipt_import.pages_json, receipt_import.validation_json, receipt_import.created_at,
+      receipt_import.pages_json,
+      COALESCE(receipt_import.selected_validation_json, receipt_import.validation_json) AS validation_json,
+      receipt_import.comparison_json, receipt_import.benchmark_id, receipt_import.selection,
+      receipt_import.created_at,
       receipt_import.expires_at, refinement.id AS refinement_id, refinement.status AS refinement_status,
       refinement.error_code
       FROM receipt_shortcut_imports receipt_import
@@ -249,6 +319,8 @@ export class ReceiptShortcutStore {
     return { id: row.id, shortcut_version: row.shortcut_version,
       pages: JSON.parse(row.pages_json) as PublicReceiptImport["pages"],
       validation: row.validation_json ? JSON.parse(row.validation_json) as ReceiptValidationResult : null,
+      comparison: row.comparison_json ? JSON.parse(row.comparison_json) as ReceiptModelComparison : null,
+      selection: row.selection,
       refinement: row.refinement_id && row.refinement_status ? { id: row.refinement_id,
         status: row.refinement_status, error_code: row.error_code } : null,
       created_at: row.created_at, expires_at: row.expires_at };
