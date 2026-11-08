@@ -6,8 +6,13 @@ export interface ReceiptScanSession {
   comparison_enabled?: boolean;
   shortcut_name: "FinTracka Receipt Scanner";
   token: string;
-  upload_url: string;
+  handoff_contract: "fintracka_receipt_handoff/v1";
   expires_at: string;
+}
+
+interface ReceiptClipboard {
+  readText(): Promise<string>;
+  writeText(value: string): Promise<void>;
 }
 
 export type ReceiptScanResult =
@@ -89,6 +94,33 @@ export async function getReceiptScanResult(token: string): Promise<ReceiptScanRe
   return await mobileJson<ReceiptScanResult>("/api/v1/mobile/receipt-scan-sessions/result", {
     method: "POST", body: JSON.stringify({ token }),
   });
+}
+
+export async function completeReceiptScanFromClipboard(
+  session: ReceiptScanSession,
+  clipboard: ReceiptClipboard = navigator.clipboard,
+): Promise<string> {
+  let raw: string;
+  try {
+    raw = await clipboard.readText();
+  } catch {
+    throw new Error("Allow clipboard access so FinTracka can import the recognized receipt text.");
+  }
+  let value: unknown;
+  try { value = JSON.parse(raw); }
+  catch { throw new Error("The clipboard does not contain FinTracka receipt scan results."); }
+  if (!isReceiptHandoff(value)) {
+    throw new Error("The clipboard does not contain FinTracka receipt scan results.");
+  }
+  if (value.token !== session.token) {
+    throw new Error("These receipt results belong to a different or expired current scan.");
+  }
+  const result = await mobileJson<{ review_path: string }>(
+    "/api/v1/mobile/receipt-scan-sessions/complete",
+    { method: "POST", body: JSON.stringify(value) },
+  );
+  try { await clipboard.writeText(""); } catch { /* successful import is already single-use */ }
+  return result.review_path;
 }
 
 export function watchReceiptScanSession(
@@ -191,4 +223,14 @@ export function buildReceiptShortcutUrl(session: ReceiptScanSession): string {
     `text=${encodeURIComponent(JSON.stringify(session))}`,
   ].join("&");
   return `shortcuts://run-shortcut?${query}`;
+}
+
+function isReceiptHandoff(value: unknown): value is {
+  contract: "fintracka_receipt_handoff/v1"; token: string; capture: Record<string, unknown>;
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return record.contract === "fintracka_receipt_handoff/v1"
+    && typeof record.token === "string"
+    && Boolean(record.capture) && typeof record.capture === "object" && !Array.isArray(record.capture);
 }

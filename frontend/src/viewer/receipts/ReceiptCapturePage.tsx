@@ -3,13 +3,14 @@ import { Camera, ExternalLink, RotateCcw, X } from "lucide-react";
 
 import { MobileCommandApiError } from "../api";
 import { buildReceiptShortcutUrl, createReceiptScanSession, type ReceiptScanSession,
-  watchReceiptScanSession } from "./receiptShortcutApi";
+  completeReceiptScanFromClipboard, watchReceiptScanSession } from "./receiptShortcutApi";
 import { ReceiptBenchmarkSummary } from "./ReceiptBenchmarkSummary";
 
 export function ReceiptCapturePage({ navigate }: { navigate: (path: string) => void }) {
   const [session, setSession] = useState<ReceiptScanSession>();
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState("");
+  const [importing, setImporting] = useState(false);
   const errorRef = useRef<HTMLParagraphElement>(null);
 
   useEffect(() => {
@@ -31,6 +32,16 @@ export function ReceiptCapturePage({ navigate }: { navigate: (path: string) => v
     });
   }, [navigate, session]);
 
+  async function importResults() {
+    if (!session || importing) return;
+    setImporting(true); setError("");
+    try { navigate(await completeReceiptScanFromClipboard(session)); }
+    catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The receipt results could not be imported.");
+      setImporting(false);
+    }
+  }
+
   return <div className="viewer-page"><header className="viewer-heading"><div><span>Apple Vision</span><h1>Scan receipt</h1></div>
     <button className="icon-button" onClick={() => navigate("/receipts")} aria-label="Close"><X /></button></header>
     <section className="receipt-capture" aria-busy={!session && !error}>
@@ -40,7 +51,9 @@ export function ReceiptCapturePage({ navigate }: { navigate: (path: string) => v
       {session && <a className="receipt-shortcut-launch" href={buildReceiptShortcutUrl(session)}>
         <ExternalLink aria-hidden="true" />Scan with iPhone</a>}
       {session && <p role="status">After the scan finishes, tap <strong>Back to FinTracka</strong>.
-        This page will open the receipt automatically.</p>}
+        Then import the recognized text below.</p>}
+      {session && <button className="receipt-camera receipt-import-results" disabled={importing}
+        onClick={() => void importResults()}>{importing ? "Importing…" : "Import scan results"}</button>}
       {error && <><p className="receipt-error" role="alert" tabIndex={-1} ref={errorRef}>{error}</p>
         <button className="secondary-button" onClick={() => setAttempt((value) => value + 1)}><RotateCcw />Try again</button></>}
       <small className="receipt-session-note">The one-time connection expires in 10 minutes and is never saved in this browser.</small>

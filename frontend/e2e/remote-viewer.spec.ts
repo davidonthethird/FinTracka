@@ -265,7 +265,7 @@ test("iPhone receipt Shortcut handoff imports populated text without loading bro
   await page.route("**/api/v1/mobile/receipt-scan-sessions", (route) => route.fulfill({ status: 201, json: {
     contract: "receipt_scan_session/v1", shortcut_version: 2,
     shortcut_name: "FinTracka Receipt Scanner", token: "a".repeat(43),
-    upload_url: `${viewer}/api/v1/mobile/shortcut/receipt-imports`, expires_at: "2026-11-02T12:10:00.000Z",
+    handoff_contract: "fintracka_receipt_handoff/v1", expires_at: "2026-11-02T12:10:00.000Z",
   } }));
   await page.goto(`${viewer}/receipts/new`);
   const launch = page.getByRole("link", { name: "Scan with iPhone" });
