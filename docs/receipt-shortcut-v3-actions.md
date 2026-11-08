@@ -10,15 +10,16 @@ Comparison mode is temporary and feature gated. Installing the benchmark artifac
 2. Read `token` and `upload_url` from that Dictionary.
 3. Select one or more ordered receipt images from Photos.
 4. Run Apple Vision **Extract from Image** once over that ordered input.
-5. Record the start/end time around **Use Model → On-Device**, output Text, Follow Up off, broad world knowledge off.
-6. Record the start/end time around **Use Model → Cloud**, output Text, Follow Up off, broad world knowledge off.
-7. Generate a SHA-256 idempotency key from the current date and recognized text.
-8. POST one flat `receipt_shortcut_capture/v3` JSON body to the session upload URL with the bearer token.
-9. Show the user that both results were sent and instruct them to tap Back to FinTracka.
+5. Freeze the recognized OCR result into a plain-text value.
+6. Record the start/end time around **Use Model → On-Device**, output Text, Follow Up off, broad world knowledge off, then freeze its response into plain text.
+7. Record the start/end time around **Use Model → Cloud**, output Text, Follow Up off, broad world knowledge off, then freeze its response into plain text.
+8. Generate a SHA-256 idempotency key from the current date and plain recognized text.
+9. POST one flat `receipt_shortcut_capture/v3` JSON body to the session upload URL with the bearer token. The request references only the three plain-text values, never the photo-backed action outputs.
+10. Show the user that both results were sent and instruct them to tap Back to FinTracka.
 
 The repository artifact intentionally uses the photo library for repeatable A/B tests against the same private receipt corpus. The production v2 scanner's camera path is unchanged.
 
-The two Use Model actions contain the same prompt bytes and reference the same recognized text and ordered photo selection. Apple does not guarantee image analysis for the On-Device model; the benchmark UI explains that limitation.
+The two Use Model actions contain the same prompt bytes and reference the same recognized text and ordered photo selection. Their saved Shortcuts model values are `Apple Intelligence on Device` and `Apple Intelligence`; shorter display-like values import with empty selectors. Apple does not guarantee image analysis for the On-Device model; the benchmark UI explains that limitation.
 
 ## Flat upload body
 
@@ -37,7 +38,7 @@ private_cloud_compute_duration_ms
 private_cloud_compute_model_result OR private_cloud_compute_error_code
 ```
 
-The upload never contains a photo. Model output and recognized text live only on the existing expiring import. The 30-day benchmark table contains metadata only.
+The upload never contains a photo. Explicit Text actions remove photo provenance before the network boundary. Model output and recognized text live only on the existing expiring import. The 30-day benchmark table contains metadata only.
 
 ## Build verification
 
