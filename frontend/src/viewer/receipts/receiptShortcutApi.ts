@@ -109,15 +109,16 @@ export async function completeReceiptScanFromClipboard(
   let value: unknown;
   try { value = JSON.parse(raw); }
   catch { throw new Error("The clipboard does not contain FinTracka receipt scan results."); }
-  if (!isReceiptHandoff(value)) {
+  const handoff = parseReceiptHandoff(value);
+  if (!handoff) {
     throw new Error("The clipboard does not contain FinTracka receipt scan results.");
   }
-  if (value.token !== session.token) {
+  if (handoff.token !== session.token) {
     throw new Error("These receipt results belong to a different or expired current scan.");
   }
   const result = await mobileJson<{ review_path: string }>(
     "/api/v1/mobile/receipt-scan-sessions/complete",
-    { method: "POST", body: JSON.stringify(value) },
+    { method: "POST", body: JSON.stringify(handoff) },
   );
   try { await clipboard.writeText(""); } catch { /* successful import is already single-use */ }
   return result.review_path;
@@ -225,12 +226,57 @@ export function buildReceiptShortcutUrl(session: ReceiptScanSession): string {
   return `shortcuts://run-shortcut?${query}`;
 }
 
-function isReceiptHandoff(value: unknown): value is {
+function parseReceiptHandoff(value: unknown): {
   contract: "fintracka_receipt_handoff/v1"; token: string; capture: Record<string, unknown>;
-} {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  return record.contract === "fintracka_receipt_handoff/v1"
-    && typeof record.token === "string"
-    && Boolean(record.capture) && typeof record.capture === "object" && !Array.isArray(record.capture);
+} | null {
+  if (!isRecord(value) || value.contract !== "fintracka_receipt_handoff/v1"
+    || typeof value.token !== "string" || !isRecord(value.capture)) return null;
+  const capture = value.capture;
+  if (capture.contract !== "receipt_shortcut_capture/v3"
+    || typeof capture.idempotency_key !== "string"
+    || !/^[a-f0-9]{64}$/i.test(capture.idempotency_key)
+    || capture.shortcut_version !== 3
+    || typeof capture.text_base64 !== "string"
+    || !Array.isArray(capture.runs)) return null;
+  const text = decodeBase64Text(capture.text_base64);
+  if (text === null) return null;
+  const runs = capture.runs.map((run) => {
+    if (!isRecord(run)
+      || (run.model !== "on_device" && run.model !== "private_cloud_compute")
+      || run.status !== "completed"
+      || typeof run.duration_ms !== "number" || !Number.isFinite(run.duration_ms)
+      || run.duration_ms < 0
+      || typeof run.model_result_base64 !== "string") return null;
+    const modelResult = decodeBase64Text(run.model_result_base64);
+    return modelResult === null ? null : {
+      model: run.model, status: run.status, duration_ms: run.duration_ms,
+      model_result: modelResult,
+    };
+  });
+  if (runs.some((run) => run === null)) return null;
+  return {
+    contract: "fintracka_receipt_handoff/v1",
+    token: value.token,
+    capture: {
+      contract: capture.contract,
+      idempotency_key: capture.idempotency_key,
+      shortcut_version: capture.shortcut_version,
+      text,
+      runs,
+    },
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function decodeBase64Text(value: string): string | null {
+  const compact = value.replace(/\s/g, "");
+  if (!compact || compact.length % 4 !== 0
+    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(compact)) return null;
+  try {
+    const bytes = Uint8Array.from(atob(compact), (character) => character.charCodeAt(0));
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch { return null; }
 }

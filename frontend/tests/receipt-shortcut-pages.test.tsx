@@ -51,10 +51,23 @@ describe("receipt Shortcut pages", () => {
 
   it("imports a matching text-only clipboard handoff and clears it after success", async () => {
     const capture = { contract: "receipt_shortcut_capture/v3", idempotency_key: "a".repeat(64),
-      shortcut_version: 3, text: "SYNTHETIC MARKET\nTOTAL 4.50", runs: [] };
+      shortcut_version: 3, text: "SYNTHETIC MARKET\nTOTAL 4.50", runs: [
+        { model: "on_device", status: "completed", duration_ms: 125,
+          model_result: "{\"merchant\":\"SYNTHETIC MARKET\"}" },
+        { model: "private_cloud_compute", status: "completed", duration_ms: 240,
+          model_result: "{\"merchant\":\"SYNTHETIC MARKET\",\"total\":4.5}" },
+      ] };
+    const encodedCapture = {
+      contract: capture.contract, idempotency_key: capture.idempotency_key,
+      shortcut_version: capture.shortcut_version,
+      text_base64: btoa(capture.text),
+      runs: capture.runs.map(({ model, status, duration_ms, model_result }) => ({
+        model, status, duration_ms, model_result_base64: btoa(model_result),
+      })),
+    };
     const clipboard = {
       readText: vi.fn(async () => JSON.stringify({
-        contract: "fintracka_receipt_handoff/v1", token: session.token, capture,
+        contract: "fintracka_receipt_handoff/v1", token: session.token, capture: encodedCapture,
       })),
       writeText: vi.fn(async () => undefined),
     };
@@ -77,6 +90,10 @@ describe("receipt Shortcut pages", () => {
     vi.stubGlobal("fetch", fetchMock);
     for (const text of ["not json", JSON.stringify({ contract: "wrong" }), JSON.stringify({
       contract: "fintracka_receipt_handoff/v1", token: "another-session", capture: {},
+    }), JSON.stringify({
+      contract: "fintracka_receipt_handoff/v1", token: session.token,
+      capture: { contract: "receipt_shortcut_capture/v3", idempotency_key: "a".repeat(64),
+        shortcut_version: 3, text_base64: "%%%", runs: [] },
     })]) {
       const clipboard = { readText: vi.fn(async () => text), writeText: vi.fn() };
       await expect(completeReceiptScanFromClipboard(session, clipboard)).rejects.toThrow(
