@@ -261,23 +261,35 @@ test("authorized household members can choose a scope, replace, and cancel a cla
 
 test("iPhone receipt Shortcut handoff imports populated text without loading browser OCR", async ({ page }) => {
   const ocrRequests: string[] = [];
-  page.on("request", (request) => { if (/receipt-ocr|paddle|onnx/i.test(request.url())) ocrRequests.push(request.url()); });
-  await page.route("**/api/v1/mobile/receipt-scan-sessions", (route) => route.fulfill({ status: 201, json: {
-    contract: "receipt_scan_session/v1", shortcut_version: 2,
-    shortcut_name: "FinTracka Receipt Scanner", token: "a".repeat(43),
-    handoff_contract: "fintracka_receipt_handoff/v1", expires_at: "2026-11-02T12:10:00.000Z",
-  } }));
-  await page.goto(`${viewer}/receipts/new`);
-  const launch = page.getByRole("link", { name: "Scan with iPhone" });
-  await expect(launch).toBeVisible();
-  const shortcutUrl = new URL(await launch.getAttribute("href") ?? "");
-  expect(shortcutUrl.protocol).toBe("shortcuts:");
-  expect(shortcutUrl.searchParams.get("name")).toBe("FinTracka Receipt Scanner");
-  expect(page.locator('input[type="file"]')).toHaveCount(0);
-
+  const token = "a".repeat(43);
   const imported = { id: "00000000-0000-4000-8000-000000000001", shortcut_version: 1,
     pages: [{ page_index: 0, text: "SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50" }],
     created_at: "2026-11-02T12:00:00.000Z", expires_at: "2026-11-02T12:30:00.000Z" };
+  const clipboardHandoff = JSON.stringify({ contract: "fintracka_receipt_handoff/v1", token,
+    capture: { contract: "receipt_shortcut_capture/v3", idempotency_key: "b".repeat(64),
+      shortcut_version: 3,
+      text_base64: Buffer.from("SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50").toString("base64"),
+      runs: ["on_device", "private_cloud_compute"].map((model) => ({ model,
+        status: "completed", duration_ms: 10,
+        model_result_base64: Buffer.from("{\"merchant\":\"SYNTHETIC MARKET\"}").toString("base64"),
+      })) } });
+  await page.addInitScript((text) => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+      readText: async () => text,
+      writeText: async (value: string) => { (window as any).__clipboardCleared = value; },
+    } });
+  }, clipboardHandoff);
+  page.on("request", (request) => { if (/receipt-ocr|paddle|onnx/i.test(request.url())) ocrRequests.push(request.url()); });
+  await page.route("**/api/v1/mobile/receipt-scan-sessions", (route) => route.fulfill({ status: 201, json: {
+    contract: "receipt_scan_session/v1", shortcut_version: 2,
+    shortcut_name: "FinTracka Receipt Scanner", token,
+    handoff_contract: "fintracka_receipt_handoff/v1", expires_at: "2026-11-02T12:10:00.000Z",
+  } }));
+  let completionBody: any;
+  await page.route("**/api/v1/mobile/receipt-scan-sessions/complete", async (route) => {
+    completionBody = route.request().postDataJSON();
+    await route.fulfill({ status: 201, json: { review_path: `/receipts/import/${imported.id}` } });
+  });
   let createdBody: any;
   await page.route(`**/api/v1/mobile/receipt-imports/${imported.id}`, async (route) => {
     if (route.request().method() === "DELETE") await route.fulfill({ status: 204, body: "" });
@@ -289,8 +301,19 @@ test("iPhone receipt Shortcut handoff imports populated text without loading bro
       revision: 1, digest: "a".repeat(64), created_at: "2026-11-02", updated_at: "2026-11-02",
       retention_at: "2027-01-31" }, replayed: false } });
   });
-  await page.goto(`${viewer}/receipts/import/${imported.id}`);
+  await page.goto(`${viewer}/receipts/new`);
+  const launch = page.getByRole("link", { name: "Scan with iPhone" });
+  await expect(launch).toBeVisible();
+  const shortcutUrl = new URL(await launch.getAttribute("href") ?? "");
+  expect(shortcutUrl.protocol).toBe("shortcuts:");
+  expect(shortcutUrl.searchParams.get("name")).toBe("FinTracka Receipt Scanner");
+  expect(page.locator('input[type="file"]')).toHaveCount(0);
+  await page.getByRole("button", { name: "Import scan results" }).click();
   await expect(page.getByRole("heading", { name: "Receipt details" })).toBeVisible();
+  expect(completionBody.capture).toMatchObject({ text: "SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50",
+    runs: [{ model: "on_device", model_result: "{\"merchant\":\"SYNTHETIC MARKET\"}" },
+      { model: "private_cloud_compute", model_result: "{\"merchant\":\"SYNTHETIC MARKET\"}" }] });
+  expect(await page.evaluate(() => (window as any).__clipboardCleared)).toBe("");
   expect(createdBody.idempotency_key).toBe(`shortcut-import-${imported.id}`);
   expect(createdBody.draft).toMatchObject({ merchant: "SYNTHETIC MARKET", total_minor: 450 });
   expect(ocrRequests).toEqual([]);
