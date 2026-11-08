@@ -16,11 +16,12 @@ if ! command -v python >/dev/null 2>&1; then
   PATH="$main_repo/.venv/bin:$PATH"
   export PATH
 fi
-(cd "$repo_dir/frontend" && npm run test:e2e -- --grep "receipt model comparison waits")
+(cd "$repo_dir/frontend" && npm run test:e2e -- --grep "receipt")
+python -m pytest "$repo_dir/tests/test_receipt_shortcut_privacy.py" -q
 python3 "$shortcut_skill/scripts/validate_shortcut.py" \
   "$repo_dir/shortcuts/FinTracka Receipt Model Comparison.xml" \
   --target-platform all --target-macos 27
-test -s "$repo_dir/shortcuts/FinTracka Receipt Model Comparison.shortcut"
+test -s "$repo_dir/shortcuts/FinTracka Receipt Scanner.shortcut"
 node "$repo_dir/scripts/summarize-receipt-benchmark.mjs" \
   "$repo_dir/scripts/receipt-benchmark-truth.template.json" \
   "$repo_dir/scripts/receipt-benchmark-reviewed-results.example.json" >/dev/null
