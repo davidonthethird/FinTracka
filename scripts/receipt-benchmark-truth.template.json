@@ -1,0 +1,13 @@
+{
+  "contract": "receipt_benchmark_truth/v1",
+  "receipts": [
+    { "id": "target", "photo_sha256": "", "merchant": "", "total_cents": null, "lines": [] },
+    { "id": "acme", "photo_sha256": "", "merchant": "", "total_cents": null, "lines": [] },
+    { "id": "lowes", "photo_sha256": "", "merchant": "", "total_cents": null, "lines": [] },
+    { "id": "stop-and-shop", "photo_sha256": "", "merchant": "", "total_cents": null, "lines": [] },
+    { "id": "home-depot", "photo_sha256": "", "merchant": "", "total_cents": null, "lines": [] },
+    { "id": "screen-photo", "photo_sha256": "", "merchant": "", "total_cents": null, "lines": [] },
+    { "id": "faded-or-crumpled", "photo_sha256": "", "merchant": "", "total_cents": null, "lines": [] },
+    { "id": "multi-page", "photo_sha256": "", "merchant": "", "total_cents": null, "lines": [] }
+  ]
+}

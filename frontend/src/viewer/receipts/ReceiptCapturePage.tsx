@@ -4,6 +4,7 @@ import { Camera, ExternalLink, RotateCcw, X } from "lucide-react";
 import { MobileCommandApiError } from "../api";
 import { buildReceiptShortcutUrl, createReceiptScanSession, type ReceiptScanSession,
   watchReceiptScanSession } from "./receiptShortcutApi";
+import { ReceiptBenchmarkSummary } from "./ReceiptBenchmarkSummary";
 
 export function ReceiptCapturePage({ navigate }: { navigate: (path: string) => void }) {
   const [session, setSession] = useState<ReceiptScanSession>();
@@ -47,5 +48,6 @@ export function ReceiptCapturePage({ navigate }: { navigate: (path: string) => v
         <p>Install version {session?.shortcut_version ?? 2} and name it exactly <strong>{session?.shortcut_name ?? "FinTracka Receipt Scanner"}</strong>. If it still will not open, run it once in the Shortcuts app to accept permissions, return here, and start a new scan.</p>
       </details>
     </section>
+    {session?.comparison_enabled && <ReceiptBenchmarkSummary />}
   </div>;
 }

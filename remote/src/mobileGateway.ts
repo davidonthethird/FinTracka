@@ -30,6 +30,7 @@ import {
 import { ReceiptShortcutStore } from "./receiptShortcutStore";
 import { handleReceiptRefinementMac, mapReceiptRefinementError } from "./receiptRefinementGateway";
 import { ReceiptRefinementStore } from "./receiptRefinementStore";
+import { ReceiptBenchmarkStore } from "./receiptBenchmarkStore";
 
 export interface MobileGatewayEnv {
   COMMANDS: D1Database;
@@ -43,6 +44,7 @@ export interface MobileGatewayEnv {
   FEATURE_RECEIPT_MATCHING?: string;
   FEATURE_RECEIPT_SHORTCUT?: string;
   FEATURE_RECEIPT_REFINEMENT?: string;
+  FEATURE_RECEIPT_MODEL_COMPARISON?: string;
 }
 
 interface GatewayDependencies {
@@ -87,6 +89,8 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
       const refinementEnabled = receiptShortcutEnabled(env.FEATURE_RECEIPT_REFINEMENT);
       const shortcutStore = new ReceiptShortcutStore(env.COMMANDS, now, { refinementEnabled });
       const refinementStore = new ReceiptRefinementStore(env.COMMANDS, now);
+      const benchmarkStore = new ReceiptBenchmarkStore(env.COMMANDS, now);
+      const comparisonEnabled = receiptShortcutEnabled(env.FEATURE_RECEIPT_MODEL_COMPARISON);
       try {
         if (!validSeparateAudiences(env.ACCESS_USER_AUD, env.ACCESS_MAC_AUD)) {
           return errorResponse(503, "MOBILE_AUTH_MISCONFIGURED");
@@ -131,7 +135,7 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
         }
         if (receiptShortcutEnabled(env.FEATURE_RECEIPT_SHORTCUT)) {
           const shortcutResponse = await handleReceiptShortcutBrowser(
-            request, url, shortcutStore, member,
+            request, url, shortcutStore, member, { comparisonEnabled, benchmarkStore },
           );
           if (shortcutResponse) return shortcutResponse;
         }

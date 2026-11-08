@@ -27,6 +27,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await env.COMMANDS.batch([
+    env.COMMANDS.prepare("DELETE FROM receipt_model_benchmarks"),
     env.COMMANDS.prepare("DELETE FROM receipt_shortcut_imports"),
     env.COMMANDS.prepare("DELETE FROM receipt_scan_sessions"),
     env.COMMANDS.prepare("DELETE FROM receipt_events"),
@@ -106,6 +107,56 @@ describe("receipt shortcut gateway", () => {
     ), testEnv)).status).toBe(404);
   });
 
+  it("advertises v3 only behind the comparison flag and isolates selection and summaries", async () => {
+    const gateway = makeGateway();
+    const testEnv = gatewayEnv(true, true);
+    const sessionResponse = await gateway.fetch(userRequest(
+      "/api/v1/mobile/receipt-scan-sessions", json({}),
+    ), testEnv);
+    expect(await sessionResponse.clone().json()).toMatchObject({
+      shortcut_version: 3,
+      comparison_enabled: true,
+    });
+    const session = await sessionResponse.json() as { token: string };
+    const uploaded = await gateway.fetch(shortcutRequest(v3Capture(), session.token), testEnv);
+    expect(uploaded.status).toBe(201);
+    const { import_id: importId } = await uploaded.json() as { import_id: string };
+
+    const before = await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipt-imports/${importId}`,
+    ), testEnv);
+    const beforeText = await before.text();
+    expect(beforeText).not.toContain("model_result");
+    expect(JSON.parse(beforeText)).toMatchObject({ import: {
+      shortcut_version: 3, validation: null, selection: null,
+      comparison: { recommendation: "tie", runs: [{ model: "on_device" },
+        { model: "private_cloud_compute" }] },
+    } });
+
+    const forbidden = await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipt-imports/${importId}/selection`,
+      json({ selection: "on_device" }), "other-token",
+    ), testEnv);
+    expect(forbidden.status).toBe(404);
+    const selected = await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipt-imports/${importId}/selection`,
+      json({ selection: "on_device" }),
+    ), testEnv);
+    expect(selected.status).toBe(200);
+    expect(await selected.json()).toMatchObject({ import: {
+      selection: "on_device", validation: { status: "accepted" },
+    } });
+
+    const summary = await gateway.fetch(userRequest(
+      "/api/v1/mobile/receipt-model-benchmarks/summary",
+    ), testEnv);
+    expect(summary.status).toBe(200);
+    expect(summary.headers.get("Cache-Control")).toBe("no-store");
+    expect(await summary.json()).toMatchObject({ summary: {
+      total: 1, selections: { on_device: 1 },
+    } });
+  });
+
   it("lets the originating web app discover the completed scan without a browser redirect", async () => {
     const gateway = makeGateway();
     const testEnv = gatewayEnv(true);
@@ -169,7 +220,7 @@ describe("receipt shortcut gateway", () => {
       }),
       new Request(`${ORIGIN}/api/v1/mobile/shortcut/receipt-imports`, {
         method: "POST", headers: { Authorization: `Bearer ${session.token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ ...capture(), padding: "x".repeat(140_000) }),
+        body: JSON.stringify({ ...capture(), padding: "x".repeat(270_000) }),
       }),
     ];
     const statuses = [];
@@ -196,7 +247,7 @@ function makeGateway(clock: () => Date = () => NOW) {
   return createMobileGateway({ verifyAccessToken: verifier, now: clock });
 }
 
-function gatewayEnv(enabled: boolean): MobileGatewayEnv {
+function gatewayEnv(enabled: boolean, comparison = false): MobileGatewayEnv {
   return {
     COMMANDS: env.COMMANDS,
     SNAPSHOTS: {} as R2Bucket,
@@ -207,6 +258,26 @@ function gatewayEnv(enabled: boolean): MobileGatewayEnv {
     HOUSEHOLD_NAME: "Shortcut gateway household",
     FEATURE_RECEIPT_DRAFTS: "true",
     FEATURE_RECEIPT_SHORTCUT: enabled ? "true" : "false",
+    FEATURE_RECEIPT_MODEL_COMPARISON: comparison ? "true" : "false",
+  };
+}
+
+function v3Capture() {
+  const model_result = JSON.stringify({
+    merchant: { value: "Synthetic Market", evidence: "Synthetic Market" },
+    date: null, subtotal: null, discounts: [], tax: null, tip: null, fees: [],
+    total: { value_cents: 1000, evidence: "TOTAL 10.00" },
+    lines: [{ description: "ITEM", amount_cents: 1000,
+      description_evidence: "ITEM 10.00", amount_evidence: "ITEM 10.00" }],
+  });
+  return {
+    contract: "receipt_shortcut_capture/v3",
+    idempotency_key: "a".repeat(64), shortcut_version: 3,
+    text: "Synthetic Market\nITEM 10.00\nTOTAL 10.00",
+    runs: [
+      { model: "on_device", status: "completed", duration_ms: 1000, model_result },
+      { model: "private_cloud_compute", status: "completed", duration_ms: 2000, model_result },
+    ],
   };
 }
 

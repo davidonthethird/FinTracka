@@ -296,6 +296,61 @@ test("iPhone receipt Shortcut handoff imports populated text without loading bro
   expect(ocrRequests).toEqual([]);
 });
 
+test("receipt model comparison waits for an explicit choice before creating a draft", async ({ page }) => {
+  const importId = "00000000-0000-4000-8000-000000000005";
+  const validation = {
+    status: "accepted" as const,
+    issues: [],
+    receipt: {
+      merchant: { value: "SYNTHETIC MARKET", evidence: "SYNTHETIC MARKET" },
+      date: null,
+      subtotal: { value_cents: 450, evidence: "4.50" },
+      discounts: [], tax: null, tip: null, fees: [],
+      total: { value_cents: 450, evidence: "TOTAL 4.50" },
+      lines: [{ description: "APPLES", amount_cents: 450,
+        description_evidence: "APPLES", amount_evidence: "4.50" }],
+    },
+  };
+  let selection: "on_device" | null = null;
+  let createCalls = 0;
+  await page.route(`**/api/v1/mobile/receipt-imports/${importId}/selection`, async (route) => {
+    selection = "on_device";
+    await route.fulfill({ json: { import: { id: importId } } });
+  });
+  await page.route(`**/api/v1/mobile/receipt-imports/${importId}`, async (route) => {
+    if (route.request().method() === "DELETE") {
+      await route.fulfill({ status: 204, body: "" }); return;
+    }
+    await route.fulfill({ json: { import: {
+      id: importId, shortcut_version: 3, selection,
+      pages: [{ page_index: 0, text: "SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50" }],
+      validation: selection ? validation : null,
+      comparison: { recommendation: "tie", material_disagreement: false, runs: [
+        { model: "on_device", status: "completed", duration_ms: 1200, validation },
+        { model: "private_cloud_compute", status: "completed", duration_ms: 1800, validation },
+      ] },
+      created_at: "2026-11-08T12:00:00.000Z", expires_at: "2026-11-08T12:30:00.000Z",
+    } } });
+  });
+  await page.route("**/api/v1/mobile/receipts", async (route) => {
+    createCalls += 1;
+    const body = route.request().postDataJSON();
+    await route.fulfill({ status: 201, json: { draft: { ...body.draft, id: "comparison-draft-1",
+      revision: 1, digest: "a".repeat(64), created_at: "2026-11-08", updated_at: "2026-11-08",
+      retention_at: "2027-02-06" }, replayed: false } });
+  });
+
+  await page.goto(`${viewer}/receipts/import/${importId}`);
+  await expect(page.getByRole("heading", { name: "Compare Apple results" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "On-device" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Private Cloud Compute" })).toBeVisible();
+  expect(createCalls).toBe(0);
+
+  await page.getByRole("button", { name: "Use On-device" }).click();
+  await expect(page.getByRole("heading", { name: "Receipt details" })).toBeVisible();
+  expect(createCalls).toBe(1);
+});
+
 test("leaving a receipt import before it loads does not create a draft", async ({ page }) => {
   const importId = "00000000-0000-4000-8000-000000000004";
   let releaseImport!: () => void;

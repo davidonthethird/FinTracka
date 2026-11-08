@@ -133,6 +133,24 @@ describe("receipt shortcut v2", () => {
     expect(result.receipt.lines).toEqual([]);
   });
 
+  it("keeps unique flattened item columns reviewable without treating a UPC as a price", () => {
+    const flattened = `SHOP\nMILK\nBREAD\n3.49\n2.50\nSUBTOTAL 5.99\nTAX 0.36\nTOTAL 6.35\n012345678905`;
+    const reviewable = validateReceiptInterpretation(flattened, interpretation({
+      merchant: { value: "SHOP", evidence: "SHOP" },
+    }));
+    expect(reviewable.status).toBe("needs_review");
+    expect(reviewable.issues).toContain("layout_association_unverified");
+    expect(reviewable.receipt.lines).toHaveLength(2);
+
+    const upc = validateReceiptInterpretation("SHOP\nMILK\n012345678905\nTOTAL 3.49", interpretation({
+      merchant: { value: "SHOP", evidence: "SHOP" }, subtotal: null, tax: null,
+      total: { value_cents: 349, evidence: "TOTAL 3.49" },
+      lines: [{ description: "MILK", amount_cents: 12345678905,
+        description_evidence: "MILK", amount_evidence: "012345678905" }],
+    }));
+    expect(upc.receipt.lines).toEqual([]);
+  });
+
   it("requires a merchant, total, priced line, and reconciled arithmetic without subtotal", () => {
     const text = "SHOP\nITEM 5.99\nTAX 0.36\nTOTAL 6.35";
     const valid = validateReceiptInterpretation(text, interpretation({

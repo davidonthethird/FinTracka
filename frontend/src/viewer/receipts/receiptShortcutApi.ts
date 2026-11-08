@@ -2,7 +2,8 @@ import { MobileCommandApiError, mobileJson } from "../api";
 
 export interface ReceiptScanSession {
   contract: "receipt_scan_session/v1";
-  shortcut_version: 2;
+  shortcut_version: 2 | 3;
+  comparison_enabled?: boolean;
   shortcut_name: "FinTracka Receipt Scanner";
   token: string;
   upload_url: string;
@@ -15,13 +16,48 @@ export type ReceiptScanResult =
 
 export interface PublicReceiptImport {
   id: string;
-  shortcut_version: 1 | 2;
+  shortcut_version: 1 | 2 | 3;
   pages: { page_index: number; text: string }[];
   validation?: ReceiptValidation | null;
+  comparison?: ReceiptModelComparison | null;
+  selection?: ReceiptModelSelection | null;
   refinement?: { id: string; status: "pending" | "claimed" | "completed" | "failed";
     error_code: string | null } | null;
   created_at: string;
   expires_at: string;
+}
+
+export type ReceiptModelRoute = "on_device" | "private_cloud_compute";
+export type ReceiptModelSelection = ReceiptModelRoute | "tie" | "neither";
+
+export interface ReceiptModelRun {
+  model: ReceiptModelRoute;
+  status: "completed" | "unavailable" | "rate_limited" | "failed";
+  duration_ms: number;
+  error_code?: string;
+  validation: ReceiptValidation | null;
+}
+
+export interface ReceiptModelComparison {
+  runs: ReceiptModelRun[];
+  recommendation: ReceiptModelSelection;
+  material_disagreement: boolean;
+}
+
+export interface ReceiptBenchmarkSummary {
+  total: number;
+  selections: Record<ReceiptModelSelection | "unselected", number>;
+  on_device: ReceiptRouteSummary;
+  private_cloud_compute: ReceiptRouteSummary;
+}
+
+export interface ReceiptRouteSummary {
+  completed: number;
+  accepted: number;
+  needs_review: number;
+  needs_refinement: number;
+  unavailable: number;
+  median_duration_ms: number | null;
 }
 
 export interface ReceiptValidation {
@@ -122,6 +158,30 @@ export async function retryReceiptImport(id: string): Promise<void> {
   await mobileJson(`/api/v1/mobile/receipt-imports/${encodeURIComponent(id)}/retry`, {
     method: "POST", body: JSON.stringify({}),
   });
+}
+
+export async function selectReceiptModelResult(
+  id: string,
+  selection: ReceiptModelSelection,
+): Promise<PublicReceiptImport> {
+  return (await mobileJson<{ import: PublicReceiptImport }>(
+    `/api/v1/mobile/receipt-imports/${encodeURIComponent(id)}/selection`,
+    { method: "POST", body: JSON.stringify({ selection }) },
+  )).import;
+}
+
+export async function getReceiptBenchmarkSummary(): Promise<ReceiptBenchmarkSummary> {
+  return (await mobileJson<{ summary: ReceiptBenchmarkSummary }>(
+    "/api/v1/mobile/receipt-model-benchmarks/summary",
+  )).summary;
+}
+
+export async function deleteReceiptBenchmarkHistory(): Promise<void> {
+  const response = await fetch("/api/v1/mobile/receipt-model-benchmarks/summary", {
+    method: "DELETE", cache: "no-store", credentials: "same-origin",
+  });
+  if (!response.ok) throw new MobileCommandApiError(response.status,
+    "RECEIPT_BENCHMARK_DELETE_FAILED", "Benchmark history could not be removed.");
 }
 
 export function buildReceiptShortcutUrl(session: ReceiptScanSession): string {

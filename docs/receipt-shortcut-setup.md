@@ -1,5 +1,7 @@
 # FinTracka Receipt Scanner
 
+> **Temporary comparison build:** The signed version-3 benchmark artifact and exact action list are documented in [receipt-shortcut-v3-actions.md](receipt-shortcut-v3-actions.md). Do not replace the canonical version-2 scanner until `FEATURE_RECEIPT_MODEL_COMPARISON` is deliberately enabled for the private household benchmark. With the flag off, all existing version-2 behavior below is unchanged.
+
 This is the only supported receipt Shortcut. It uses Apple Vision and Apple Intelligence on the iPhone first, then queues only scans that fail deterministic evidence and arithmetic checks for a second on-device pass on David's Mac. No paid OCR or cloud LLM is used.
 
 The Shortcut must be named exactly **FinTracka Receipt Scanner** on both phones. Delete or rename every older FinTracka receipt Shortcut before installing it.

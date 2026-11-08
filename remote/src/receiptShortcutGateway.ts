@@ -1,11 +1,15 @@
 import { z } from "zod";
 
+import { ReceiptBenchmarkStore } from "./receiptBenchmarkStore";
 import { ReceiptShortcutStore, ReceiptShortcutStoreError } from "./receiptShortcutStore";
 
-const BODY_LIMIT = 128 * 1024;
+const BODY_LIMIT = 256 * 1024;
 const emptyObject = z.object({}).strict();
 const sessionResultInput = z.object({
   token: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+}).strict();
+const selectionInput = z.object({
+  selection: z.enum(["on_device", "private_cloud_compute", "tie", "neither"]),
 }).strict();
 
 export class ReceiptShortcutGatewayError extends Error {
@@ -39,7 +43,20 @@ export async function handleReceiptShortcutBrowser(
   url: URL,
   store: ReceiptShortcutStore,
   member: { id: string; household_id: string },
+  options: { comparisonEnabled?: boolean; benchmarkStore?: ReceiptBenchmarkStore } = {},
 ): Promise<Response | null> {
+  if (url.pathname === "/api/v1/mobile/receipt-model-benchmarks/summary") {
+    if (!options.comparisonEnabled || !options.benchmarkStore) return null;
+    if (request.method === "GET") {
+      return json(200, { summary: await options.benchmarkStore.listSummary(member.household_id, member.id) });
+    }
+    if (request.method === "DELETE") {
+      assertSameOrigin(request);
+      await options.benchmarkStore.deleteHistory(member.household_id, member.id);
+      return new Response(null, { status: 204, headers: responseHeaders() });
+    }
+    return methodNotAllowed("GET, DELETE");
+  }
   if (url.pathname === "/api/v1/mobile/receipt-scan-sessions/result") {
     if (request.method !== "POST") return methodNotAllowed("POST");
     const input = sessionResultInput.safeParse(await readBrowserJson(request, 4_096));
@@ -57,12 +74,23 @@ export async function handleReceiptShortcutBrowser(
     const session = await store.createSession(member.household_id, member.id);
     return json(201, {
       contract: "receipt_scan_session/v1",
-      shortcut_version: 2,
+      shortcut_version: options.comparisonEnabled ? 3 : 2,
+      comparison_enabled: options.comparisonEnabled ?? false,
       shortcut_name: "FinTracka Receipt Scanner",
       token: session.token,
       upload_url: `${url.origin}/api/v1/mobile/shortcut/receipt-imports`,
       expires_at: session.expires_at,
     });
+  }
+  const selection = url.pathname.match(/^\/api\/v1\/mobile\/receipt-imports\/([^/]+)\/selection$/);
+  if (selection) {
+    if (!options.comparisonEnabled) return null;
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    const input = selectionInput.safeParse(await readBrowserJson(request, 4_096));
+    if (!input.success) throw new ReceiptShortcutGatewayError(400, "INVALID_RECEIPT_SELECTION");
+    const selected = await store.selectImport(member.household_id, member.id,
+      decodeURIComponent(selection[1]), input.data.selection);
+    return json(200, { import: selected });
   }
   const item = url.pathname.match(/^\/api\/v1\/mobile\/receipt-imports\/([^/]+)$/);
   const retry = url.pathname.match(/^\/api\/v1\/mobile\/receipt-imports\/([^/]+)\/retry$/);
@@ -89,10 +117,11 @@ export function mapReceiptShortcutError(error: unknown): Response | null {
   if (error instanceof ReceiptShortcutGatewayError) return errorResponse(error.status, error.code);
   if (!(error instanceof ReceiptShortcutStoreError)) return null;
   const status = error.code === "RECEIPT_IMPORT_NOT_FOUND" ? 404
+    : ["RECEIPT_COMPARISON_NOT_FOUND", "RECEIPT_BENCHMARK_NOT_FOUND"].includes(error.code) ? 404
     : error.code === "MEMBER_NOT_AUTHORIZED" ? 403
       : ["RECEIPT_SCAN_SESSION_RATE_LIMITED", "TOO_MANY_RECEIPT_IMPORTS"].includes(error.code) ? 429
         : error.code === "RECEIPT_SHORTCUT_BODY_TOO_LARGE" ? 413
-          : error.code === "RECEIPT_SCAN_SESSION_CONSUMED" ? 409
+          : ["RECEIPT_SCAN_SESSION_CONSUMED", "RECEIPT_BENCHMARK_ALREADY_SELECTED"].includes(error.code) ? 409
             : ["RECEIPT_SCAN_SESSION_INVALID", "RECEIPT_SCAN_SESSION_EXPIRED"].includes(error.code) ? 401
               : 400;
   return errorResponse(status, error.code);

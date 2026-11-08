@@ -1,5 +1,11 @@
 # Receipt processing runbook
 
+## Temporary Apple model benchmark
+
+`FEATURE_RECEIPT_MODEL_COMPARISON` advertises Shortcut contract version 3 and enables an authenticated, member-scoped comparison between Apple Intelligence On-Device and Private Cloud Compute. It is false by default in every committed environment. Full model results remain on the expiring import; the 30-day benchmark table stores only route/status/duration/validation/selection metadata. Images never leave the iPhone.
+
+Do not enable this flag as part of an ordinary receipt deployment. First install the signed benchmark Shortcut, run the private acceptance set, review both routes against the actual receipt images, and then disable comparison mode after choosing a production route. See [receipt-model-comparison-feasibility.md](receipt-model-comparison-feasibility.md) and [receipt-shortcut-v3-actions.md](receipt-shortcut-v3-actions.md).
+
 FinTracka uses Apple's on-device text recognition and Apple Intelligence through the reviewed `FinTracka Receipt Scanner` iPhone Shortcut. The first pass uploads only recognized text plus evidence-citing structured fields through a ten-minute, one-use, member-bound session. Only a scan that fails deterministic evidence/arithmetic validation places its original pages in the private shared iCloud queue for Apple Vision and Foundation Models refinement on David's Mac. D1 never stores images. A reviewed structured draft is stored in household D1, and SQLite on the Mac remains the financial system of record. Build and deploy the Shortcut only from [receipt-shortcut-setup.md](receipt-shortcut-setup.md).
 
 ## Security and correctness boundaries

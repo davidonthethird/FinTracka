@@ -6,7 +6,9 @@ import { draftFromParsedReceipt, draftFromValidatedReceipt, isUsableParsedReceip
   isUsableValidatedReceipt } from "./receiptDraftBuilder";
 import { receiptPagesFromPlainText } from "./receiptPlainText";
 import { parseReceiptPages } from "./receiptParser";
-import { deleteReceiptImport, getReceiptImport, retryReceiptImport, type PublicReceiptImport } from "./receiptShortcutApi";
+import { ReceiptModelComparison } from "./ReceiptModelComparison";
+import { deleteReceiptImport, getReceiptImport, retryReceiptImport, selectReceiptModelResult,
+  type PublicReceiptImport, type ReceiptModelSelection } from "./receiptShortcutApi";
 import { useReceipts } from "./ReceiptProvider";
 import type { ReceiptDraft, ReceiptDraftV1 } from "./types";
 
@@ -17,6 +19,7 @@ interface FinalizerDependencies {
 }
 
 export type ReceiptImportResult = { status: "created"; draft: ReceiptDraft }
+  | { status: "comparing"; imported: PublicReceiptImport }
   | { status: "unusable"; imported: PublicReceiptImport }
   | { status: "refining"; imported: PublicReceiptImport }
   | { status: "failed"; imported: PublicReceiptImport }
@@ -30,7 +33,10 @@ export async function finalizeReceiptImport(
     return { status: "refining", imported };
   }
   if (imported.refinement?.status === "failed") return { status: "failed", imported };
-  if (imported.shortcut_version === 2) {
+  if (imported.shortcut_version === 3 && !imported.selection) {
+    return { status: "comparing", imported };
+  }
+  if (imported.shortcut_version === 2 || imported.shortcut_version === 3) {
     if (imported.validation?.receipt && imported.validation.status !== "needs_refinement"
         && isUsableValidatedReceipt(imported.validation.receipt)) {
       if (dependencies.cancelled?.()) return { status: "cancelled" };
@@ -71,12 +77,14 @@ export function ReceiptShortcutImportPage({ id, navigate }: { id: string; naviga
       if (!active) return;
       if (result.status === "created") {
         navigate(`/receipts/${encodeURIComponent(result.draft.id)}`);
-      } else if (result.status === "unusable" || result.status === "refining" || result.status === "failed") {
-        const waiting = result.status === "refining";
-        setImported(result.imported);
-        setError(waiting
+      } else if (["unusable", "refining", "failed", "comparing"].includes(result.status)) {
+        const visible = result as Exclude<ReceiptImportResult, { status: "created" | "cancelled" }>;
+        const waiting = visible.status === "refining";
+        setImported(visible.imported);
+        setError(visible.status === "comparing" ? ""
+          : waiting
           ? "This receipt needs a closer look. Your Mac will refine it when it is awake; this page checks automatically."
-          : result.status === "failed"
+          : visible.status === "failed"
             ? "The Mac could not safely reconcile this receipt. Retake clearer photos or discard this scan."
             : "The recognized text did not contain a usable merchant, total, or priced item.");
         setWorking(false);
@@ -128,9 +136,21 @@ export function ReceiptShortcutImportPage({ id, navigate }: { id: string; naviga
     } catch (caught) { setWorking(false); setError(importErrorMessage(caught)); }
   }
 
+  async function selectModel(selection: ReceiptModelSelection) {
+    if (!imported) return;
+    setWorking(true); setError("");
+    try {
+      await selectReceiptModelResult(imported.id, selection);
+      setAttempt((value) => value + 1);
+    } catch (caught) { setWorking(false); setError(importErrorMessage(caught)); }
+  }
+
   return <div className="viewer-page"><header className="viewer-heading"><div><span>Apple Vision</span><h1>Import receipt</h1></div>
     <button className="icon-button" disabled={working} onClick={() => navigate("/receipts")} aria-label="Close"><X /></button></header>
-    <section className="receipt-capture receipt-shortcut-import" aria-busy={working}>
+    {imported?.shortcut_version === 3 && imported.comparison && !imported.selection
+      ? <ReceiptModelComparison comparison={imported.comparison} disabled={working}
+        onSelect={(selection) => void selectModel(selection)} />
+      : <section className="receipt-capture receipt-shortcut-import" aria-busy={working}>
       <FileWarning aria-hidden="true" />
       <h2>{working ? "Preparing your receipt" : "Receipt needs another look"}</h2>
       {working && <p role="status">Reading the recognized text and checking every amount…</p>}
@@ -144,7 +164,7 @@ export function ReceiptShortcutImportPage({ id, navigate }: { id: string; naviga
           {imported?.refinement?.status === "failed" ? "Retry refinement" : "Refresh status"}</button>
         <button className="secondary-button" onClick={() => void discard()}><Trash2 />{imported ? "Discard text" : "Start a new scan"}</button>
       </div>}
-    </section>
+    </section>}
   </div>;
 }
 

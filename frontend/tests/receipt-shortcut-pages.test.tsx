@@ -7,10 +7,12 @@ import {
   getReceiptScanResult,
   getReceiptImport,
   retryReceiptImport,
+  selectReceiptModelResult,
   watchReceiptScanSession,
   type PublicReceiptImport,
 } from "../src/viewer/receipts/receiptShortcutApi";
 import { finalizeReceiptImport } from "../src/viewer/receipts/ReceiptShortcutImportPage";
+import { receiptBenchmarkDiagnostic } from "../src/viewer/receipts/ReceiptBenchmarkSummary";
 
 const session = {
   contract: "receipt_scan_session/v1" as const,
@@ -145,6 +147,36 @@ describe("receipt Shortcut pages", () => {
     expect(events).toEqual([`create:shortcut-import-${imported.id}:450`, "cleanup"]);
   });
 
+  it("never creates a v3 draft before the member selects a model result", async () => {
+    const imported: PublicReceiptImport = {
+      ...receiptImport("Synthetic Market\nITEM 10.00\nTOTAL 10.00"),
+      shortcut_version: 3,
+      selection: null,
+      comparison: { recommendation: "tie", material_disagreement: false, runs: [] },
+      validation: null,
+    };
+    const create = vi.fn();
+    const result = await finalizeReceiptImport(imported, { create, cleanup: vi.fn() });
+    expect(result).toEqual({ status: "comparing", imported });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("posts an explicit member selection to the opaque import endpoint", async () => {
+    const imported = { ...receiptImport("private text"), shortcut_version: 3 as const,
+      selection: "on_device" as const };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ import: imported }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(selectReceiptModelResult(imported.id, "on_device")).resolves.toEqual(imported);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/v1/mobile/receipt-imports/${imported.id}/selection`,
+      expect.objectContaining({ method: "POST", credentials: "same-origin",
+        body: JSON.stringify({ selection: "on_device" }) }),
+    );
+    vi.unstubAllGlobals();
+  });
+
   it("still returns the created draft when temporary-import cleanup fails", async () => {
     const imported = receiptImport("SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50");
     const persisted = { id: "draft-1" } as never;
@@ -230,6 +262,20 @@ describe("receipt Shortcut pages", () => {
       source_text: expect.stringContaining("garbled text"),
       lines: [expect.objectContaining({ description: "APPLES", item_total_minor: 450 })] }),
     `shortcut-import-${imported.id}`);
+  });
+
+  it("builds a metadata-only diagnostic report without financial or identity fields", () => {
+    const report = receiptBenchmarkDiagnostic({
+      total: 2,
+      selections: { on_device: 1, private_cloud_compute: 1, tie: 0, neither: 0, unselected: 0 },
+      on_device: { completed: 2, accepted: 1, needs_review: 1, needs_refinement: 0,
+        unavailable: 0, median_duration_ms: 200 },
+      private_cloud_compute: { completed: 2, accepted: 2, needs_review: 0, needs_refinement: 0,
+        unavailable: 0, median_duration_ms: 900 },
+    });
+
+    expect(report).toContain("receipt_model_benchmark_diagnostic/v1");
+    expect(report).not.toMatch(/merchant|amount|description|account|transaction|token|ocr|model_result/i);
   });
 });
 
