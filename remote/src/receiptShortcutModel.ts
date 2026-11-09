@@ -72,6 +72,10 @@ const shortcutNumber = <T extends z.ZodType>(schema: T) => z.preprocess(
   schema,
 );
 const safeErrorCode = z.enum(["MODEL_UNAVAILABLE", "MODEL_RATE_LIMITED", "MODEL_FAILED"]);
+const shortcutModelResult = z.preprocess(
+  (value) => typeof value === "object" && value !== null ? JSON.stringify(value) : value,
+  z.string().max(100_000),
+);
 
 export const ReceiptModelRunSchema = z.discriminatedUnion("status", [
   z.object({ model: modelRoute, status: z.literal("completed"), duration_ms: duration,
@@ -118,11 +122,11 @@ export const ReceiptShortcutFlatCaptureV3Schema = z.object({
   text: z.string().max(100_000).refine((value) => value.trim().length > 0, "blank receipt"),
   on_device_status: flatRunStatus,
   on_device_duration_ms: shortcutNumber(duration),
-  on_device_model_result: z.string().max(100_000).optional(),
+  on_device_model_result: shortcutModelResult.optional(),
   on_device_error_code: safeErrorCode.optional(),
   private_cloud_compute_status: flatRunStatus,
   private_cloud_compute_duration_ms: shortcutNumber(duration),
-  private_cloud_compute_model_result: z.string().max(100_000).optional(),
+  private_cloud_compute_model_result: shortcutModelResult.optional(),
   private_cloud_compute_error_code: safeErrorCode.optional(),
 }).strict().superRefine((capture, context) => {
   validateFlatRun(capture, "on_device", context);

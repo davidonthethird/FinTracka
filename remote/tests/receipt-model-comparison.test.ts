@@ -84,6 +84,41 @@ describe("receipt shortcut v3", () => {
     expect(parsed.runs.map((run) => run.duration_ms)).toEqual([7603, 12005]);
   });
 
+  it("accepts model dictionaries emitted natively by Apple Shortcuts", () => {
+    const modelResult = JSON.parse(result());
+    const parsed = ReceiptShortcutCaptureSchema.parse({
+      contract: "receipt_shortcut_capture/v3",
+      idempotency_key: "e".repeat(64),
+      shortcut_version: "3",
+      text: OCR,
+      on_device_status: "completed",
+      on_device_duration_ms: "1234",
+      on_device_model_result: modelResult,
+      private_cloud_compute_status: "completed",
+      private_cloud_compute_duration_ms: "2345",
+      private_cloud_compute_model_result: modelResult,
+    });
+
+    expect(parsed.shortcut_version).toBe(3);
+    if (parsed.shortcut_version !== 3) throw new Error("expected v3 capture");
+    expect(parsed.runs.map((run) => JSON.parse(run.status === "completed" ? run.model_result : "null"))).toEqual([
+      modelResult,
+      modelResult,
+    ]);
+    expect(ReceiptShortcutCaptureSchema.safeParse({
+      contract: "receipt_shortcut_capture/v3",
+      idempotency_key: "f".repeat(64),
+      shortcut_version: "3",
+      text: OCR,
+      on_device_status: "completed",
+      on_device_duration_ms: "1234",
+      on_device_model_result: { output: "x".repeat(100_001) },
+      private_cloud_compute_status: "completed",
+      private_cloud_compute_duration_ms: "2345",
+      private_cloud_compute_model_result: modelResult,
+    }).success).toBe(false);
+  });
+
   it("accepts exactly one bounded run for each Apple route and preserves older captures", () => {
     const parsed = ReceiptShortcutCaptureSchema.parse(capture());
     expect(parsed.shortcut_version).toBe(3);
