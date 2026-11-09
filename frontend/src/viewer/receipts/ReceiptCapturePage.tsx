@@ -56,7 +56,7 @@ export function ReceiptCapturePage({ navigate }: { navigate: (path: string) => v
         onClick={() => void importResults()}>{importing ? "Importing…" : "Import scan results"}</button>}
       {error && <><p className="receipt-error" role="alert" tabIndex={-1} ref={errorRef}>{error}</p>
         <button className="secondary-button" onClick={() => setAttempt((value) => value + 1)}><RotateCcw />Try again</button></>}
-      <small className="receipt-session-note">The one-time connection expires in 10 minutes and is never saved in this browser.</small>
+      <small className="receipt-session-note">The one-time connection expires in 30 minutes and is never saved in this browser.</small>
       <details className="receipt-shortcut-help"><summary>Shortcut not installed or out of date?</summary>
         <p>Install version {session?.shortcut_version ?? 2} and name it exactly <strong>{session?.shortcut_name ?? "FinTracka Receipt Scanner"}</strong>. If it still will not open, run it once in the Shortcuts app to accept permissions, return here, and start a new scan.</p>
       </details>

@@ -9,7 +9,7 @@ Keep receipt photos and Apple-model processing on the iPhone while reliably retu
 - The Shortcut performs no network request and contains no upload URL.
 - The Shortcut copies a versioned, text-only result envelope to the clipboard and tells the member to return to FinTracka.
 - The authenticated FinTracka receipt page imports the envelope with one explicit tap, submits it same-origin, clears the clipboard, and opens the comparison screen.
-- The one-time session token still expires after ten minutes, is single-use, and binds the result to the correct member.
+- The one-time session token expires after thirty minutes so the sequential Apple model benchmark can finish; it remains single-use and binds the result to the correct member.
 - Existing legacy Shortcut uploads remain accepted during migration.
 
 ## Non-goals
