@@ -64,3 +64,52 @@ def test_apple_model_routes_use_saved_shortcuts_values() -> None:
         if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.askllm"
     ]
     assert models == ["Apple Intelligence on Device", "Apple Intelligence"]
+
+
+def test_receipt_upload_only_reports_success_after_server_confirmation() -> None:
+    with SHORTCUT.open("rb") as source:
+        workflow = plistlib.load(source)
+
+    actions = workflow["WFWorkflowActions"]
+    upload_index = next(
+        index for index, action in enumerate(actions)
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.downloadurl"
+    )
+    upload_uuid = actions[upload_index]["WFWorkflowActionParameters"]["UUID"]
+    import_id_index = next(
+        index for index, action in enumerate(actions)
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.getvalueforkey"
+        and action["WFWorkflowActionParameters"].get("WFDictionaryKey") == "import_id"
+    )
+    import_id = actions[import_id_index]["WFWorkflowActionParameters"]
+
+    assert import_id_index > upload_index
+    assert import_id["WFInput"]["Value"]["OutputUUID"] == upload_uuid
+
+    conditional_index = next(
+        index for index, action in enumerate(actions)
+        if index > import_id_index
+        and action["WFWorkflowActionIdentifier"] == "is.workflow.actions.conditional"
+        and action["WFWorkflowActionParameters"].get("WFControlFlowMode") == 0
+    )
+    conditional = actions[conditional_index]["WFWorkflowActionParameters"]
+    assert conditional["WFCondition"] == 100
+    assert conditional["WFInput"]["Variable"]["Value"]["OutputUUID"] == import_id["UUID"]
+
+    success_index = next(
+        index for index, action in enumerate(actions)
+        if index > conditional_index
+        and "sent to FinTracka" in str(action["WFWorkflowActionParameters"].get("Text", ""))
+    )
+    otherwise_index = next(
+        index for index, action in enumerate(actions)
+        if index > conditional_index
+        and action["WFWorkflowActionIdentifier"] == "is.workflow.actions.conditional"
+        and action["WFWorkflowActionParameters"].get("WFControlFlowMode") == 1
+    )
+    assert conditional_index < success_index < otherwise_index
+    assert any(
+        action["WFWorkflowActionIdentifier"] == "is.workflow.actions.getvalueforkey"
+        and action["WFWorkflowActionParameters"].get("WFDictionaryKey") == "error_code"
+        for action in actions[otherwise_index + 1:]
+    )

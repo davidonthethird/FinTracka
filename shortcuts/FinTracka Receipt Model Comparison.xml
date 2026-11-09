@@ -413,10 +413,96 @@ Create a repeat-safe key, send recognized text plus both model outputs and measu
     </dict>
     <dict>
       <key>WFWorkflowActionIdentifier</key>
+      <string>is.workflow.actions.getvalueforkey</string>
+      <key>WFWorkflowActionParameters</key>
+      <dict>
+        <key>UUID</key><string>C0390860-2200-4FB9-A6D7-43475A0C969E</string>
+        <key>CustomOutputName</key><string>Confirmed Import ID</string>
+        <key>WFDictionaryKey</key><string>import_id</string>
+        <key>WFGetDictionaryValueType</key><string>Value</string>
+        <key>WFInput</key>
+        <dict>
+          <key>Value</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000010</string><key>OutputName</key><string>Upload Response</string><key>Type</key><string>ActionOutput</string></dict>
+          <key>WFSerializationType</key><string>WFTextTokenAttachment</string>
+        </dict>
+      </dict>
+    </dict>
+    <dict>
+      <key>WFWorkflowActionIdentifier</key>
+      <string>is.workflow.actions.comment</string>
+      <key>WFWorkflowActionParameters</key>
+      <dict><key>WFCommentActionText</key><string>--- VERIFY SERVER CONFIRMATION ---
+• Only show success when the response contains a confirmed import number.
+• Otherwise show FinTracka's safe error code so a failed upload cannot look successful.</string></dict>
+    </dict>
+    <dict>
+      <key>WFWorkflowActionIdentifier</key>
+      <string>is.workflow.actions.conditional</string>
+      <key>WFWorkflowActionParameters</key>
+      <dict>
+        <key>GroupingIdentifier</key><string>75CBD333-2FAC-4331-9748-79E79F59B801</string>
+        <key>WFControlFlowMode</key><integer>0</integer>
+        <key>WFCondition</key><integer>100</integer>
+        <key>WFInput</key>
+        <dict>
+          <key>Type</key><string>Variable</string>
+          <key>Variable</key>
+          <dict>
+            <key>Value</key><dict><key>OutputUUID</key><string>C0390860-2200-4FB9-A6D7-43475A0C969E</string><key>OutputName</key><string>Dictionary Value</string><key>Type</key><string>ActionOutput</string></dict>
+            <key>WFSerializationType</key><string>WFTextTokenAttachment</string>
+          </dict>
+        </dict>
+      </dict>
+    </dict>
+    <dict>
+      <key>WFWorkflowActionIdentifier</key>
       <string>is.workflow.actions.showresult</string>
       <key>WFWorkflowActionParameters</key>
       <dict>
         <key>Text</key><dict><key>Value</key><dict><key>attachmentsByRange</key><dict/><key>string</key><string>Both Apple model results were sent to FinTracka. Tap Back to FinTracka to compare them.</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict>
+      </dict>
+    </dict>
+    <dict>
+      <key>WFWorkflowActionIdentifier</key>
+      <string>is.workflow.actions.conditional</string>
+      <key>WFWorkflowActionParameters</key>
+      <dict>
+        <key>GroupingIdentifier</key><string>75CBD333-2FAC-4331-9748-79E79F59B801</string>
+        <key>WFControlFlowMode</key><integer>1</integer>
+      </dict>
+    </dict>
+    <dict>
+      <key>WFWorkflowActionIdentifier</key>
+      <string>is.workflow.actions.getvalueforkey</string>
+      <key>WFWorkflowActionParameters</key>
+      <dict>
+        <key>UUID</key><string>A8FC6A89-DB5E-43D4-AD6F-4930E7D9070E</string>
+        <key>CustomOutputName</key><string>FinTracka Error Code</string>
+        <key>WFDictionaryKey</key><string>error_code</string>
+        <key>WFGetDictionaryValueType</key><string>Value</string>
+        <key>WFInput</key>
+        <dict>
+          <key>Value</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000010</string><key>OutputName</key><string>Upload Response</string><key>Type</key><string>ActionOutput</string></dict>
+          <key>WFSerializationType</key><string>WFTextTokenAttachment</string>
+        </dict>
+      </dict>
+    </dict>
+    <dict>
+      <key>WFWorkflowActionIdentifier</key>
+      <string>is.workflow.actions.showresult</string>
+      <key>WFWorkflowActionParameters</key>
+      <dict>
+        <key>Text</key>
+        <dict><key>Value</key><dict><key>attachmentsByRange</key><dict><key>{53, 1}</key><dict><key>OutputUUID</key><string>A8FC6A89-DB5E-43D4-AD6F-4930E7D9070E</string><key>OutputName</key><string>Dictionary Value</string><key>Type</key><string>ActionOutput</string></dict></dict><key>string</key><string>FinTracka did not import this scan. Safe error code: ￼</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict>
+      </dict>
+    </dict>
+    <dict>
+      <key>WFWorkflowActionIdentifier</key>
+      <string>is.workflow.actions.conditional</string>
+      <key>WFWorkflowActionParameters</key>
+      <dict>
+        <key>GroupingIdentifier</key><string>75CBD333-2FAC-4331-9748-79E79F59B801</string>
+        <key>WFControlFlowMode</key><integer>2</integer>
       </dict>
     </dict>
   </array>

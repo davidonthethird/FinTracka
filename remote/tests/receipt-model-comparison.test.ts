@@ -65,6 +65,25 @@ describe("receipt shortcut v3", () => {
     });
   });
 
+  it("accepts localized decimal duration text emitted by Apple Shortcuts", () => {
+    const parsed = ReceiptShortcutCaptureSchema.parse({
+      contract: "receipt_shortcut_capture/v3",
+      idempotency_key: "d".repeat(64),
+      shortcut_version: "3",
+      text: OCR,
+      on_device_status: "completed",
+      on_device_duration_ms: "7,603.4",
+      on_device_model_result: result(),
+      private_cloud_compute_status: "completed",
+      private_cloud_compute_duration_ms: "12,004.6",
+      private_cloud_compute_model_result: result(),
+    });
+
+    expect(parsed.shortcut_version).toBe(3);
+    if (parsed.shortcut_version !== 3) throw new Error("expected v3 capture");
+    expect(parsed.runs.map((run) => run.duration_ms)).toEqual([7603, 12005]);
+  });
+
   it("accepts exactly one bounded run for each Apple route and preserves older captures", () => {
     const parsed = ReceiptShortcutCaptureSchema.parse(capture());
     expect(parsed.shortcut_version).toBe(3);
