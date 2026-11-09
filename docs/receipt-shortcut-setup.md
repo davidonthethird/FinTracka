@@ -9,8 +9,8 @@ The Shortcut must be named exactly **FinTracka Receipt Scanner** on both phones.
 ## Privacy boundary
 
 - Apple **Extract Text from Image** and **Use Model → On-Device** run on the iPhone.
-- The Shortcut makes no network request. It copies a versioned envelope containing only recognized text and model text to the local clipboard.
-- The authenticated Viewer reads that clipboard only after the user taps **Import scan results**, submits it same-origin through the one-use session, and clears it after success.
+- The Shortcut sends only the recognized text and Apple model text to FinTracka's exact receipt-import endpoint. It never uploads receipt photos.
+- The upload uses a member-bound, one-use token that expires after 30 minutes. The authenticated Viewer waits for that exact session and opens the result automatically; the clipboard is never used.
 - If the Worker returns `needs_refinement`, the Shortcut saves the original pages to the private shared iCloud Drive folder `FinTracka Receipt Queue/pending/<opaque-id>/`.
 - The queue manifest contains no token, host, identity, OCR text, bank data, or transaction data.
 - The Mac runs Apple Vision `RecognizeDocumentsRequest` and Apple Foundation Models locally. A successful package is deleted. Temporary iCloud/model failures retry automatically; terminal invalid packages are retained for seven days, then deleted.

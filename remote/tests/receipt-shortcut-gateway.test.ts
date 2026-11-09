@@ -70,12 +70,9 @@ describe("receipt shortcut gateway", () => {
       shortcut_version: 2,
       shortcut_name: "FinTracka Receipt Scanner",
       token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
-      handoff_contract: "fintracka_receipt_handoff/v1",
+      upload_url: `${ORIGIN}/api/v1/mobile/shortcut/receipt-imports`,
       expires_at: "2026-11-02T12:30:00.000Z",
     });
-    expect(await (await gateway.fetch(userRequest(
-      "/api/v1/mobile/receipt-scan-sessions", json({}),
-    ), enabled)).text()).not.toContain("upload_url");
     expect(session.headers.has("Access-Control-Allow-Origin")).toBe(false);
   });
 
@@ -184,54 +181,6 @@ describe("receipt shortcut gateway", () => {
       resultPath, json({ token: session.token }), "other-token",
     ), testEnv);
     expect(other.status).toBe(401);
-  });
-
-  it("completes a scan through an authenticated same-origin browser handoff", async () => {
-    const gateway = makeGateway();
-    const testEnv = gatewayEnv(true, true);
-    const session = await createSession(gateway, testEnv);
-    const path = "/api/v1/mobile/receipt-scan-sessions/complete";
-
-    const completed = await gateway.fetch(userRequest(path, json({
-      contract: "fintracka_receipt_handoff/v1",
-      token: session.token,
-      capture: v3Capture(),
-    })), testEnv);
-
-    expect(completed.status).toBe(201);
-    const body = await completed.json() as { review_path: string };
-    expect(body.review_path).toMatch(/^\/receipts\/import\/[0-9a-f-]+$/);
-    expect((await gateway.fetch(userRequest(body.review_path.replace("/receipts/import/",
-      "/api/v1/mobile/receipt-imports/")), testEnv)).status).toBe(200);
-
-    const replay = await gateway.fetch(userRequest(path, json({
-      contract: "fintracka_receipt_handoff/v1", token: session.token, capture: v3Capture(),
-    })), testEnv);
-    expect(replay.status).toBe(200);
-    expect(await replay.json()).toEqual(body);
-  });
-
-  it("rejects invalid, cross-origin, expired, and oversized browser handoffs", async () => {
-    let now = NOW;
-    const gateway = makeGateway(() => now);
-    const testEnv = gatewayEnv(true, true);
-    const session = await createSession(gateway, testEnv);
-    const path = "/api/v1/mobile/receipt-scan-sessions/complete";
-    const valid = { contract: "fintracka_receipt_handoff/v1", token: session.token,
-      capture: v3Capture() };
-
-    const malformed = await gateway.fetch(userRequest(path, json({ ...valid, contract: "wrong" })), testEnv);
-    const crossOrigin = await gateway.fetch(userRequest(path, {
-      method: "POST", headers: { Origin: "https://evil.test", "Content-Type": "application/json",
-        "Sec-Fetch-Site": "cross-site" }, body: JSON.stringify(valid),
-    }), testEnv);
-    const oversized = await gateway.fetch(userRequest(path, json({ ...valid,
-      capture: { ...v3Capture(), padding: "x".repeat(270_000) } })), testEnv);
-    expect([malformed.status, crossOrigin.status, oversized.status]).toEqual([400, 403, 413]);
-
-    now = new Date("2026-11-02T12:30:00.001Z");
-    const expired = await gateway.fetch(userRequest(path, json(valid)), testEnv);
-    expect(expired.status).toBe(401);
   });
 
   it("replays an identical upload and rejects changed reuse without leaking text or token", async () => {

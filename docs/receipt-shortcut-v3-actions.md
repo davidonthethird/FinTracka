@@ -1,6 +1,6 @@
 # FinTracka receipt model comparison Shortcut (version 3)
 
-The signed benchmark artifact is [`shortcuts/FinTracka Receipt Model Comparison.shortcut`](../shortcuts/FinTracka%20Receipt%20Model%20Comparison.shortcut). Its inspectable source is the adjacent XML file. It was generated, validated, archived, and signed with Shortcuts Playground. The file has a descriptive repository name, but its installed workflow name is exactly **FinTracka Receipt Scanner**, matching the name launched by the web app.
+The signed benchmark artifact is [`shortcuts/FinTracka Receipt Scanner.shortcut`](../shortcuts/FinTracka%20Receipt%20Scanner.shortcut). Its inspectable source is `shortcuts/FinTracka Receipt Model Comparison.xml`. It was generated, validated, archived, and signed with Shortcuts Playground. Its installed workflow name is exactly **FinTracka Receipt Scanner**, matching the name launched by the web app.
 
 Comparison mode is temporary and feature gated. Installing the benchmark artifact replaces the canonical `FinTracka Receipt Scanner` only for the private benchmark; comparison remains disabled in committed staging and production configuration until it is explicitly enabled and reviewed.
 
@@ -47,7 +47,7 @@ SHORTCUT_SKILL="$HOME/.codex/plugins/cache/shortcuts-playground/shortcuts-playgr
 python3 "$SHORTCUT_SKILL/scripts/validate_shortcut.py" \
   "shortcuts/FinTracka Receipt Model Comparison.xml" \
   --target-platform all --target-macos 27
-test -s "shortcuts/FinTracka Receipt Model Comparison.shortcut"
+test -s "shortcuts/FinTracka Receipt Scanner.shortcut"
 ```
 
 The `all` validation target is deliberate: current ToolKit metadata observes Apple Vision's Extract action on macOS, while the action was also verified on the physical iPhone.

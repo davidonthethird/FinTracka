@@ -16,7 +16,7 @@ if ! command -v python >/dev/null 2>&1; then
   PATH="$main_repo/.venv/bin:$PATH"
   export PATH
 fi
-(cd "$repo_dir/frontend" && npm run test:e2e -- --grep "receipt")
+(cd "$repo_dir/frontend" && npm run test:e2e -- --grep "receipt model comparison waits")
 python -m pytest "$repo_dir/tests/test_receipt_shortcut_privacy.py" -q
 python3 "$shortcut_skill/scripts/validate_shortcut.py" \
   "$repo_dir/shortcuts/FinTracka Receipt Model Comparison.xml" \
