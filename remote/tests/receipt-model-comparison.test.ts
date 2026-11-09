@@ -84,6 +84,28 @@ describe("receipt shortcut v3", () => {
     expect(parsed.runs.map((run) => run.duration_ms)).toEqual([7603, 12005]);
   });
 
+  it("decodes the explicit percent-encoded transport used to strip photo attachments", () => {
+    const parsed = ReceiptShortcutCaptureSchema.parse({
+      contract: "receipt_shortcut_capture/v3",
+      idempotency_key: "9".repeat(64),
+      shortcut_version: "3",
+      payload_encoding: "percent",
+      text: encodeURIComponent(OCR),
+      on_device_status: "completed",
+      on_device_duration_ms: "1234",
+      on_device_model_result: encodeURIComponent(result()),
+      private_cloud_compute_status: "completed",
+      private_cloud_compute_duration_ms: "2345",
+      private_cloud_compute_model_result: encodeURIComponent(result()),
+    });
+
+    expect(parsed.shortcut_version).toBe(3);
+    if (parsed.shortcut_version !== 3) throw new Error("expected v3 capture");
+    expect(parsed.pages[0].text).toBe(OCR);
+    expect(parsed.runs.map((run) => run.status === "completed" ? run.model_result : null))
+      .toEqual([result(), result()]);
+  });
+
   it("accepts model dictionaries emitted natively by Apple Shortcuts", () => {
     const modelResult = JSON.parse(result());
     const parsed = ReceiptShortcutCaptureSchema.parse({

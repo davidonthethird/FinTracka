@@ -10,9 +10,9 @@ RAW_OCR_UUID = "11000000-0000-4000-8000-000000000005"
 RAW_ON_DEVICE_UUID = "11000000-0000-4000-8000-000000000006"
 RAW_CLOUD_UUID = "11000000-0000-4000-8000-000000000007"
 PLAIN_TEXT_UUIDS = {
-    "text": "11000000-0000-4000-8000-000000000023",
-    "on_device_model_result": "11000000-0000-4000-8000-000000000025",
-    "private_cloud_compute_model_result": "11000000-0000-4000-8000-000000000027",
+    "text": "11000000-0000-4000-8000-000000000028",
+    "on_device_model_result": "11000000-0000-4000-8000-000000000029",
+    "private_cloud_compute_model_result": "11000000-0000-4000-8000-000000000030",
 }
 MATCH_UUIDS = {
     "11000000-0000-4000-8000-000000000022",
@@ -51,12 +51,14 @@ def test_receipt_upload_contains_only_plain_text_snapshots() -> None:
     for forbidden_uuid in (PHOTO_UUID, RAW_OCR_UUID, RAW_ON_DEVICE_UUID, RAW_CLOUD_UUID):
         assert forbidden_uuid.encode() not in serialized_upload
 
-    text_actions = {
+    encoded_text_actions = {
         action["WFWorkflowActionParameters"].get("UUID")
         for action in actions
-        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.text.combine"
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.urlencode"
     }
-    assert set(PLAIN_TEXT_UUIDS.values()) <= text_actions
+    assert set(PLAIN_TEXT_UUIDS.values()) <= encoded_text_actions
+
+    assert _literal(payload["payload_encoding"]) == "percent"
 
     match_actions = {
         action["WFWorkflowActionParameters"].get("UUID")

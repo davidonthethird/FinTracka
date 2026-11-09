@@ -124,10 +124,13 @@ interface FlatCaptureInput {
   private_cloud_compute_error_code?: z.infer<typeof safeErrorCode>;
 }
 
+const payloadEncoding = z.literal("percent").optional();
+
 export const ReceiptShortcutFlatCaptureV3Schema = z.object({
   contract: z.literal("receipt_shortcut_capture/v3"),
   idempotency_key: idempotencyKey,
   shortcut_version: shortcutNumber(z.literal(3)),
+  payload_encoding: payloadEncoding,
   text: shortcutText,
   on_device_status: flatRunStatus,
   on_device_duration_ms: shortcutDuration,
@@ -137,13 +140,23 @@ export const ReceiptShortcutFlatCaptureV3Schema = z.object({
   private_cloud_compute_duration_ms: shortcutDuration,
   private_cloud_compute_model_result: shortcutModelResult.optional(),
   private_cloud_compute_error_code: safeErrorCode.optional(),
-}).strict().transform((capture) => ({
-  contract: capture.contract,
-  idempotency_key: capture.idempotency_key,
-  shortcut_version: capture.shortcut_version,
-  pages: [{ page_index: 0, text: capture.text }],
-  runs: [flatRun(capture, "on_device"), flatRun(capture, "private_cloud_compute")],
-}));
+}).strict().transform((capture) => {
+  const decoded = {
+    ...capture,
+    text: decodeTransportText(capture.text, capture.payload_encoding),
+    on_device_model_result: decodeOptionalTransportText(
+      capture.on_device_model_result, capture.payload_encoding),
+    private_cloud_compute_model_result: decodeOptionalTransportText(
+      capture.private_cloud_compute_model_result, capture.payload_encoding),
+  };
+  return {
+    contract: decoded.contract,
+    idempotency_key: decoded.idempotency_key,
+    shortcut_version: decoded.shortcut_version,
+    pages: [{ page_index: 0, text: decoded.text }],
+    runs: [flatRun(decoded, "on_device"), flatRun(decoded, "private_cloud_compute")],
+  };
+});
 
 export const ReceiptShortcutCaptureSchema = z.union([
   ReceiptShortcutPagesCaptureSchema,
@@ -202,6 +215,19 @@ function flatRun(capture: FlatCaptureInput, route: FlatRoute): z.infer<typeof Re
     : failedStatus === "rate_limited" ? "MODEL_RATE_LIMITED" : "MODEL_FAILED";
   return { model: route, status: failedStatus, duration_ms,
     error_code: capture[`${route}_error_code`] ?? defaultError };
+}
+
+function decodeOptionalTransportText(value: string | undefined, encoding: "percent" | undefined) {
+  return value === undefined ? undefined : decodeTransportText(value, encoding);
+}
+
+function decodeTransportText(value: string, encoding: "percent" | undefined): string {
+  if (encoding !== "percent") return value;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 function normalizeShortcutDuration(value: unknown): unknown {
