@@ -89,20 +89,24 @@ describe("receipt shortcut model", () => {
 });
 
 describe("receipt shortcut store", () => {
-  it("stores only the token digest and expires a session after ten minutes", async () => {
+  it("keeps a scan session alive for a slow Apple model comparison and expires after thirty minutes", async () => {
     let now = NOW;
     const store = new ReceiptShortcutStore(env.COMMANDS, () => now);
     const session = await store.createSession(HOUSEHOLD, MEMBER);
     expect(session.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(session.expires_at).toBe("2026-11-02T12:10:00.000Z");
+    expect(session.expires_at).toBe("2026-11-02T12:30:00.000Z");
     const row = await env.COMMANDS.prepare(
       "SELECT token_digest FROM receipt_scan_sessions LIMIT 1",
     ).first<{ token_digest: string }>();
     expect(row?.token_digest).toMatch(/^[a-f0-9]{64}$/);
     expect(row?.token_digest).not.toContain(session.token);
 
-    now = new Date("2026-11-02T12:10:00.001Z");
-    await expect(store.createImport(session.token, capture()))
+    now = new Date("2026-11-02T12:12:00.000Z");
+    await expect(store.createImport(session.token, capture())).resolves.toMatchObject({ replayed: false });
+
+    const laterSession = await store.createSession(HOUSEHOLD, MEMBER);
+    now = new Date("2026-11-02T12:42:00.001Z");
+    await expect(store.createImport(laterSession.token, capture()))
       .rejects.toMatchObject({ code: "RECEIPT_SCAN_SESSION_EXPIRED" });
   });
 

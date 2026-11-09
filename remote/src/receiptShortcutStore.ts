@@ -14,7 +14,6 @@ import {
 import type { ReceiptModelComparison } from "./receiptModelComparison";
 import { ReceiptRefinementStore } from "./receiptRefinementStore";
 
-const TEN_MINUTES = 10 * 60_000;
 const THIRTY_MINUTES = 30 * 60_000;
 const ONE_HOUR = 60 * 60_000;
 const BODY_LIMIT = 256 * 1024;
@@ -87,7 +86,7 @@ export class ReceiptShortcutStore {
     const token = base64Url(bytes);
     const digest = await sha256Hex(token);
     const now = nowDate.toISOString();
-    const expiresAt = new Date(nowDate.getTime() + TEN_MINUTES).toISOString();
+    const expiresAt = new Date(nowDate.getTime() + THIRTY_MINUTES).toISOString();
     try {
       await this.database.prepare(`INSERT INTO receipt_scan_sessions
         (token_digest, household_id, actor_member_id, created_at, expires_at)

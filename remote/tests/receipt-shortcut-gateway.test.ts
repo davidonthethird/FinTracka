@@ -71,7 +71,7 @@ describe("receipt shortcut gateway", () => {
       shortcut_name: "FinTracka Receipt Scanner",
       token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
       handoff_contract: "fintracka_receipt_handoff/v1",
-      expires_at: "2026-11-02T12:10:00.000Z",
+      expires_at: "2026-11-02T12:30:00.000Z",
     });
     expect(await (await gateway.fetch(userRequest(
       "/api/v1/mobile/receipt-scan-sessions", json({}),
@@ -229,7 +229,7 @@ describe("receipt shortcut gateway", () => {
       capture: { ...v3Capture(), padding: "x".repeat(270_000) } })), testEnv);
     expect([malformed.status, crossOrigin.status, oversized.status]).toEqual([400, 403, 413]);
 
-    now = new Date("2026-11-02T12:10:00.001Z");
+    now = new Date("2026-11-02T12:30:00.001Z");
     const expired = await gateway.fetch(userRequest(path, json(valid)), testEnv);
     expect(expired.status).toBe(401);
   });
@@ -278,7 +278,7 @@ describe("receipt shortcut gateway", () => {
     for (const request of cases) statuses.push((await gateway.fetch(request, testEnv)).status);
     expect(statuses).toEqual([401, 405, 415, 413]);
 
-    now = new Date("2026-11-02T12:10:00.001Z");
+    now = new Date("2026-11-02T12:30:00.001Z");
     const expired = await gateway.fetch(shortcutRequest(capture(), session.token), testEnv);
     expect(expired.status).toBe(401);
     expect(await expired.text()).toContain("RECEIPT_SCAN_SESSION_EXPIRED");
