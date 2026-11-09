@@ -10,9 +10,14 @@ RAW_OCR_UUID = "11000000-0000-4000-8000-000000000005"
 RAW_ON_DEVICE_UUID = "11000000-0000-4000-8000-000000000006"
 RAW_CLOUD_UUID = "11000000-0000-4000-8000-000000000007"
 PLAIN_TEXT_UUIDS = {
-    "text": "11000000-0000-4000-8000-000000000019",
-    "on_device_model_result": "11000000-0000-4000-8000-000000000020",
-    "private_cloud_compute_model_result": "11000000-0000-4000-8000-000000000021",
+    "text": "11000000-0000-4000-8000-000000000023",
+    "on_device_model_result": "11000000-0000-4000-8000-000000000025",
+    "private_cloud_compute_model_result": "11000000-0000-4000-8000-000000000027",
+}
+MATCH_UUIDS = {
+    "11000000-0000-4000-8000-000000000022",
+    "11000000-0000-4000-8000-000000000024",
+    "11000000-0000-4000-8000-000000000026",
 }
 
 
@@ -49,9 +54,16 @@ def test_receipt_upload_contains_only_plain_text_snapshots() -> None:
     text_actions = {
         action["WFWorkflowActionParameters"].get("UUID")
         for action in actions
-        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.gettext"
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.text.combine"
     }
     assert set(PLAIN_TEXT_UUIDS.values()) <= text_actions
+
+    match_actions = {
+        action["WFWorkflowActionParameters"].get("UUID")
+        for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.text.match"
+    }
+    assert MATCH_UUIDS <= match_actions
 
 
 def test_apple_model_routes_use_saved_shortcuts_values() -> None:
