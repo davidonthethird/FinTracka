@@ -157,6 +157,39 @@ describe("receipt shortcut gateway", () => {
     } });
   });
 
+  it("imports the flat native Apple payload end to end even when one model has no result", async () => {
+    const gateway = makeGateway();
+    const testEnv = gatewayEnv(true, true);
+    const session = await createSession(gateway, testEnv);
+    const modelResult = JSON.parse(v3Capture().runs[0].model_result);
+    const uploaded = await gateway.fetch(shortcutRequest({
+      contract: "receipt_shortcut_capture/v3",
+      idempotency_key: ` ${"d".repeat(64)} `,
+      shortcut_version: "3",
+      text: ["Synthetic Market", "ITEM 10.00", "TOTAL 10.00"],
+      on_device_status: "completed",
+      on_device_duration_ms: "1,234 milliseconds",
+      on_device_model_result: modelResult,
+      private_cloud_compute_status: "completed",
+      private_cloud_compute_duration_ms: { Magnitude: 2.345, Unit: "seconds" },
+    }, session.token), testEnv);
+
+    expect(uploaded.status).toBe(201);
+    const body = await uploaded.json() as { import_id: string };
+    const imported = await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipt-imports/${body.import_id}`,
+    ), testEnv);
+    expect(imported.status).toBe(200);
+    expect(await imported.json()).toMatchObject({ import: {
+      shortcut_version: 3,
+      pages: [{ page_index: 0, text: "Synthetic Market\nITEM 10.00\nTOTAL 10.00" }],
+      comparison: { runs: [
+        { model: "on_device", status: "completed", duration_ms: 1234 },
+        { model: "private_cloud_compute", status: "failed", duration_ms: 2345 },
+      ] },
+    } });
+  });
+
   it("lets the originating web app discover the completed scan without a browser redirect", async () => {
     const gateway = makeGateway();
     const testEnv = gatewayEnv(true);

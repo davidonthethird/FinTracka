@@ -7,9 +7,12 @@ import {
   type ReceiptModelRoute,
 } from "./receiptModelComparison";
 
-const idempotencyKey = z.string().refine((value) =>
-  z.uuid().safeParse(value).success || /^[a-f0-9]{64}$/i.test(value),
-"idempotency key must be a UUID or SHA-256 digest");
+const idempotencyKey = z.preprocess(
+  (value) => typeof value === "string" ? value.trim() : value,
+  z.string().refine((value) =>
+    z.uuid().safeParse(value).success || /^[a-f0-9]{64}$/i.test(value),
+  "idempotency key must be a UUID or SHA-256 digest"),
+);
 
 export const ReceiptShortcutPageSchema = z.object({
   page_index: z.preprocess(
@@ -72,8 +75,14 @@ const shortcutNumber = <T extends z.ZodType>(schema: T) => z.preprocess(
   schema,
 );
 const safeErrorCode = z.enum(["MODEL_UNAVAILABLE", "MODEL_RATE_LIMITED", "MODEL_FAILED"]);
+const shortcutDuration = z.preprocess(normalizeShortcutDuration, duration);
+const shortcutText = z.preprocess(
+  (value) => Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? value.join("\n") : value,
+  z.string().max(100_000).refine((value) => value.trim().length > 0, "blank receipt"),
+);
 const shortcutModelResult = z.preprocess(
-  (value) => typeof value === "object" && value !== null ? JSON.stringify(value) : value,
+  (value) => typeof value !== "string" && value !== undefined ? JSON.stringify(value) : value,
   z.string().max(100_000),
 );
 
@@ -119,19 +128,16 @@ export const ReceiptShortcutFlatCaptureV3Schema = z.object({
   contract: z.literal("receipt_shortcut_capture/v3"),
   idempotency_key: idempotencyKey,
   shortcut_version: shortcutNumber(z.literal(3)),
-  text: z.string().max(100_000).refine((value) => value.trim().length > 0, "blank receipt"),
+  text: shortcutText,
   on_device_status: flatRunStatus,
-  on_device_duration_ms: shortcutNumber(duration),
+  on_device_duration_ms: shortcutDuration,
   on_device_model_result: shortcutModelResult.optional(),
   on_device_error_code: safeErrorCode.optional(),
   private_cloud_compute_status: flatRunStatus,
-  private_cloud_compute_duration_ms: shortcutNumber(duration),
+  private_cloud_compute_duration_ms: shortcutDuration,
   private_cloud_compute_model_result: shortcutModelResult.optional(),
   private_cloud_compute_error_code: safeErrorCode.optional(),
-}).strict().superRefine((capture, context) => {
-  validateFlatRun(capture, "on_device", context);
-  validateFlatRun(capture, "private_cloud_compute", context);
-}).transform((capture) => ({
+}).strict().transform((capture) => ({
   contract: capture.contract,
   idempotency_key: capture.idempotency_key,
   shortcut_version: capture.shortcut_version,
@@ -183,27 +189,38 @@ export function compareCapture(capture: Extract<ReceiptShortcutCapture, { shortc
   return compareReceiptModelRuns(capture.pages[0].text, capture.runs);
 }
 
-function validateFlatRun(capture: FlatCaptureInput, route: FlatRoute, context: z.RefinementCtx): void {
-  const status = capture[`${route}_status`];
-  const result = capture[`${route}_model_result`];
-  const error = capture[`${route}_error_code`];
-  if (status === "completed" && (result === undefined || error !== undefined)) {
-    context.addIssue({ code: "custom", path: [`${route}_model_result`],
-      message: "completed runs require only a model result" });
-  }
-  if (status !== "completed" && (error === undefined || result !== undefined)) {
-    context.addIssue({ code: "custom", path: [`${route}_error_code`],
-      message: "incomplete runs require only an error code" });
-  }
-}
-
 function flatRun(capture: FlatCaptureInput, route: FlatRoute): z.infer<typeof ReceiptModelRunSchema> {
   const duration_ms = capture[`${route}_duration_ms`];
   const status = capture[`${route}_status`];
-  if (status === "completed") {
+  const modelResult = capture[`${route}_model_result`];
+  if (status === "completed" && modelResult !== undefined) {
     return { model: route, status: "completed", duration_ms,
-      model_result: capture[`${route}_model_result`]! };
+      model_result: modelResult };
   }
-  return { model: route, status, duration_ms,
-    error_code: capture[`${route}_error_code`]! };
+  const failedStatus = status === "completed" ? "failed" : status;
+  const defaultError = failedStatus === "unavailable" ? "MODEL_UNAVAILABLE"
+    : failedStatus === "rate_limited" ? "MODEL_RATE_LIMITED" : "MODEL_FAILED";
+  return { model: route, status: failedStatus, duration_ms,
+    error_code: capture[`${route}_error_code`] ?? defaultError };
+}
+
+function normalizeShortcutDuration(value: unknown): unknown {
+  if (typeof value === "number") return Number.isFinite(value) ? Math.round(value) : value;
+  if (typeof value === "object" && value !== null) {
+    const item = value as Record<string, unknown>;
+    const magnitude = item.Magnitude ?? item.magnitude ?? item.Value ?? item.value;
+    const unit = String(item.Unit ?? item.unit ?? "milliseconds");
+    return normalizeDurationParts(magnitude, unit);
+  }
+  if (typeof value !== "string") return value;
+  const match = value.trim().match(/^([0-9][0-9,]*(?:\.[0-9]+)?)\s*(ms|milliseconds?|s|seconds?)?$/i);
+  if (!match) return value;
+  return normalizeDurationParts(match[1], match[2] ?? "milliseconds");
+}
+
+function normalizeDurationParts(magnitude: unknown, unit: string): unknown {
+  const numeric = typeof magnitude === "number" ? magnitude
+    : typeof magnitude === "string" ? Number(magnitude.replaceAll(",", "")) : Number.NaN;
+  if (!Number.isFinite(numeric)) return magnitude;
+  return Math.round(/^s(?:ec(?:ond)?s?)?$/i.test(unit.trim()) ? numeric * 1_000 : numeric);
 }

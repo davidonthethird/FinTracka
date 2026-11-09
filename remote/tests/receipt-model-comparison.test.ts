@@ -119,6 +119,30 @@ describe("receipt shortcut v3", () => {
     }).success).toBe(false);
   });
 
+  it("normalizes Apple content-item text and duration representations without losing the scan", () => {
+    const parsed = ReceiptShortcutCaptureSchema.parse({
+      contract: "receipt_shortcut_capture/v3",
+      idempotency_key: ` ${"a".repeat(64)} `,
+      shortcut_version: "3",
+      text: ["ACME MARKETS", "MILK 3.49", "TOTAL 3.49"],
+      on_device_status: "completed",
+      on_device_duration_ms: "1,234 milliseconds",
+      on_device_model_result: JSON.parse(result()),
+      private_cloud_compute_status: "completed",
+      private_cloud_compute_duration_ms: { Magnitude: 2.345, Unit: "seconds" },
+    });
+
+    expect(parsed.shortcut_version).toBe(3);
+    if (parsed.shortcut_version !== 3) throw new Error("expected v3 capture");
+    expect(parsed.idempotency_key).toBe("a".repeat(64));
+    expect(parsed.pages[0].text).toBe("ACME MARKETS\nMILK 3.49\nTOTAL 3.49");
+    expect(parsed.runs).toMatchObject([
+      { model: "on_device", status: "completed", duration_ms: 1234 },
+      { model: "private_cloud_compute", status: "failed", duration_ms: 2345,
+        error_code: "MODEL_FAILED" },
+    ]);
+  });
+
   it("accepts exactly one bounded run for each Apple route and preserves older captures", () => {
     const parsed = ReceiptShortcutCaptureSchema.parse(capture());
     expect(parsed.shortcut_version).toBe(3);

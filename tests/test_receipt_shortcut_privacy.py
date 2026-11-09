@@ -113,3 +113,38 @@ def test_receipt_upload_only_reports_success_after_server_confirmation() -> None
         and action["WFWorkflowActionParameters"].get("WFDictionaryKey") == "error_code"
         for action in actions[otherwise_index + 1:]
     )
+
+
+def test_receipt_shortcut_stops_before_scanning_without_a_web_handoff() -> None:
+    with SHORTCUT.open("rb") as source:
+        workflow = plistlib.load(source)
+
+    actions = workflow["WFWorkflowActions"]
+    photo_index = next(
+        index for index, action in enumerate(actions)
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.selectphoto"
+    )
+    guarded_outputs = {
+        "11000000-0000-4000-8000-000000000002",
+        "11000000-0000-4000-8000-000000000003",
+    }
+    guarded = set()
+    handoff_index = max(
+        index for index, action in enumerate(actions)
+        if action["WFWorkflowActionParameters"].get("UUID") in guarded_outputs
+    )
+    for index, action in enumerate(actions[:photo_index]):
+        parameters = action["WFWorkflowActionParameters"]
+        if (action["WFWorkflowActionIdentifier"] == "is.workflow.actions.conditional"
+                and parameters.get("WFControlFlowMode") == 0
+                and parameters.get("WFCondition") == 100):
+            guarded.add(parameters["WFInput"]["Variable"]["Value"]["OutputUUID"])
+            assert index > handoff_index
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.exit":
+            assert index < photo_index
+
+    assert guarded_outputs <= guarded
+    assert sum(
+        action["WFWorkflowActionIdentifier"] == "is.workflow.actions.exit"
+        for action in actions[:photo_index]
+    ) >= 2
