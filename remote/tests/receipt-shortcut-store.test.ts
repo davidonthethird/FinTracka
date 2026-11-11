@@ -26,6 +26,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await env.COMMANDS.batch([
+    env.COMMANDS.prepare("DELETE FROM receipt_queue_handoffs"),
     env.COMMANDS.prepare("DELETE FROM receipt_shortcut_imports"),
     env.COMMANDS.prepare("DELETE FROM receipt_scan_sessions"),
     env.COMMANDS.prepare("DELETE FROM receipt_events"),

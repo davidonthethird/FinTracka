@@ -16,6 +16,7 @@ import type { ReceiptModelComparison } from "./receiptModelComparison";
 import { ReceiptRefinementStore } from "./receiptRefinementStore";
 
 const THIRTY_MINUTES = 30 * 60_000;
+const SEVEN_DAYS = 7 * 24 * 60 * 60_000;
 const ONE_HOUR = 60 * 60_000;
 const BODY_LIMIT = 256 * 1024;
 
@@ -105,6 +106,29 @@ export class ReceiptShortcutStore {
     token: string,
     untrustedCapture: unknown,
   ): Promise<{ import: PublicReceiptImport; replayed: boolean }> {
+    return this.createImportForSessionDigest(
+      await receiptSessionTokenDigest(token), untrustedCapture, true, THIRTY_MINUTES,
+    );
+  }
+
+  async createQueuedImport(
+    sessionTokenDigest: string,
+    untrustedCapture: unknown,
+  ): Promise<{ import: PublicReceiptImport; replayed: boolean }> {
+    if (!/^[a-f0-9]{64}$/.test(sessionTokenDigest)) {
+      throw new ReceiptShortcutStoreError("RECEIPT_SCAN_SESSION_INVALID");
+    }
+    return this.createImportForSessionDigest(
+      sessionTokenDigest, untrustedCapture, false, SEVEN_DAYS,
+    );
+  }
+
+  private async createImportForSessionDigest(
+    tokenDigest: string,
+    untrustedCapture: unknown,
+    requireUnexpiredSession: boolean,
+    importLifetime: number,
+  ): Promise<{ import: PublicReceiptImport; replayed: boolean }> {
     const parsed = ReceiptShortcutCaptureSchema.safeParse(untrustedCapture);
     if (!parsed.success) throw new ReceiptShortcutStoreError(
       receiptShortcutCaptureErrorCode(untrustedCapture),
@@ -113,7 +137,6 @@ export class ReceiptShortcutStore {
     if (new TextEncoder().encode(canonical).byteLength > BODY_LIMIT) {
       throw new ReceiptShortcutStoreError("RECEIPT_SHORTCUT_BODY_TOO_LARGE");
     }
-    const tokenDigest = await sha256Hex(token);
     const bodyDigest = await sha256Hex(canonical);
     const validation = parsed.data.shortcut_version === 2
       ? validateReceiptInterpretation(parsed.data.pages[0].text, parsed.data.model_result)
@@ -123,7 +146,7 @@ export class ReceiptShortcutStore {
       consumed_import_id, idempotency_key, body_digest, expires_at
       FROM receipt_scan_sessions WHERE token_digest = ?`).bind(tokenDigest).first<SessionRow>();
     if (!session) throw new ReceiptShortcutStoreError("RECEIPT_SCAN_SESSION_INVALID");
-    if (session.expires_at <= this.clock().toISOString()) {
+    if (requireUnexpiredSession && session.expires_at <= this.clock().toISOString()) {
       throw new ReceiptShortcutStoreError("RECEIPT_SCAN_SESSION_EXPIRED");
     }
     await this.cleanup();
@@ -148,7 +171,20 @@ export class ReceiptShortcutStore {
     const id = crypto.randomUUID();
     const nowDate = this.clock();
     const now = nowDate.toISOString();
-    const expiresAt = new Date(nowDate.getTime() + THIRTY_MINUTES).toISOString();
+    const expiresAt = new Date(nowDate.getTime() + importLifetime).toISOString();
+    const consumeSession = requireUnexpiredSession
+      ? this.database.prepare(`UPDATE receipt_scan_sessions SET consumed_import_id = ?,
+          idempotency_key = ?, body_digest = ?, consumed_at = ?
+          WHERE token_digest = ? AND consumed_import_id IS NULL AND expires_at > ?`).bind(
+          id, parsed.data.idempotency_key, bodyDigest, now, tokenDigest, now,
+        )
+      : this.database.prepare(`UPDATE receipt_scan_sessions SET consumed_import_id = ?,
+          idempotency_key = ?, body_digest = ?, consumed_at = ?
+          WHERE token_digest = ? AND consumed_import_id IS NULL AND EXISTS (
+            SELECT 1 FROM receipt_queue_handoffs handoff
+            WHERE handoff.session_token_digest = receipt_scan_sessions.token_digest
+              AND handoff.status IN ('pending', 'processing') AND handoff.expires_at > ?
+          )`).bind(id, parsed.data.idempotency_key, bodyDigest, now, tokenDigest, now);
     try {
       await this.database.batch([
         this.database.prepare(`INSERT INTO receipt_shortcut_imports
@@ -164,11 +200,7 @@ export class ReceiptShortcutStore {
           comparison ? JSON.stringify(comparison) : null,
           parsed.data.idempotency_key, bodyDigest, now, expiresAt,
         ),
-        this.database.prepare(`UPDATE receipt_scan_sessions SET consumed_import_id = ?,
-          idempotency_key = ?, body_digest = ?, consumed_at = ?
-          WHERE token_digest = ? AND consumed_import_id IS NULL AND expires_at > ?`).bind(
-          id, parsed.data.idempotency_key, bodyDigest, now, tokenDigest, now,
-        ),
+        consumeSession,
       ]);
     } catch (error) {
       if (errorIncludes(error, "too many receipt imports")) {
@@ -272,8 +304,12 @@ export class ReceiptShortcutStore {
     await this.database.batch([
       this.database.prepare("DELETE FROM receipt_shortcut_imports WHERE expires_at <= ?")
         .bind(now.toISOString()),
-      this.database.prepare("DELETE FROM receipt_scan_sessions WHERE created_at < ?")
-        .bind(new Date(now.getTime() - ONE_HOUR).toISOString()),
+      this.database.prepare(`DELETE FROM receipt_scan_sessions
+        WHERE created_at < ? AND NOT EXISTS (
+          SELECT 1 FROM receipt_queue_handoffs handoff
+          WHERE handoff.session_token_digest = receipt_scan_sessions.token_digest
+            AND handoff.expires_at > ?
+        )`).bind(new Date(now.getTime() - ONE_HOUR).toISOString(), now.toISOString()),
     ]);
   }
 
@@ -333,6 +369,10 @@ function base64Url(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export async function receiptSessionTokenDigest(value: string): Promise<string> {
+  return sha256Hex(value);
 }
 
 async function sha256Hex(value: string): Promise<string> {
