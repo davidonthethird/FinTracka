@@ -146,7 +146,7 @@ This shortcut was created via the following user prompt:
       <dict>
         <key>UUID</key><string>11000000-0000-4000-8000-000000000005</string>
         <key>CustomOutputName</key><string>Recognized Text</string>
-        <key>imageFile</key>
+        <key>WFImage</key>
         <dict>
           <key>Value</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000004</string><key>OutputName</key><string>Photos</string><key>Type</key><string>ActionOutput</string></dict>
           <key>WFSerializationType</key><string>WFTextTokenAttachment</string>

@@ -21,6 +21,24 @@ SNAPSHOT_UUIDS = {
     PLAIN_TEXT_UUIDS["private_cloud_compute_model_result"]: "11000000-0000-4000-8000-000000000021",
 }
 
+
+def test_receipt_ocr_reads_the_selected_photos() -> None:
+    with SHORTCUT.open("rb") as source:
+        workflow = plistlib.load(source)
+
+    extract = next(
+        action for action in workflow["WFWorkflowActions"]
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.extracttextfromimage"
+    )
+    parameters = extract["WFWorkflowActionParameters"]
+    assert "imageFile" not in parameters
+    assert parameters["WFImage"]["Value"] == {
+        "OutputUUID": PHOTO_UUID,
+        "OutputName": "Photos",
+        "Type": "ActionOutput",
+    }
+
+
 def test_receipt_upload_contains_only_plain_text_snapshots() -> None:
     with SHORTCUT.open("rb") as source:
         workflow = plistlib.load(source)

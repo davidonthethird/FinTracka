@@ -6,15 +6,14 @@ shortcut_skill="$HOME/.codex/plugins/cache/shortcuts-playground/shortcuts-playgr
 
 (cd "$repo_dir/remote" && npm run test:ci && npm run typecheck && npm run check:deployment)
 (cd "$repo_dir/frontend" && npm test -- --run && npm run typecheck:viewer && npm run build:viewer)
-if ! command -v python >/dev/null 2>&1; then
-  common_git_dir=$(git -C "$repo_dir" rev-parse --path-format=absolute --git-common-dir)
-  main_repo=$(CDPATH= cd -- "$(dirname -- "$common_git_dir")" && pwd)
-  if [ ! -x "$main_repo/.venv/bin/python" ]; then
-    echo "python with the FinTracka E2E dependencies is required" >&2
-    exit 1
-  fi
+common_git_dir=$(git -C "$repo_dir" rev-parse --path-format=absolute --git-common-dir)
+main_repo=$(CDPATH= cd -- "$(dirname -- "$common_git_dir")" && pwd)
+if [ -x "$main_repo/.venv/bin/python" ]; then
   PATH="$main_repo/.venv/bin:$PATH"
   export PATH
+elif ! python -c 'import uvicorn' >/dev/null 2>&1; then
+  echo "python with the FinTracka E2E dependencies is required" >&2
+  exit 1
 fi
 (cd "$repo_dir/frontend" && npm run test:e2e -- --grep "receipt model comparison waits")
 python -m pytest "$repo_dir/tests/test_receipt_shortcut_privacy.py" -q
