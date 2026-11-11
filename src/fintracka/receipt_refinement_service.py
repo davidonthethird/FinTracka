@@ -362,7 +362,12 @@ def process_configured_receipt_refinements(
     try:
         client = MobileCommandClient.from_settings(settings, secrets)
         queue_ids = client.active_receipt_queue_handoff_ids()
-        handoffs = process_receipt_queue_handoffs(client, queue, active_ids=queue_ids)
+        handoffs = process_receipt_queue_handoffs(
+            client, queue,
+            ocr_fallback=(lambda package: _run_ocr_helper(binary, package))
+            if binary.is_file() else None,
+            active_ids=queue_ids,
+        )
         result = (process_receipt_refinements(
             client, queue, lambda package: _run_helper(binary, package), queue_ids,
         ) if binary.is_file() else {
@@ -391,6 +396,30 @@ def _run_helper(binary: Path, package: Path) -> dict[str, str]:
     if not isinstance(value, dict):
         raise RuntimeError("UNRECONCILED")
     return value
+
+
+def _run_ocr_helper(
+    binary: Path, package: Path, *, environment: dict[str, str] | None = None,
+) -> str:
+    try:
+        completed = subprocess.run(
+            [str(binary), "--ocr-only", str(package)], check=False, capture_output=True,
+            text=True, timeout=45, env=environment,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("VISION_FAILED") from error
+    if completed.returncode != 0:
+        code = completed.stderr.strip().splitlines()[-1] if completed.stderr.strip() else "VISION_FAILED"
+        raise RuntimeError(code if code in SAFE_ERRORS else "VISION_FAILED")
+    try:
+        value = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("UNRECONCILED") from error
+    if (not isinstance(value, dict) or set(value) != {"text"}
+            or not isinstance(value["text"], str) or not value["text"]
+            or len(value["text"]) > 100_000):
+        raise RuntimeError("UNRECONCILED")
+    return value["text"]
 
 
 def _validate_package(package: Path, job_id: str) -> None:

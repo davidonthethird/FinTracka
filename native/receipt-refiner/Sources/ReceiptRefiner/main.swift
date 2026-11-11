@@ -14,6 +14,11 @@ struct Receipt: Codable {
     let fees: [AmountField]; let total: AmountField?; let lines: [Line]
 }
 struct Result: Codable { let text: String; let model_result: String }
+struct OcrResult: Codable { let text: String }
+struct OcrOptions: Equatable {
+    let automaticallyDetectLanguage = true
+    let useLanguageCorrection = true
+}
 
 enum RefinerError: String, Error { case invalidPackage = "INVALID_PACKAGE"; case visionFailed = "VISION_FAILED"; case modelUnavailable = "MODEL_UNAVAILABLE"; case unreconciled = "UNRECONCILED" }
 
@@ -25,35 +30,28 @@ struct ReceiptRefiner {
 
     static func main() async {
         do {
-            guard CommandLine.arguments.count == 2 else { throw RefinerError.invalidPackage }
-            if CommandLine.arguments[1] == "--self-test" {
+            if CommandLine.arguments == [CommandLine.arguments[0], "--self-test"] {
                 try selfTest()
                 print("SELF_TEST_OK")
                 return
             }
+            if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--ocr-only" {
+                let package = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)
+                let pages: [URL]
+                do { pages = try queuePackagePages(package) }
+                catch { throw RefinerError.invalidPackage }
+                let text = try await ocrText(pages: pages, recognize: visionText)
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                print(String(decoding: try encoder.encode(OcrResult(text: text)), as: UTF8.self))
+                return
+            }
+            guard CommandLine.arguments.count == 2 else { throw RefinerError.invalidPackage }
             let package = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
             let pages: [URL]
             do { pages = try packagePages(package) }
             catch { throw RefinerError.invalidPackage }
-            var recognized: [String] = []
-            for page in pages {
-                let text: String
-                do {
-                    var request = RecognizeDocumentsRequest()
-                    request.textRecognitionOptions.automaticallyDetectLanguage = true
-                    request.textRecognitionOptions.useLanguageCorrection = true
-                    let observations = try await ImageRequestHandler(page).perform(request)
-                    text = observations.map(\.document.text.transcript)
-                        .joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-                } catch {
-                    throw RefinerError.visionFailed
-                }
-                guard !text.isEmpty else {
-                    throw RefinerError.visionFailed
-                }
-                recognized.append(text)
-            }
-            let rawText = recognized.enumerated().map { "--- PAGE \($0.offset + 1) ---\n\($0.element)" }.joined(separator: "\n")
+            let recognized = try await recognizedPages(pages: pages, recognize: visionText)
+            let rawText = markedText(recognized)
             guard rawText.count <= 100_000 else { throw RefinerError.unreconciled }
             guard SystemLanguageModel.default.availability == .available else { throw RefinerError.modelUnavailable }
             var partials: [Receipt] = []
@@ -87,6 +85,42 @@ struct ReceiptRefiner {
         }
     }
 
+    static func visionText(_ page: URL, _ options: OcrOptions) async throws -> String {
+        do {
+            var request = RecognizeDocumentsRequest()
+            request.textRecognitionOptions.automaticallyDetectLanguage = options.automaticallyDetectLanguage
+            request.textRecognitionOptions.useLanguageCorrection = options.useLanguageCorrection
+            let observations = try await ImageRequestHandler(page).perform(request)
+            return observations.map(\.document.text.transcript).joined(separator: "\n")
+        } catch {
+            throw RefinerError.visionFailed
+        }
+    }
+
+    static func recognizedPages(
+        pages: [URL], recognize: (URL, OcrOptions) async throws -> String
+    ) async throws -> [String] {
+        var recognized: [String] = []
+        for page in pages {
+            let text = try await recognize(page, OcrOptions())
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { throw RefinerError.visionFailed }
+            recognized.append(text)
+        }
+        return recognized
+    }
+
+    static func ocrText(
+        pages: [URL], recognize: (URL, OcrOptions) async throws -> String
+    ) async throws -> String {
+        markedText(try await recognizedPages(pages: pages, recognize: recognize))
+    }
+
+    static func markedText(_ pages: [String]) -> String {
+        pages.enumerated().map { "--- PAGE \($0.offset + 1) ---\n\($0.element)" }
+            .joined(separator: "\n")
+    }
+
     static func packagePages(_ package: URL) throws -> [URL] {
         let manifestURL = package.appendingPathComponent("manifest.json")
         guard try isSafeRegularDirectory(package), try isSafeRegularFile(manifestURL, beneath: package) else {
@@ -111,6 +145,51 @@ struct ReceiptRefiner {
             guard try isSafeRegularFile(page, beneath: package) else { throw RefinerError.invalidPackage }
             let size = try page.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
             guard size > 0, size <= maximumPageBytes else { throw RefinerError.invalidPackage }
+            packageBytes += size
+        }
+        guard packageBytes <= maximumPackageBytes else { throw RefinerError.invalidPackage }
+        return pages
+    }
+
+    static func queuePackagePages(_ package: URL) throws -> [URL] {
+        do { return try validatedQueuePackagePages(package) }
+        catch { throw RefinerError.invalidPackage }
+    }
+
+    private static func validatedQueuePackagePages(_ package: URL) throws -> [URL] {
+        let manifestURL = package.appendingPathComponent("manifest.txt")
+        guard try isSafeRegularDirectory(package), try isSafeRegularFile(manifestURL, beneath: package),
+              let manifestText = String(data: try Data(contentsOf: manifestURL), encoding: .utf8)
+        else { throw RefinerError.invalidPackage }
+        var manifest: [String: String] = [:]
+        for line in manifestText.split(separator: "\n") {
+            let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2, manifest[String(parts[0])] == nil else {
+                throw RefinerError.invalidPackage
+            }
+            manifest[String(parts[0])] = String(parts[1])
+        }
+        let keys = Set(["contract", "handoff_id", "page_count", "created_at",
+                        "on_device_status", "on_device_duration_ms",
+                        "private_cloud_compute_status", "private_cloud_compute_duration_ms"])
+        guard Set(manifest.keys) == keys,
+              manifest["contract"] == "receipt_queue_capture/v1",
+              manifest["handoff_id"] == package.lastPathComponent,
+              let count = manifest["page_count"].flatMap(Int.init), (1...12).contains(count)
+        else { throw RefinerError.invalidPackage }
+        let pages = (1...count).map { package.appendingPathComponent(String(format: "page-%03d.heic", $0)) }
+        let textFiles = ["manifest.txt", "ocr.txt", "on-device.txt", "private-cloud-compute.txt"]
+        let expected = Set(textFiles + pages.map(\.lastPathComponent))
+        guard try Set(FileManager.default.contentsOfDirectory(atPath: package.path)) == expected else {
+            throw RefinerError.invalidPackage
+        }
+        var packageBytes = 0
+        for file in expected.map({ package.appendingPathComponent($0) }) {
+            guard try isSafeRegularFile(file, beneath: package) else { throw RefinerError.invalidPackage }
+            let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            if file.pathExtension == "heic" {
+                guard size > 0, size <= maximumPageBytes else { throw RefinerError.invalidPackage }
+            }
             packageBytes += size
         }
         guard packageBytes <= maximumPackageBytes else { throw RefinerError.invalidPackage }

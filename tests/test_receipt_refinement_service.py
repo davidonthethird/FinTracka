@@ -10,6 +10,7 @@ import pytest
 
 from fintracka.mobile_command_client import ClaimedReceiptRefinement
 from fintracka.receipt_refinement_service import (
+    _run_ocr_helper,
     process_receipt_queue_handoffs,
     process_receipt_refinements,
 )
@@ -295,6 +296,31 @@ def test_receipt_queue_uses_ocr_only_fallback_when_phone_text_is_blank(tmp_path:
 
     assert result["completed"] == 1
     assert client.captures[0][1]["text"] == "MAC OCR\nTOTAL 1.00"
+
+
+def test_receipt_queue_never_invokes_ocr_helper_when_phone_text_exists(tmp_path: Path) -> None:
+    handoff_id = "00000000-0000-4000-8000-000000000106"
+    queue_handoff_package(tmp_path, handoff_id)
+    client = QueueClient(frozenset({handoff_id}), [])
+
+    result = process_receipt_queue_handoffs(client, tmp_path,
+        ocr_fallback=lambda _: pytest.fail("OCR helper must not run"))
+
+    assert result["completed"] == 1
+
+
+def test_ocr_helper_uses_ocr_only_mode_and_parses_text(tmp_path: Path) -> None:
+    binary = tmp_path / "helper"
+    arguments = tmp_path / "arguments"
+    binary.write_text(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ARGUMENTS\"\nprintf '%s\\n' '{\"text\":\"MAC OCR\"}'\n"
+    )
+    binary.chmod(0o700)
+    package = tmp_path / "package"
+    package.mkdir()
+
+    assert _run_ocr_helper(binary, package, environment={"ARGUMENTS": str(arguments)}) == "MAC OCR"
+    assert arguments.read_text().splitlines() == ["--ocr-only", str(package)]
 
 
 MODEL_RESULT = json.dumps({
