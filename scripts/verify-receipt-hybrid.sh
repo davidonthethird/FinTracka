@@ -29,7 +29,6 @@ scratch=$(mktemp -d)
 trap 'find "$scratch" -depth -delete' EXIT HUP INT TERM
 "$repo_dir/scripts/build-receipt-refiner.sh" "$scratch/install"
 
-python3 "$repo_dir/scripts/build-receipt-shortcut-v4.py" >/dev/null
 plutil -lint "$repo_dir/shortcuts/FinTracka Receipt Scanner.plist"
 python3 "$repo_dir/scripts/verify-receipt-shortcut-v4.py" \
   "$repo_dir/shortcuts/FinTracka Receipt Scanner.plist"

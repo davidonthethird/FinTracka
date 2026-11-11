@@ -12,7 +12,7 @@
 				<key>WFCommentActionText</key>
 				<string>Save a receipt package to the private shared iCloud queue. Receipt photos, OCR, and both Apple model results stay in the shared Apple account boundary until the Mac relays them.</string>
 				<key>UUID</key>
-				<string>F2E790CB-69D6-46F5-99D9-2CCE64F96548</string>
+				<string>4F6B62DD-9F17-4BAE-A030-558E977B7243</string>
 			</dict>
 		</dict>
 		<dict>
@@ -25,7 +25,7 @@
 
 Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and no browser transfer or credential.</string>
 				<key>UUID</key>
-				<string>85C9D9F9-6C48-4CFC-B129-3EC7BF8E2D52</string>
+				<string>AD12902D-BCD4-4C2C-AF5C-47A2952729A8</string>
 			</dict>
 		</dict>
 		<dict>
@@ -36,7 +36,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 				<key>WFCommentActionText</key>
 				<string>--- VALIDATE FINTRACKA HANDOFF ---</string>
 				<key>UUID</key>
-				<string>009A6DF0-8244-4699-91A6-155E30F2E909</string>
+				<string>D1B69234-3923-4B76-BE0B-D4661A91161F</string>
 			</dict>
 		</dict>
 		<dict>
@@ -45,7 +45,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>D278797A-ED89-465A-AB12-23CABF5EC02D</string>
+				<string>07C89E3B-6FB0-45AA-B96C-78909066BB8B</string>
 				<key>text</key>
 				<dict>
 					<key>Value</key>
@@ -78,7 +78,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>DA9F884C-1204-4AE7-85E6-1FA019D6E515</string>
+				<string>B74D6151-B802-4365-99C8-3F5A47776827</string>
 				<key>WFCountType</key>
 				<string>Items</string>
 				<key>WFInput</key>
@@ -86,7 +86,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>D278797A-ED89-465A-AB12-23CABF5EC02D</string>
+						<string>07C89E3B-6FB0-45AA-B96C-78909066BB8B</string>
 						<key>OutputName</key>
 						<string>Matches</string>
 						<key>Type</key>
@@ -100,7 +100,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>D278797A-ED89-465A-AB12-23CABF5EC02D</string>
+						<string>07C89E3B-6FB0-45AA-B96C-78909066BB8B</string>
 						<key>OutputName</key>
 						<string>Matches</string>
 						<key>Type</key>
@@ -122,7 +122,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 • Match: continue
 • Otherwise: explain and stop</string>
 				<key>UUID</key>
-				<string>50D55FFB-A7BC-42DF-8AD1-41FB3DD2CAE9</string>
+				<string>92A0F72A-82DF-4C80-9038-70C9B4C76EE8</string>
 			</dict>
 		</dict>
 		<dict>
@@ -131,7 +131,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>F150103F-B9D8-4F02-9610-15B0385710DB</string>
+				<string>72985D24-1151-4D9F-B1A7-476A2DE581C7</string>
 				<key>WFControlFlowMode</key>
 				<integer>0</integer>
 				<key>WFCondition</key>
@@ -147,7 +147,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 						<key>Value</key>
 						<dict>
 							<key>OutputUUID</key>
-							<string>DA9F884C-1204-4AE7-85E6-1FA019D6E515</string>
+							<string>B74D6151-B802-4365-99C8-3F5A47776827</string>
 							<key>OutputName</key>
 							<string>Count</string>
 							<key>Type</key>
@@ -158,7 +158,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					</dict>
 				</dict>
 				<key>UUID</key>
-				<string>6B8523FE-F1F3-42CB-A435-F1DAB55BA0CC</string>
+				<string>2A8733F2-41FD-479C-AAE3-FDAF82AC93A3</string>
 			</dict>
 		</dict>
 		<dict>
@@ -167,11 +167,11 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>F150103F-B9D8-4F02-9610-15B0385710DB</string>
+				<string>72985D24-1151-4D9F-B1A7-476A2DE581C7</string>
 				<key>WFControlFlowMode</key>
 				<integer>1</integer>
 				<key>UUID</key>
-				<string>6AF9B00F-8BE2-47C3-AD5C-96EE4C794674</string>
+				<string>D34C549F-CA56-4A8C-8E18-7F75D83D1C65</string>
 			</dict>
 		</dict>
 		<dict>
@@ -192,7 +192,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<string>WFTextTokenString</string>
 				</dict>
 				<key>UUID</key>
-				<string>EE610761-FCD0-431A-A2EB-E522BE1130A7</string>
+				<string>FA831678-4DFA-45A9-B7EB-7CD95023C04E</string>
 			</dict>
 		</dict>
 		<dict>
@@ -201,7 +201,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>DE6D3B9F-A636-49F3-ADEC-03EF06E1C61A</string>
+				<string>B89F81FB-2A65-43C6-8214-CA27AE9013AC</string>
 			</dict>
 		</dict>
 		<dict>
@@ -210,11 +210,11 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>F150103F-B9D8-4F02-9610-15B0385710DB</string>
+				<string>72985D24-1151-4D9F-B1A7-476A2DE581C7</string>
 				<key>WFControlFlowMode</key>
 				<integer>2</integer>
 				<key>UUID</key>
-				<string>E4853CC6-8FE3-47B9-9E12-359FCAE4308A</string>
+				<string>CBBB8B3B-0B27-4ACF-83D6-3EF8374BAC17</string>
 			</dict>
 		</dict>
 		<dict>
@@ -223,7 +223,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>2075616E-C7B8-420F-A87D-28C02B455708</string>
+				<string>05999C32-E270-4054-AA5A-E2D0A2E07DA1</string>
 				<key>text</key>
 				<dict>
 					<key>Value</key>
@@ -254,7 +254,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>B86AB1B2-F2DA-4AA3-98E4-A8C2146F2133</string>
+				<string>89A725F3-B0E6-413E-99B7-E790409F7E5B</string>
 				<key>CustomOutputName</key>
 				<string>Handoff ID</string>
 				<key>WFItemSpecifier</key>
@@ -266,7 +266,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>2075616E-C7B8-420F-A87D-28C02B455708</string>
+						<string>05999C32-E270-4054-AA5A-E2D0A2E07DA1</string>
 						<key>OutputName</key>
 						<string>Split Text</string>
 						<key>Type</key>
@@ -283,7 +283,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>E12FEAC0-D34C-4661-9322-BA8E9309030B</string>
+				<string>F480FD1A-FF8C-4449-8385-B041564E53B6</string>
 				<key>CustomOutputName</key>
 				<string>Receipt Package Folder</string>
 				<key>WFFilePath</key>
@@ -295,7 +295,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 							<key>{8, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>B86AB1B2-F2DA-4AA3-98E4-A8C2146F2133</string>
+								<string>89A725F3-B0E6-413E-99B7-E790409F7E5B</string>
 								<key>OutputName</key>
 								<string>Item from List</string>
 								<key>Type</key>
@@ -318,7 +318,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 				<key>WFCommentActionText</key>
 				<string>--- SELECT 1 TO 12 ORDERED RECEIPT PAGES ---</string>
 				<key>UUID</key>
-				<string>6FA1FE21-C6B0-46C1-8B72-5316BA568163</string>
+				<string>A4A2CA38-D63D-4F4D-9281-1E6C0566D125</string>
 			</dict>
 		</dict>
 		<dict>
@@ -327,7 +327,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>D5F2FC55-41FC-4ED3-A200-29FB39B6DC36</string>
+				<string>77EEB2D8-AF17-46F6-AEBE-017898B08B6E</string>
 				<key>WFControlFlowMode</key>
 				<integer>0</integer>
 				<key>WFMenuItems</key>
@@ -338,7 +338,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 				<key>WFMenuPrompt</key>
 				<string>Add receipt pages</string>
 				<key>UUID</key>
-				<string>378C31F0-2660-4586-A32B-2CA23CD9A5B1</string>
+				<string>66BE92F5-183B-4FEE-B2C7-74F9E092960A</string>
 			</dict>
 		</dict>
 		<dict>
@@ -347,13 +347,13 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>D5F2FC55-41FC-4ED3-A200-29FB39B6DC36</string>
+				<string>77EEB2D8-AF17-46F6-AEBE-017898B08B6E</string>
 				<key>WFControlFlowMode</key>
 				<integer>1</integer>
 				<key>WFMenuItemTitle</key>
 				<string>Take photos</string>
 				<key>UUID</key>
-				<string>CBEA955C-36D6-4EE3-9C47-D28E4DC7AB49</string>
+				<string>807565C7-A2E3-497C-8D31-107589A26E5B</string>
 			</dict>
 		</dict>
 		<dict>
@@ -362,7 +362,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>F38D81FC-E2CC-4A4D-B8A1-BF7D23C6DE4B</string>
+				<string>9C5D945A-3E54-4BD7-B1B8-0FCE610C6787</string>
 				<key>CustomOutputName</key>
 				<string>Camera Page Count</string>
 				<key>WFAskActionPrompt</key>
@@ -385,7 +385,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>EAADB7A3-713B-4953-B6D1-CDF40D73ACFE</string>
+				<string>09D4EA59-2B52-44E0-913C-081DB2F15B53</string>
 				<key>CustomOutputName</key>
 				<string>Camera Receipt Pages</string>
 				<key>WFCameraCaptureShowPreview</key>
@@ -395,7 +395,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>F38D81FC-E2CC-4A4D-B8A1-BF7D23C6DE4B</string>
+						<string>9C5D945A-3E54-4BD7-B1B8-0FCE610C6787</string>
 						<key>OutputName</key>
 						<string>Provided Input</string>
 						<key>Type</key>
@@ -420,7 +420,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>EAADB7A3-713B-4953-B6D1-CDF40D73ACFE</string>
+						<string>09D4EA59-2B52-44E0-913C-081DB2F15B53</string>
 						<key>OutputName</key>
 						<string>Photos</string>
 						<key>Type</key>
@@ -430,7 +430,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<string>WFTextTokenAttachment</string>
 				</dict>
 				<key>UUID</key>
-				<string>F0761FB7-9D90-4223-BC0F-91B84A44D8D6</string>
+				<string>493818AE-B1DF-427C-B313-DB47BA546706</string>
 			</dict>
 		</dict>
 		<dict>
@@ -439,13 +439,13 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>D5F2FC55-41FC-4ED3-A200-29FB39B6DC36</string>
+				<string>77EEB2D8-AF17-46F6-AEBE-017898B08B6E</string>
 				<key>WFControlFlowMode</key>
 				<integer>1</integer>
 				<key>WFMenuItemTitle</key>
 				<string>Choose from Photo Library</string>
 				<key>UUID</key>
-				<string>5E00E9AC-C0E2-4C1A-AADE-A42E25E5858B</string>
+				<string>477EDDE0-1E64-4F1A-9D62-4C16BCC024C1</string>
 			</dict>
 		</dict>
 		<dict>
@@ -454,7 +454,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>875E06F0-BD6F-4C9A-8972-403808E738F9</string>
+				<string>7532E80E-F504-4D24-B296-244453F66A11</string>
 				<key>CustomOutputName</key>
 				<string>Library Receipt Pages</string>
 				<key>WFPhotoPickerTypes</key>
@@ -475,7 +475,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>875E06F0-BD6F-4C9A-8972-403808E738F9</string>
+						<string>7532E80E-F504-4D24-B296-244453F66A11</string>
 						<key>OutputName</key>
 						<string>Photos</string>
 						<key>Type</key>
@@ -485,7 +485,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<string>WFTextTokenAttachment</string>
 				</dict>
 				<key>UUID</key>
-				<string>134792BF-F865-4C4C-BD03-D2E47F7F69AB</string>
+				<string>792874AB-1B1F-447F-8411-4A953BBB01EB</string>
 			</dict>
 		</dict>
 		<dict>
@@ -494,11 +494,11 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>D5F2FC55-41FC-4ED3-A200-29FB39B6DC36</string>
+				<string>77EEB2D8-AF17-46F6-AEBE-017898B08B6E</string>
 				<key>WFControlFlowMode</key>
 				<integer>2</integer>
 				<key>UUID</key>
-				<string>0039E7E3-0CC8-4A6B-A928-01B92A6A79EC</string>
+				<string>637AC500-74D6-4D51-812F-46F308FAFB2A</string>
 			</dict>
 		</dict>
 		<dict>
@@ -507,7 +507,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>C3DAB00E-2FC1-45A9-BF65-43E7A18ECD54</string>
+				<string>BC0110D8-BB49-4588-A3BE-EA0653566E66</string>
 				<key>CustomOutputName</key>
 				<string>Receipt Pages</string>
 				<key>WFVariable</key>
@@ -530,7 +530,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>96AEEC38-A56B-4FC2-AAC7-3F13A15C1444</string>
+				<string>E1AF4BB6-5896-4E7F-AD4C-87AF8CF4918C</string>
 				<key>CustomOutputName</key>
 				<string>Page Count</string>
 				<key>WFCountType</key>
@@ -540,7 +540,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>C3DAB00E-2FC1-45A9-BF65-43E7A18ECD54</string>
+						<string>BC0110D8-BB49-4588-A3BE-EA0653566E66</string>
 						<key>OutputName</key>
 						<string>Variable</string>
 						<key>Type</key>
@@ -554,7 +554,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>C3DAB00E-2FC1-45A9-BF65-43E7A18ECD54</string>
+						<string>BC0110D8-BB49-4588-A3BE-EA0653566E66</string>
 						<key>OutputName</key>
 						<string>Variable</string>
 						<key>Type</key>
@@ -571,7 +571,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>C80C7326-9849-42D4-9AF0-24250940964E</string>
+				<string>958C9598-AE7A-458D-8970-C49AA57C2052</string>
 				<key>WFNumberActionNumber</key>
 				<real>12.0</real>
 			</dict>
@@ -587,7 +587,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 • 1–12: continue
 • Otherwise: explain and stop</string>
 				<key>UUID</key>
-				<string>BCC4D66C-5BEC-4E47-949D-03D0AD9843E9</string>
+				<string>BA34E9CD-0782-4BD0-B009-DC5BD5718A11</string>
 			</dict>
 		</dict>
 		<dict>
@@ -596,7 +596,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>0F6B09E5-0188-4C52-9E8E-D067A5DEA409</string>
+				<string>8A49B7F9-555C-442E-9737-ACE9D4C5E6A6</string>
 				<key>WFControlFlowMode</key>
 				<integer>0</integer>
 				<key>WFCondition</key>
@@ -608,7 +608,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>C80C7326-9849-42D4-9AF0-24250940964E</string>
+						<string>958C9598-AE7A-458D-8970-C49AA57C2052</string>
 						<key>OutputName</key>
 						<string>Number</string>
 						<key>Type</key>
@@ -626,7 +626,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 						<key>Value</key>
 						<dict>
 							<key>OutputUUID</key>
-							<string>96AEEC38-A56B-4FC2-AAC7-3F13A15C1444</string>
+							<string>E1AF4BB6-5896-4E7F-AD4C-87AF8CF4918C</string>
 							<key>OutputName</key>
 							<string>Count</string>
 							<key>Type</key>
@@ -637,7 +637,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					</dict>
 				</dict>
 				<key>UUID</key>
-				<string>F462949A-AE6A-4764-89CD-171177DA197E</string>
+				<string>74C17B0B-D34F-47B2-9C1D-462FCD7D7AF3</string>
 			</dict>
 		</dict>
 		<dict>
@@ -646,11 +646,11 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>0F6B09E5-0188-4C52-9E8E-D067A5DEA409</string>
+				<string>8A49B7F9-555C-442E-9737-ACE9D4C5E6A6</string>
 				<key>WFControlFlowMode</key>
 				<integer>1</integer>
 				<key>UUID</key>
-				<string>D42C41EF-516E-4D0A-BC6B-98C674A3EB11</string>
+				<string>51F08212-9B75-4AE5-A30E-A65F042100BC</string>
 			</dict>
 		</dict>
 		<dict>
@@ -671,7 +671,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<string>WFTextTokenString</string>
 				</dict>
 				<key>UUID</key>
-				<string>9A40319F-0049-4B05-9105-046EB9E09B87</string>
+				<string>8438BEB7-1178-4CE3-AA2C-647997FC727B</string>
 			</dict>
 		</dict>
 		<dict>
@@ -680,7 +680,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>8E75A095-ADED-4FEC-91E9-B096CFCFEAFB</string>
+				<string>55EA667C-695D-46CA-9533-677682490443</string>
 			</dict>
 		</dict>
 		<dict>
@@ -689,11 +689,11 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>0F6B09E5-0188-4C52-9E8E-D067A5DEA409</string>
+				<string>8A49B7F9-555C-442E-9737-ACE9D4C5E6A6</string>
 				<key>WFControlFlowMode</key>
 				<integer>2</integer>
 				<key>UUID</key>
-				<string>B457738A-3B59-4D4A-A53C-857F41B91CD8</string>
+				<string>159F322A-B0C9-4CA1-9670-98BA8E59E947</string>
 			</dict>
 		</dict>
 		<dict>
@@ -704,7 +704,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 				<key>WFCommentActionText</key>
 				<string>--- SAVE EACH PAGE AND OCR IT ONCE ---</string>
 				<key>UUID</key>
-				<string>C04F15A3-152A-42E8-8D35-90FE50354F33</string>
+				<string>4B3FCBA7-064D-4C43-A291-DDE2E8D0AF42</string>
 			</dict>
 		</dict>
 		<dict>
@@ -713,7 +713,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>97ED6C2F-1637-424B-BE2E-67ACFEB6CD63</string>
+				<string>2113A331-FC38-45AB-8B5D-87AC500C6E59</string>
 				<key>WFControlFlowMode</key>
 				<integer>0</integer>
 				<key>WFInput</key>
@@ -721,7 +721,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>C3DAB00E-2FC1-45A9-BF65-43E7A18ECD54</string>
+						<string>BC0110D8-BB49-4588-A3BE-EA0653566E66</string>
 						<key>OutputName</key>
 						<string>Variable</string>
 						<key>Type</key>
@@ -731,7 +731,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<string>WFTextTokenAttachment</string>
 				</dict>
 				<key>UUID</key>
-				<string>E8B7C33F-ACE3-4075-9230-EAEE79E3BAD3</string>
+				<string>7C9F288A-15CC-4825-86D3-2EF5C5543602</string>
 			</dict>
 		</dict>
 		<dict>
@@ -740,7 +740,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>37777514-B381-4477-8F02-9928FD5CC030</string>
+				<string>E67438AC-E935-4329-A26D-C114C26928A1</string>
 				<key>CustomOutputName</key>
 				<string>HEIF Page</string>
 				<key>WFImageFormat</key>
@@ -774,7 +774,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 • Under 10: page-00N
 • Otherwise: page-0NN</string>
 				<key>UUID</key>
-				<string>CFEE64E2-FAB3-4CBC-A912-C58B0D33251E</string>
+				<string>1B2237D1-34B1-456B-8F36-0EB73248DDCA</string>
 			</dict>
 		</dict>
 		<dict>
@@ -783,7 +783,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>09B34C3E-B075-4008-83EF-0E48BB3F9E09</string>
+				<string>40097111-2B71-41AD-A4A8-017C137F77A7</string>
 				<key>WFControlFlowMode</key>
 				<integer>0</integer>
 				<key>WFCondition</key>
@@ -808,7 +808,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					</dict>
 				</dict>
 				<key>UUID</key>
-				<string>CB20C0EF-A752-4D83-AC67-9CD5C778B21F</string>
+				<string>C6382664-8B4B-4AD4-8371-D2067A1FE9AF</string>
 			</dict>
 		</dict>
 		<dict>
@@ -817,7 +817,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>D1428A81-B5B4-4D8C-AF2D-C3A1CC0EBD15</string>
+				<string>6C1DE9B2-5B67-4546-8433-0C8DBCEBE752</string>
 				<key>CustomOutputName</key>
 				<string>Single Digit Page Name</string>
 				<key>WFTextActionText</key>
@@ -854,7 +854,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>D1428A81-B5B4-4D8C-AF2D-C3A1CC0EBD15</string>
+						<string>6C1DE9B2-5B67-4546-8433-0C8DBCEBE752</string>
 						<key>OutputName</key>
 						<string>Text</string>
 						<key>Type</key>
@@ -864,7 +864,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<string>WFTextTokenAttachment</string>
 				</dict>
 				<key>UUID</key>
-				<string>87EA52E2-C0C0-4B16-8421-A8D5647EE0F6</string>
+				<string>2F2797F9-0F05-45D5-B183-3870EBAD08E9</string>
 			</dict>
 		</dict>
 		<dict>
@@ -873,11 +873,11 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>09B34C3E-B075-4008-83EF-0E48BB3F9E09</string>
+				<string>40097111-2B71-41AD-A4A8-017C137F77A7</string>
 				<key>WFControlFlowMode</key>
 				<integer>1</integer>
 				<key>UUID</key>
-				<string>C434F3C1-17BB-4092-BF6E-EA273447FC94</string>
+				<string>911E4C7F-F94F-4266-9C7D-D598A8643BB3</string>
 			</dict>
 		</dict>
 		<dict>
@@ -886,7 +886,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>68D1DB9D-CBBE-4D92-8CFC-85EA424B12E9</string>
+				<string>C778D867-BEFC-4054-BA50-A915667B6BB1</string>
 				<key>CustomOutputName</key>
 				<string>Double Digit Page Name</string>
 				<key>WFTextActionText</key>
@@ -923,7 +923,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>68D1DB9D-CBBE-4D92-8CFC-85EA424B12E9</string>
+						<string>C778D867-BEFC-4054-BA50-A915667B6BB1</string>
 						<key>OutputName</key>
 						<string>Text</string>
 						<key>Type</key>
@@ -933,7 +933,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<string>WFTextTokenAttachment</string>
 				</dict>
 				<key>UUID</key>
-				<string>F6E5D1BE-9C41-46CB-A558-D276E2C25A55</string>
+				<string>314E0C9E-7B83-4FEA-95D5-BDCBDFE42974</string>
 			</dict>
 		</dict>
 		<dict>
@@ -942,11 +942,11 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>09B34C3E-B075-4008-83EF-0E48BB3F9E09</string>
+				<string>40097111-2B71-41AD-A4A8-017C137F77A7</string>
 				<key>WFControlFlowMode</key>
 				<integer>2</integer>
 				<key>UUID</key>
-				<string>2BCD4568-D903-499F-92C1-F2E7AF754C35</string>
+				<string>100A6DBF-F8A9-4D21-9D4D-892DB8D90793</string>
 			</dict>
 		</dict>
 		<dict>
@@ -955,7 +955,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>489DABBB-C27A-4870-A66D-2A2E67EA5914</string>
+				<string>E553B73A-F23F-4F18-921E-E28860424705</string>
 				<key>CustomOutputName</key>
 				<string>Padded Page Name</string>
 				<key>WFVariable</key>
@@ -978,13 +978,13 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>61DBE2F3-EF80-4B4A-818B-D87D1D4C8117</string>
+				<string>057D8D18-E2DC-4DE2-979C-1DDACA04F441</string>
 				<key>WFInput</key>
 				<dict>
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>37777514-B381-4477-8F02-9928FD5CC030</string>
+						<string>E67438AC-E935-4329-A26D-C114C26928A1</string>
 						<key>OutputName</key>
 						<string>Converted Image</string>
 						<key>Type</key>
@@ -1002,7 +1002,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 							<key>{0, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>489DABBB-C27A-4870-A66D-2A2E67EA5914</string>
+								<string>E553B73A-F23F-4F18-921E-E28860424705</string>
 								<key>OutputName</key>
 								<string>Variable</string>
 								<key>Type</key>
@@ -1029,7 +1029,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>61DBE2F3-EF80-4B4A-818B-D87D1D4C8117</string>
+						<string>057D8D18-E2DC-4DE2-979C-1DDACA04F441</string>
 						<key>OutputName</key>
 						<string>Renamed Item</string>
 						<key>Type</key>
@@ -1043,7 +1043,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>E12FEAC0-D34C-4661-9322-BA8E9309030B</string>
+						<string>F480FD1A-FF8C-4449-8385-B041564E53B6</string>
 						<key>OutputName</key>
 						<string>Folder</string>
 						<key>Type</key>
@@ -1057,7 +1057,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 				<key>WFSaveFileOverwrite</key>
 				<false/>
 				<key>UUID</key>
-				<string>247B98DF-4D8E-477D-852E-979735C33F2B</string>
+				<string>51FE3C3B-AEDD-4B33-92A8-E6B284D00C1C</string>
 			</dict>
 		</dict>
 		<dict>
@@ -1066,7 +1066,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>B52FA7B3-DB36-4CEA-90A1-6A76CD7D1344</string>
+				<string>6676F186-57CB-4A00-95E9-BE360A2DF8A5</string>
 				<key>CustomOutputName</key>
 				<string>Page OCR</string>
 				<key>WFImage</key>
@@ -1089,7 +1089,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>B1403D9D-475C-4EC3-8803-BCDDE1E1CB23</string>
+				<string>90D93F46-2165-45CC-A1AF-7AF11B21AA27</string>
 				<key>CustomOutputName</key>
 				<string>Marked Page OCR</string>
 				<key>WFTextActionText</key>
@@ -1108,7 +1108,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 							<key>{15, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>B52FA7B3-DB36-4CEA-90A1-6A76CD7D1344</string>
+								<string>6676F186-57CB-4A00-95E9-BE360A2DF8A5</string>
 								<key>OutputName</key>
 								<string>Text</string>
 								<key>Type</key>
@@ -1136,7 +1136,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>B1403D9D-475C-4EC3-8803-BCDDE1E1CB23</string>
+						<string>90D93F46-2165-45CC-A1AF-7AF11B21AA27</string>
 						<key>OutputName</key>
 						<string>Text</string>
 						<key>Type</key>
@@ -1146,7 +1146,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<string>WFTextTokenAttachment</string>
 				</dict>
 				<key>UUID</key>
-				<string>857106CE-089A-4B98-B8C3-86CB4353047A</string>
+				<string>4BEB3695-F7A7-4D77-BF9E-AAF6D439F7B4</string>
 			</dict>
 		</dict>
 		<dict>
@@ -1155,11 +1155,11 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>0C2331F1-37B8-4BDB-B0EC-934B964E75AE</string>
+				<string>A84682D5-26A1-4CDB-A6E4-26B3A96C6C25</string>
 				<key>CustomOutputName</key>
 				<string>Marked OCR Pages</string>
 				<key>GroupingIdentifier</key>
-				<string>97ED6C2F-1637-424B-BE2E-67ACFEB6CD63</string>
+				<string>2113A331-FC38-45AB-8B5D-87AC500C6E59</string>
 				<key>WFControlFlowMode</key>
 				<integer>2</integer>
 			</dict>
@@ -1170,7 +1170,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>95273EFA-B449-4D34-B549-964FF51D2D1A</string>
+				<string>071062DA-BFFF-4BEA-B4FA-08F0B244B26C</string>
 				<key>CustomOutputName</key>
 				<string>Marked OCR Pages</string>
 				<key>WFVariable</key>
@@ -1193,7 +1193,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>7F70EAB5-CF20-4AC1-AE2F-03DCBC7C2A38</string>
+				<string>BDA0F542-CC05-462E-B2D6-7D17400E2370</string>
 				<key>CustomOutputName</key>
 				<string>Combined OCR</string>
 				<key>text</key>
@@ -1205,7 +1205,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 							<key>{0, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>95273EFA-B449-4D34-B549-964FF51D2D1A</string>
+								<string>071062DA-BFFF-4BEA-B4FA-08F0B244B26C</string>
 								<key>OutputName</key>
 								<string>Variable</string>
 								<key>Type</key>
@@ -1230,13 +1230,13 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>268B4949-395C-4CBC-A5C6-61C02FAA4248</string>
+				<string>D5926704-92C2-4ADD-88BA-20810FF705FC</string>
 				<key>WFInput</key>
 				<dict>
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>7F70EAB5-CF20-4AC1-AE2F-03DCBC7C2A38</string>
+						<string>BDA0F542-CC05-462E-B2D6-7D17400E2370</string>
 						<key>OutputName</key>
 						<string>Combined Text</string>
 						<key>Type</key>
@@ -1261,7 +1261,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>268B4949-395C-4CBC-A5C6-61C02FAA4248</string>
+						<string>D5926704-92C2-4ADD-88BA-20810FF705FC</string>
 						<key>OutputName</key>
 						<string>Renamed Item</string>
 						<key>Type</key>
@@ -1275,7 +1275,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>E12FEAC0-D34C-4661-9322-BA8E9309030B</string>
+						<string>F480FD1A-FF8C-4449-8385-B041564E53B6</string>
 						<key>OutputName</key>
 						<string>Folder</string>
 						<key>Type</key>
@@ -1289,7 +1289,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 				<key>WFSaveFileOverwrite</key>
 				<false/>
 				<key>UUID</key>
-				<string>90BBB98D-73F7-48BD-9726-09426F4A11E4</string>
+				<string>343FA3C0-81F3-4BF2-9513-9C99DF806F45</string>
 			</dict>
 		</dict>
 		<dict>
@@ -1300,7 +1300,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 				<key>WFCommentActionText</key>
 				<string>--- RUN THE SAME EVIDENCE THROUGH BOTH APPLE MODEL ROUTES ---</string>
 				<key>UUID</key>
-				<string>A9A4016A-1F3F-4440-A976-B16C0CA415E3</string>
+				<string>CD94EA8F-831B-4981-9034-F258CEA33062</string>
 			</dict>
 		</dict>
 		<dict>
@@ -1309,7 +1309,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>050BBC4F-9B3F-4FFF-8541-E35557471562</string>
+				<string>7BC02D16-DECA-4B11-A95E-EF9DDDF0ECF7</string>
 				<key>CustomOutputName</key>
 				<string>Empty Model Result</string>
 			</dict>
@@ -1320,7 +1320,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>7EC9261F-59EF-4C32-BF2B-4EEF60BA7465</string>
+				<string>B8C1268A-0A20-40CE-B040-630AAA02C0A0</string>
 				<key>CustomOutputName</key>
 				<string>On-Device Started</string>
 				<key>WFDateActionMode</key>
@@ -1333,7 +1333,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>8EF979D5-BF88-4C20-8FF8-F33D2E989894</string>
+				<string>4FA71D70-842D-4175-92F4-A4926A25DAF4</string>
 				<key>CustomOutputName</key>
 				<string>On-Device Result</string>
 				<key>WFLLMModel</key>
@@ -1353,7 +1353,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 							<key>{0, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>7F70EAB5-CF20-4AC1-AE2F-03DCBC7C2A38</string>
+								<string>BDA0F542-CC05-462E-B2D6-7D17400E2370</string>
 								<key>OutputName</key>
 								<string>Combined Text</string>
 								<key>Type</key>
@@ -1362,7 +1362,7 @@ Built for FinTracka receipt_queue_handoff/v1 with a private iCloud handoff and n
 							<key>{3, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>C3DAB00E-2FC1-45A9-BF65-43E7A18ECD54</string>
+								<string>BC0110D8-BB49-4588-A3BE-EA0653566E66</string>
 								<key>OutputName</key>
 								<string>Variable</string>
 								<key>Type</key>
@@ -1387,7 +1387,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>65940101-A332-44C3-8086-DD70C1C194A2</string>
+				<string>127179D5-6DB8-4C98-872D-54D0A6851AC8</string>
 				<key>CustomOutputName</key>
 				<string>On-Device Finished</string>
 				<key>WFDateActionMode</key>
@@ -1400,7 +1400,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>6531E09D-108B-4DC8-BC4A-27B10B30C6DA</string>
+				<string>B4AC6937-A511-4216-B080-5277E54B8C55</string>
 				<key>CustomOutputName</key>
 				<string>On-Device Seconds</string>
 				<key>WFTimeUntilFromDate</key>
@@ -1412,7 +1412,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 							<key>{0, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>7EC9261F-59EF-4C32-BF2B-4EEF60BA7465</string>
+								<string>B8C1268A-0A20-40CE-B040-630AAA02C0A0</string>
 								<key>OutputName</key>
 								<string>Date</string>
 								<key>Type</key>
@@ -1434,7 +1434,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 							<key>{0, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>65940101-A332-44C3-8086-DD70C1C194A2</string>
+								<string>127179D5-6DB8-4C98-872D-54D0A6851AC8</string>
 								<key>OutputName</key>
 								<string>Date</string>
 								<key>Type</key>
@@ -1457,7 +1457,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>204221AD-0B5E-4616-951C-314A3CC1F2A3</string>
+				<string>2ACEAA31-FCC4-43FA-BC6B-8B6E4639ADBD</string>
 				<key>CustomOutputName</key>
 				<string>On-Device Milliseconds</string>
 				<key>WFInput</key>
@@ -1465,7 +1465,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>6531E09D-108B-4DC8-BC4A-27B10B30C6DA</string>
+						<string>B4AC6937-A511-4216-B080-5277E54B8C55</string>
 						<key>OutputName</key>
 						<string>Time Between Dates</string>
 						<key>Type</key>
@@ -1486,7 +1486,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>783B9BDF-5E51-4E5C-81EF-5DEDA58A9A78</string>
+				<string>E8EFA647-D9D1-4A70-8D53-029F71895DDA</string>
 				<key>CustomOutputName</key>
 				<string>On-Device Duration Milliseconds</string>
 				<key>WFInput</key>
@@ -1494,7 +1494,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>204221AD-0B5E-4616-951C-314A3CC1F2A3</string>
+						<string>2ACEAA31-FCC4-43FA-BC6B-8B6E4639ADBD</string>
 						<key>OutputName</key>
 						<string>Calculation Result</string>
 						<key>Type</key>
@@ -1520,7 +1520,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 • Has text: completed
 • Otherwise: unavailable with an empty file</string>
 				<key>UUID</key>
-				<string>10AF7A7C-E08E-46D3-BAFB-629C749700DE</string>
+				<string>0017E494-5EF0-468F-A2A9-48A1F6ED5D5B</string>
 			</dict>
 		</dict>
 		<dict>
@@ -1529,7 +1529,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>BAF8B0A8-CBCA-423A-8438-BF5007A85B8C</string>
+				<string>376A8DCE-94D3-46BA-9253-39FE579FD7EC</string>
 				<key>WFControlFlowMode</key>
 				<integer>0</integer>
 				<key>WFCondition</key>
@@ -1543,7 +1543,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 						<key>Value</key>
 						<dict>
 							<key>OutputUUID</key>
-							<string>8EF979D5-BF88-4C20-8FF8-F33D2E989894</string>
+							<string>4FA71D70-842D-4175-92F4-A4926A25DAF4</string>
 							<key>OutputName</key>
 							<string>Model Result</string>
 							<key>Type</key>
@@ -1554,7 +1554,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					</dict>
 				</dict>
 				<key>UUID</key>
-				<string>18D01A0C-780F-4834-9049-B3F3A87968E8</string>
+				<string>C30DFF98-6D6D-41D6-9719-7EED20E53966</string>
 			</dict>
 		</dict>
 		<dict>
@@ -1563,7 +1563,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>768F68CB-0C90-4027-9410-C7DBD7A0F8EB</string>
+				<string>CC1A9C5C-49ED-4356-A932-9484BF350F4A</string>
 				<key>CustomOutputName</key>
 				<string>On-Device Completed Status</string>
 				<key>WFTextActionText</key>
@@ -1592,7 +1592,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>768F68CB-0C90-4027-9410-C7DBD7A0F8EB</string>
+						<string>CC1A9C5C-49ED-4356-A932-9484BF350F4A</string>
 						<key>OutputName</key>
 						<string>Text</string>
 						<key>Type</key>
@@ -1602,7 +1602,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<string>WFTextTokenAttachment</string>
 				</dict>
 				<key>UUID</key>
-				<string>61B26CB1-E7EF-49C5-9846-3EE174DC018E</string>
+				<string>72CA6EE9-93FC-4E39-A8FF-E9852C523F7B</string>
 			</dict>
 		</dict>
 		<dict>
@@ -1611,7 +1611,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>44F1329A-AD35-4FE2-848F-A3292D1A0C5C</string>
+				<string>7AC7798F-1FBA-4A96-9177-047ECCC990BB</string>
 				<key>CustomOutputName</key>
 				<string>On-Device Saved Result</string>
 				<key>WFTextActionText</key>
@@ -1623,7 +1623,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 							<key>{0, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>8EF979D5-BF88-4C20-8FF8-F33D2E989894</string>
+								<string>4FA71D70-842D-4175-92F4-A4926A25DAF4</string>
 								<key>OutputName</key>
 								<string>Model Result</string>
 								<key>Type</key>
@@ -1650,7 +1650,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>44F1329A-AD35-4FE2-848F-A3292D1A0C5C</string>
+						<string>7AC7798F-1FBA-4A96-9177-047ECCC990BB</string>
 						<key>OutputName</key>
 						<string>Text</string>
 						<key>Type</key>
@@ -1660,7 +1660,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<string>WFTextTokenAttachment</string>
 				</dict>
 				<key>UUID</key>
-				<string>815C4C91-6E6D-4254-8739-E82DE3CC2E31</string>
+				<string>5862EEE5-3FA9-4EA7-B4FE-CCD0911EAA95</string>
 			</dict>
 		</dict>
 		<dict>
@@ -1669,11 +1669,11 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>BAF8B0A8-CBCA-423A-8438-BF5007A85B8C</string>
+				<string>376A8DCE-94D3-46BA-9253-39FE579FD7EC</string>
 				<key>WFControlFlowMode</key>
 				<integer>1</integer>
 				<key>UUID</key>
-				<string>A7EF63B2-3484-49CF-8847-DDD2344087B5</string>
+				<string>2C30E173-B35F-49C1-A83D-181CAA8C3404</string>
 			</dict>
 		</dict>
 		<dict>
@@ -1682,7 +1682,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>7E4586D4-5D02-434B-836E-B8C67EE18386</string>
+				<string>C70B36DB-D6B8-4264-A4F8-A7ECD2A1094A</string>
 				<key>CustomOutputName</key>
 				<string>On-Device Unavailable Status</string>
 				<key>WFTextActionText</key>
@@ -1711,7 +1711,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>7E4586D4-5D02-434B-836E-B8C67EE18386</string>
+						<string>C70B36DB-D6B8-4264-A4F8-A7ECD2A1094A</string>
 						<key>OutputName</key>
 						<string>Text</string>
 						<key>Type</key>
@@ -1721,7 +1721,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<string>WFTextTokenAttachment</string>
 				</dict>
 				<key>UUID</key>
-				<string>3ED9D976-69EE-4472-A49B-9EC82358885E</string>
+				<string>8C639F4D-1EF4-4431-8797-2DDADE212D37</string>
 			</dict>
 		</dict>
 		<dict>
@@ -1730,7 +1730,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>7C80DAA6-A5E4-4262-91C3-2BB7D3742117</string>
+				<string>C390839B-6A16-4C16-988E-85E7CBC8677E</string>
 				<key>CustomOutputName</key>
 				<string>On-Device Empty Result</string>
 				<key>WFTextActionText</key>
@@ -1742,7 +1742,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 							<key>{0, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>050BBC4F-9B3F-4FFF-8541-E35557471562</string>
+								<string>7BC02D16-DECA-4B11-A95E-EF9DDDF0ECF7</string>
 								<key>OutputName</key>
 								<string>Nothing</string>
 								<key>Type</key>
@@ -1769,7 +1769,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>7C80DAA6-A5E4-4262-91C3-2BB7D3742117</string>
+						<string>C390839B-6A16-4C16-988E-85E7CBC8677E</string>
 						<key>OutputName</key>
 						<string>Text</string>
 						<key>Type</key>
@@ -1779,7 +1779,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<string>WFTextTokenAttachment</string>
 				</dict>
 				<key>UUID</key>
-				<string>28E8C1A7-4D05-42FB-B645-2373700144DF</string>
+				<string>53AA0F66-2408-4C3F-A654-C8CD7D8520FC</string>
 			</dict>
 		</dict>
 		<dict>
@@ -1788,11 +1788,11 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>BAF8B0A8-CBCA-423A-8438-BF5007A85B8C</string>
+				<string>376A8DCE-94D3-46BA-9253-39FE579FD7EC</string>
 				<key>WFControlFlowMode</key>
 				<integer>2</integer>
 				<key>UUID</key>
-				<string>005C7F06-F794-47FF-8E4D-B4BBE64AE8E7</string>
+				<string>AE0C7582-5B26-491F-B0E9-5DDB0B03449A</string>
 			</dict>
 		</dict>
 		<dict>
@@ -1801,7 +1801,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>DB00E2BE-73EE-4769-AE9C-E7D5449001F9</string>
+				<string>EA9858DB-3F3F-458D-B325-EA5604F16D98</string>
 				<key>CustomOutputName</key>
 				<string>On-Device File Text</string>
 				<key>WFVariable</key>
@@ -1824,13 +1824,13 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>CC0F2F7A-36FA-465F-9175-8A2097DC2506</string>
+				<string>5154F102-4445-4F0A-B101-AB008FF8D3DF</string>
 				<key>WFInput</key>
 				<dict>
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>DB00E2BE-73EE-4769-AE9C-E7D5449001F9</string>
+						<string>EA9858DB-3F3F-458D-B325-EA5604F16D98</string>
 						<key>OutputName</key>
 						<string>Variable</string>
 						<key>Type</key>
@@ -1855,7 +1855,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>CC0F2F7A-36FA-465F-9175-8A2097DC2506</string>
+						<string>5154F102-4445-4F0A-B101-AB008FF8D3DF</string>
 						<key>OutputName</key>
 						<string>Renamed Item</string>
 						<key>Type</key>
@@ -1869,7 +1869,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>E12FEAC0-D34C-4661-9322-BA8E9309030B</string>
+						<string>F480FD1A-FF8C-4449-8385-B041564E53B6</string>
 						<key>OutputName</key>
 						<string>Folder</string>
 						<key>Type</key>
@@ -1883,7 +1883,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 				<key>WFSaveFileOverwrite</key>
 				<false/>
 				<key>UUID</key>
-				<string>1FDA6186-24C5-4247-841B-5AC793F14275</string>
+				<string>9D1FE572-40AD-43E8-AE31-6C4AD2F58EBA</string>
 			</dict>
 		</dict>
 		<dict>
@@ -1892,7 +1892,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>F3256C44-35DE-4CF4-A2CB-84668ACE5795</string>
+				<string>68DD71C1-8398-4302-A1C3-DDD86EF5B765</string>
 				<key>CustomOutputName</key>
 				<string>Private Cloud Compute Started</string>
 				<key>WFDateActionMode</key>
@@ -1905,7 +1905,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>265B7E13-214B-494E-804D-D48D6399FF8C</string>
+				<string>AD02D3FC-B16B-409A-965D-402CF23DB793</string>
 				<key>CustomOutputName</key>
 				<string>Private Cloud Compute Result</string>
 				<key>WFLLMModel</key>
@@ -1925,7 +1925,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 							<key>{0, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>7F70EAB5-CF20-4AC1-AE2F-03DCBC7C2A38</string>
+								<string>BDA0F542-CC05-462E-B2D6-7D17400E2370</string>
 								<key>OutputName</key>
 								<string>Combined Text</string>
 								<key>Type</key>
@@ -1934,7 +1934,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 							<key>{3, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>C3DAB00E-2FC1-45A9-BF65-43E7A18ECD54</string>
+								<string>BC0110D8-BB49-4588-A3BE-EA0653566E66</string>
 								<key>OutputName</key>
 								<string>Variable</string>
 								<key>Type</key>
@@ -1959,7 +1959,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>B88E5FF7-4322-421C-BD53-A28A1804B108</string>
+				<string>2E1DEBEE-273D-4D90-95E1-8CE310B2C014</string>
 				<key>CustomOutputName</key>
 				<string>Private Cloud Compute Finished</string>
 				<key>WFDateActionMode</key>
@@ -1972,7 +1972,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>C8895604-C973-4456-A2B2-5F9FC210C2D0</string>
+				<string>DAEB45AD-E849-43F1-BA52-D83F869FD782</string>
 				<key>CustomOutputName</key>
 				<string>Private Cloud Compute Seconds</string>
 				<key>WFTimeUntilFromDate</key>
@@ -1984,7 +1984,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 							<key>{0, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>F3256C44-35DE-4CF4-A2CB-84668ACE5795</string>
+								<string>68DD71C1-8398-4302-A1C3-DDD86EF5B765</string>
 								<key>OutputName</key>
 								<string>Date</string>
 								<key>Type</key>
@@ -2006,7 +2006,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 							<key>{0, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>B88E5FF7-4322-421C-BD53-A28A1804B108</string>
+								<string>2E1DEBEE-273D-4D90-95E1-8CE310B2C014</string>
 								<key>OutputName</key>
 								<string>Date</string>
 								<key>Type</key>
@@ -2029,7 +2029,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>B88C143A-49FB-46CC-B753-85D3B2010984</string>
+				<string>F7A24BC5-30BC-40B4-8589-2AE24D95AB6E</string>
 				<key>CustomOutputName</key>
 				<string>Private Cloud Compute Milliseconds</string>
 				<key>WFInput</key>
@@ -2037,7 +2037,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>C8895604-C973-4456-A2B2-5F9FC210C2D0</string>
+						<string>DAEB45AD-E849-43F1-BA52-D83F869FD782</string>
 						<key>OutputName</key>
 						<string>Time Between Dates</string>
 						<key>Type</key>
@@ -2058,7 +2058,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>BA50A353-1E0D-4415-846B-9E3CEFEDBEFA</string>
+				<string>4B7FD7A7-6839-462E-9369-B1EFB909498B</string>
 				<key>CustomOutputName</key>
 				<string>Private Cloud Compute Duration Milliseconds</string>
 				<key>WFInput</key>
@@ -2066,7 +2066,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>B88C143A-49FB-46CC-B753-85D3B2010984</string>
+						<string>F7A24BC5-30BC-40B4-8589-2AE24D95AB6E</string>
 						<key>OutputName</key>
 						<string>Calculation Result</string>
 						<key>Type</key>
@@ -2092,7 +2092,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 • Has text: completed
 • Otherwise: unavailable with an empty file</string>
 				<key>UUID</key>
-				<string>CEE31E54-4634-4022-B495-31FF240EC47D</string>
+				<string>3E6E73D0-F1CF-4339-9D3A-709C0520F838</string>
 			</dict>
 		</dict>
 		<dict>
@@ -2101,7 +2101,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>4D47D188-0E74-4CBD-8115-9EADB610BC7F</string>
+				<string>1819CD57-9D79-4992-804C-B0C00C210716</string>
 				<key>WFControlFlowMode</key>
 				<integer>0</integer>
 				<key>WFCondition</key>
@@ -2115,7 +2115,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 						<key>Value</key>
 						<dict>
 							<key>OutputUUID</key>
-							<string>265B7E13-214B-494E-804D-D48D6399FF8C</string>
+							<string>AD02D3FC-B16B-409A-965D-402CF23DB793</string>
 							<key>OutputName</key>
 							<string>Model Result</string>
 							<key>Type</key>
@@ -2126,7 +2126,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					</dict>
 				</dict>
 				<key>UUID</key>
-				<string>FBDE49F2-49E4-4E85-90DF-407FAE4E7E0C</string>
+				<string>58D6315C-FC79-4151-B6C4-0CEED1D7D4E0</string>
 			</dict>
 		</dict>
 		<dict>
@@ -2135,7 +2135,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>9185FB06-BB97-4B91-9C3E-CDDEF160C040</string>
+				<string>F4FAB493-7CE3-46F4-B8AB-EFC4305C9994</string>
 				<key>CustomOutputName</key>
 				<string>Private Cloud Compute Completed Status</string>
 				<key>WFTextActionText</key>
@@ -2164,7 +2164,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>9185FB06-BB97-4B91-9C3E-CDDEF160C040</string>
+						<string>F4FAB493-7CE3-46F4-B8AB-EFC4305C9994</string>
 						<key>OutputName</key>
 						<string>Text</string>
 						<key>Type</key>
@@ -2174,7 +2174,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<string>WFTextTokenAttachment</string>
 				</dict>
 				<key>UUID</key>
-				<string>9322CF0A-B96C-43E2-81D9-1B2BBE7FD466</string>
+				<string>F4CF78A0-528C-4EC1-B78E-EA84AE53F1DA</string>
 			</dict>
 		</dict>
 		<dict>
@@ -2183,7 +2183,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>DF1583A9-0335-4B7C-80C6-330328D244A7</string>
+				<string>405B134E-48A1-47D7-AA63-D146A6B6B58B</string>
 				<key>CustomOutputName</key>
 				<string>Private Cloud Compute Saved Result</string>
 				<key>WFTextActionText</key>
@@ -2195,7 +2195,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 							<key>{0, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>265B7E13-214B-494E-804D-D48D6399FF8C</string>
+								<string>AD02D3FC-B16B-409A-965D-402CF23DB793</string>
 								<key>OutputName</key>
 								<string>Model Result</string>
 								<key>Type</key>
@@ -2222,7 +2222,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>DF1583A9-0335-4B7C-80C6-330328D244A7</string>
+						<string>405B134E-48A1-47D7-AA63-D146A6B6B58B</string>
 						<key>OutputName</key>
 						<string>Text</string>
 						<key>Type</key>
@@ -2232,7 +2232,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<string>WFTextTokenAttachment</string>
 				</dict>
 				<key>UUID</key>
-				<string>BCA79D1B-3260-4100-BE6A-DA3765C1B886</string>
+				<string>D61ABE2A-A4EE-4B62-A579-152E0A0984D4</string>
 			</dict>
 		</dict>
 		<dict>
@@ -2241,11 +2241,11 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>4D47D188-0E74-4CBD-8115-9EADB610BC7F</string>
+				<string>1819CD57-9D79-4992-804C-B0C00C210716</string>
 				<key>WFControlFlowMode</key>
 				<integer>1</integer>
 				<key>UUID</key>
-				<string>04F7411B-577C-451C-9482-E07982221C91</string>
+				<string>1CFB8803-A9A7-4D75-8080-EE97BAEC689F</string>
 			</dict>
 		</dict>
 		<dict>
@@ -2254,7 +2254,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>2A7D5952-F412-407A-8F7B-A0560F2C3504</string>
+				<string>7C4C58D3-023C-41D2-98FB-2D70B4889C28</string>
 				<key>CustomOutputName</key>
 				<string>Private Cloud Compute Unavailable Status</string>
 				<key>WFTextActionText</key>
@@ -2283,7 +2283,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>2A7D5952-F412-407A-8F7B-A0560F2C3504</string>
+						<string>7C4C58D3-023C-41D2-98FB-2D70B4889C28</string>
 						<key>OutputName</key>
 						<string>Text</string>
 						<key>Type</key>
@@ -2293,7 +2293,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<string>WFTextTokenAttachment</string>
 				</dict>
 				<key>UUID</key>
-				<string>141B1DFE-EFBA-47B8-BD5B-662DF97A0349</string>
+				<string>0F839274-44F0-48B1-AF84-9495CBA10F77</string>
 			</dict>
 		</dict>
 		<dict>
@@ -2302,7 +2302,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>76E4CF27-CBD6-49D7-9325-1B8F60CE77EC</string>
+				<string>8C35B7C9-663D-4DB4-B001-5ADC3A16521E</string>
 				<key>CustomOutputName</key>
 				<string>Private Cloud Compute Empty Result</string>
 				<key>WFTextActionText</key>
@@ -2314,7 +2314,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 							<key>{0, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>050BBC4F-9B3F-4FFF-8541-E35557471562</string>
+								<string>7BC02D16-DECA-4B11-A95E-EF9DDDF0ECF7</string>
 								<key>OutputName</key>
 								<string>Nothing</string>
 								<key>Type</key>
@@ -2341,7 +2341,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>76E4CF27-CBD6-49D7-9325-1B8F60CE77EC</string>
+						<string>8C35B7C9-663D-4DB4-B001-5ADC3A16521E</string>
 						<key>OutputName</key>
 						<string>Text</string>
 						<key>Type</key>
@@ -2351,7 +2351,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<string>WFTextTokenAttachment</string>
 				</dict>
 				<key>UUID</key>
-				<string>755ED2C3-A997-46D4-BCE9-04C4F5FBD4E7</string>
+				<string>6B0509D9-16FE-4713-97B4-8F19B11345DE</string>
 			</dict>
 		</dict>
 		<dict>
@@ -2360,11 +2360,11 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>GroupingIdentifier</key>
-				<string>4D47D188-0E74-4CBD-8115-9EADB610BC7F</string>
+				<string>1819CD57-9D79-4992-804C-B0C00C210716</string>
 				<key>WFControlFlowMode</key>
 				<integer>2</integer>
 				<key>UUID</key>
-				<string>F58663CE-FFBD-4AC7-9A18-6159946A6408</string>
+				<string>084805E1-9D74-4546-B31B-392F271F5C82</string>
 			</dict>
 		</dict>
 		<dict>
@@ -2373,7 +2373,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>A0BA694D-32DE-44A7-B6BE-0894B3C8E03A</string>
+				<string>CC1E1080-D10B-4079-A1FB-C4CD2D659579</string>
 				<key>CustomOutputName</key>
 				<string>Private Cloud Compute File Text</string>
 				<key>WFVariable</key>
@@ -2396,13 +2396,13 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>1D28647E-9E2C-4344-B960-D9D1A2EADD40</string>
+				<string>7EEE5BC6-D269-485B-A5E7-95E43E4B58C4</string>
 				<key>WFInput</key>
 				<dict>
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>A0BA694D-32DE-44A7-B6BE-0894B3C8E03A</string>
+						<string>CC1E1080-D10B-4079-A1FB-C4CD2D659579</string>
 						<key>OutputName</key>
 						<string>Variable</string>
 						<key>Type</key>
@@ -2427,7 +2427,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>1D28647E-9E2C-4344-B960-D9D1A2EADD40</string>
+						<string>7EEE5BC6-D269-485B-A5E7-95E43E4B58C4</string>
 						<key>OutputName</key>
 						<string>Renamed Item</string>
 						<key>Type</key>
@@ -2441,7 +2441,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>E12FEAC0-D34C-4661-9322-BA8E9309030B</string>
+						<string>F480FD1A-FF8C-4449-8385-B041564E53B6</string>
 						<key>OutputName</key>
 						<string>Folder</string>
 						<key>Type</key>
@@ -2455,7 +2455,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 				<key>WFSaveFileOverwrite</key>
 				<false/>
 				<key>UUID</key>
-				<string>21C53D76-513B-4E6A-9802-3069F25D91BC</string>
+				<string>60BC974C-EB74-4CDE-8323-6CAFD0F71A23</string>
 			</dict>
 		</dict>
 		<dict>
@@ -2464,7 +2464,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>F2C3AB57-F57E-44B5-ADED-DC0D8B2C9715</string>
+				<string>9C8DA472-9C91-4128-86BA-02EACE2819AD</string>
 				<key>CustomOutputName</key>
 				<string>Created At</string>
 				<key>WFDateActionMode</key>
@@ -2477,7 +2477,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>5A14ACE0-F250-4F2D-B6D5-6695FE93AFBC</string>
+				<string>5B7C7AB9-3C72-437F-8C42-26752F011579</string>
 				<key>CustomOutputName</key>
 				<string>Created At ISO 8601</string>
 				<key>WFDateFormatStyle</key>
@@ -2495,7 +2495,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 							<key>{0, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>F2C3AB57-F57E-44B5-ADED-DC0D8B2C9715</string>
+								<string>9C8DA472-9C91-4128-86BA-02EACE2819AD</string>
 								<key>OutputName</key>
 								<string>Date</string>
 								<key>Type</key>
@@ -2516,7 +2516,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>5E967A35-8DCE-4BBC-BA6C-C29A84A05334</string>
+				<string>41CA774D-470D-4785-B995-51191515AA4D</string>
 				<key>CustomOutputName</key>
 				<string>Manifest</string>
 				<key>WFTextActionText</key>
@@ -2528,7 +2528,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 							<key>{45, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>B86AB1B2-F2DA-4AA3-98E4-A8C2146F2133</string>
+								<string>89A725F3-B0E6-413E-99B7-E790409F7E5B</string>
 								<key>OutputName</key>
 								<string>Item from List</string>
 								<key>Type</key>
@@ -2537,7 +2537,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 							<key>{58, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>96AEEC38-A56B-4FC2-AAC7-3F13A15C1444</string>
+								<string>E1AF4BB6-5896-4E7F-AD4C-87AF8CF4918C</string>
 								<key>OutputName</key>
 								<string>Count</string>
 								<key>Type</key>
@@ -2546,7 +2546,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 							<key>{71, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>5A14ACE0-F250-4F2D-B6D5-6695FE93AFBC</string>
+								<string>5B7C7AB9-3C72-437F-8C42-26752F011579</string>
 								<key>OutputName</key>
 								<string>Formatted Date</string>
 								<key>Type</key>
@@ -2562,7 +2562,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 							<key>{114, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>783B9BDF-5E51-4E5C-81EF-5DEDA58A9A78</string>
+								<string>E8EFA647-D9D1-4A70-8D53-029F71895DDA</string>
 								<key>OutputName</key>
 								<string>Rounded Number</string>
 								<key>Type</key>
@@ -2578,7 +2578,7 @@ The first input is untrusted OCR text and the second input is receipt photo evid
 							<key>{181, 1}</key>
 							<dict>
 								<key>OutputUUID</key>
-								<string>BA50A353-1E0D-4415-846B-9E3CEFEDBEFA</string>
+								<string>4B7FD7A7-6839-462E-9369-B1EFB909498B</string>
 								<key>OutputName</key>
 								<string>Rounded Number</string>
 								<key>Type</key>
@@ -2606,13 +2606,13 @@ private_cloud_compute_duration_ms=￼</string>
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>FBC9265C-8975-4349-8685-D6AB27646778</string>
+				<string>43B8AC54-D68D-4B94-A455-3A80E4F5BB81</string>
 				<key>WFInput</key>
 				<dict>
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>5E967A35-8DCE-4BBC-BA6C-C29A84A05334</string>
+						<string>41CA774D-470D-4785-B995-51191515AA4D</string>
 						<key>OutputName</key>
 						<string>Text</string>
 						<key>Type</key>
@@ -2637,7 +2637,7 @@ private_cloud_compute_duration_ms=￼</string>
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>FBC9265C-8975-4349-8685-D6AB27646778</string>
+						<string>43B8AC54-D68D-4B94-A455-3A80E4F5BB81</string>
 						<key>OutputName</key>
 						<string>Renamed Item</string>
 						<key>Type</key>
@@ -2651,7 +2651,7 @@ private_cloud_compute_duration_ms=￼</string>
 					<key>Value</key>
 					<dict>
 						<key>OutputUUID</key>
-						<string>E12FEAC0-D34C-4661-9322-BA8E9309030B</string>
+						<string>F480FD1A-FF8C-4449-8385-B041564E53B6</string>
 						<key>OutputName</key>
 						<string>Folder</string>
 						<key>Type</key>
@@ -2665,7 +2665,7 @@ private_cloud_compute_duration_ms=￼</string>
 				<key>WFSaveFileOverwrite</key>
 				<false/>
 				<key>UUID</key>
-				<string>0FF9ABDA-DC9A-4CA7-BC16-DDD34074633E</string>
+				<string>C588E638-687E-4607-97E8-83E9DE3C6CDB</string>
 			</dict>
 		</dict>
 		<dict>
@@ -2686,7 +2686,7 @@ private_cloud_compute_duration_ms=￼</string>
 					<string>WFTextTokenString</string>
 				</dict>
 				<key>UUID</key>
-				<string>4A4F02F2-935D-4C60-953F-0E74D5AD436C</string>
+				<string>A8B91D52-07AA-4BAD-B3EC-8CCE79D61277</string>
 			</dict>
 		</dict>
 	</array>
