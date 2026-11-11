@@ -31,6 +31,12 @@ import { ReceiptShortcutStore } from "./receiptShortcutStore";
 import { handleReceiptRefinementMac, mapReceiptRefinementError } from "./receiptRefinementGateway";
 import { ReceiptRefinementStore } from "./receiptRefinementStore";
 import { ReceiptBenchmarkStore } from "./receiptBenchmarkStore";
+import {
+  handleReceiptQueueHandoffBrowser,
+  handleReceiptQueueHandoffMac,
+  mapReceiptQueueHandoffError,
+} from "./receiptQueueHandoffGateway";
+import { ReceiptQueueHandoffStore } from "./receiptQueueHandoffStore";
 
 export interface MobileGatewayEnv {
   COMMANDS: D1Database;
@@ -45,6 +51,7 @@ export interface MobileGatewayEnv {
   FEATURE_RECEIPT_SHORTCUT?: string;
   FEATURE_RECEIPT_REFINEMENT?: string;
   FEATURE_RECEIPT_MODEL_COMPARISON?: string;
+  FEATURE_RECEIPT_QUEUE_HANDOFF_ADVERTISE?: string;
 }
 
 interface GatewayDependencies {
@@ -90,7 +97,10 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
       const shortcutStore = new ReceiptShortcutStore(env.COMMANDS, now, { refinementEnabled });
       const refinementStore = new ReceiptRefinementStore(env.COMMANDS, now);
       const benchmarkStore = new ReceiptBenchmarkStore(env.COMMANDS, now);
+      const queueStore = new ReceiptQueueHandoffStore(env.COMMANDS, now);
       const comparisonEnabled = receiptShortcutEnabled(env.FEATURE_RECEIPT_MODEL_COMPARISON);
+      const queueAdvertise = comparisonEnabled
+        && receiptShortcutEnabled(env.FEATURE_RECEIPT_QUEUE_HANDOFF_ADVERTISE);
       try {
         if (!validSeparateAudiences(env.ACCESS_USER_AUD, env.ACCESS_MAC_AUD)) {
           return errorResponse(503, "MOBILE_AUTH_MISCONFIGURED");
@@ -107,6 +117,10 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
             audience: env.ACCESS_MAC_AUD,
           }, verifier);
           if (!identity) return errorResponse(403, "PROCESSOR_NOT_AUTHORIZED");
+          if (receiptShortcutEnabled(env.FEATURE_RECEIPT_SHORTCUT)) {
+            const queueResponse = await handleReceiptQueueHandoffMac(request, url, queueStore);
+            if (queueResponse) return queueResponse;
+          }
           if (refinementEnabled) {
             const refinementResponse = await handleReceiptRefinementMac(request, refinementStore);
             if (refinementResponse) return refinementResponse;
@@ -134,8 +148,14 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
           return errorResponse(403, "MEMBER_NOT_AUTHORIZED");
         }
         if (receiptShortcutEnabled(env.FEATURE_RECEIPT_SHORTCUT)) {
+          const queueResponse = await handleReceiptQueueHandoffBrowser(
+            request, url, queueStore, member,
+          );
+          if (queueResponse) return queueResponse;
           const shortcutResponse = await handleReceiptShortcutBrowser(
-            request, url, shortcutStore, member, { comparisonEnabled, benchmarkStore },
+            request, url, shortcutStore, member, {
+              comparisonEnabled, benchmarkStore, queueAdvertise, queueStore,
+            },
           );
           if (shortcutResponse) return shortcutResponse;
         }
@@ -156,6 +176,8 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
           request, url, env, store, member, now, pendingLimit, recentLimit,
         );
       } catch (error) {
+        const queueError = mapReceiptQueueHandoffError(error);
+        if (queueError) return queueError;
         const refinementError = mapReceiptRefinementError(error);
         if (refinementError) return refinementError;
         const shortcutError = mapReceiptShortcutError(error);

@@ -32,7 +32,8 @@
         "FEATURE_RECEIPT_MATCHING": "true",
         "FEATURE_RECEIPT_SHORTCUT": "true",
         "FEATURE_RECEIPT_REFINEMENT": "false",
-        "FEATURE_RECEIPT_MODEL_COMPARISON": "false"
+        "FEATURE_RECEIPT_MODEL_COMPARISON": "false",
+        "FEATURE_RECEIPT_QUEUE_HANDOFF_ADVERTISE": "false"
       }
     },
     "production": {
@@ -55,7 +56,8 @@
         "FEATURE_RECEIPT_MATCHING": "true",
         "FEATURE_RECEIPT_SHORTCUT": "true",
         "FEATURE_RECEIPT_REFINEMENT": "false",
-        "FEATURE_RECEIPT_MODEL_COMPARISON": "true"
+        "FEATURE_RECEIPT_MODEL_COMPARISON": "true",
+        "FEATURE_RECEIPT_QUEUE_HANDOFF_ADVERTISE": "false"
       }
     }
   }

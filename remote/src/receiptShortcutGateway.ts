@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { ReceiptBenchmarkStore } from "./receiptBenchmarkStore";
+import { ReceiptQueueHandoffStore } from "./receiptQueueHandoffStore";
 import { ReceiptShortcutStore, ReceiptShortcutStoreError } from "./receiptShortcutStore";
 
 const BODY_LIMIT = 256 * 1024;
@@ -43,7 +44,8 @@ export async function handleReceiptShortcutBrowser(
   url: URL,
   store: ReceiptShortcutStore,
   member: { id: string; household_id: string },
-  options: { comparisonEnabled?: boolean; benchmarkStore?: ReceiptBenchmarkStore } = {},
+  options: { comparisonEnabled?: boolean; benchmarkStore?: ReceiptBenchmarkStore;
+    queueAdvertise?: boolean; queueStore?: ReceiptQueueHandoffStore } = {},
 ): Promise<Response | null> {
   if (url.pathname === "/api/v1/mobile/receipt-model-benchmarks/summary") {
     if (!options.comparisonEnabled || !options.benchmarkStore) return null;
@@ -72,6 +74,17 @@ export async function handleReceiptShortcutBrowser(
     const input = emptyObject.safeParse(await readBrowserJson(request, 4_096));
     if (!input.success) throw new ReceiptShortcutGatewayError(400, "INVALID_RECEIPT_SCAN_SESSION");
     const session = await store.createSession(member.household_id, member.id);
+    if (options.queueAdvertise && options.queueStore) {
+      const handoff = await options.queueStore.create(member.household_id, member.id, session.token);
+      return json(201, {
+        contract: "receipt_queue_handoff/v1",
+        shortcut_version: 4,
+        comparison_enabled: true,
+        shortcut_name: "FinTracka Receipt Scanner",
+        handoff_id: handoff.id,
+        expires_at: handoff.expiresAt,
+      });
+    }
     return json(201, {
       contract: "receipt_scan_session/v1",
       shortcut_version: options.comparisonEnabled ? 3 : 2,
