@@ -72,8 +72,7 @@ describe("receipt API and pages", () => {
     expect(html).toContain("Preparing secure scan");
     expect(html).toContain("private shared iCloud folder");
     expect(html).toContain("Shortcut not installed or out of date?");
-    expect(html).toContain("expires in 30 minutes");
-    expect(html).toContain("version 2");
+    expect(html).toContain("private handoff remains available for seven days");
     expect(html).toContain("FinTracka Receipt Scanner");
     expect(html).not.toContain("type=\"file\"");
   });

@@ -296,6 +296,52 @@ test("iPhone receipt Shortcut handoff imports populated text without loading bro
   expect(ocrRequests).toEqual([]);
 });
 
+test("durable receipt handoff survives page recreation and opens one ready review", async ({ page }) => {
+  const handoffId = "00000000-0000-4000-8000-000000000004";
+  const importId = "00000000-0000-4000-8000-000000000014";
+  let ready = false;
+  let importLoads = 0;
+  await page.route("**/api/v1/mobile/receipt-scan-sessions", (route) => route.fulfill({
+    status: 201, json: { contract: "receipt_queue_handoff/v1", shortcut_version: 4,
+      comparison_enabled: true, shortcut_name: "FinTracka Receipt Scanner", handoff_id: handoffId,
+      expires_at: "2026-11-16T12:30:00.000Z" },
+  }));
+  await page.route("**/api/v1/mobile/receipt-queue-handoffs", (route) => route.fulfill({ json: {
+    handoffs: [{ id: handoffId, status: ready ? "ready" : "pending",
+      created_at: "2026-11-09T12:00:00.000Z", expires_at: "2026-11-16T12:30:00.000Z",
+      ...(ready ? { review_path: `/receipts/import/${importId}` } : {}) }],
+  } }));
+  await page.route(`**/api/v1/mobile/receipt-imports/${importId}`, async (route) => {
+    if (route.request().method() === "DELETE") {
+      await route.fulfill({ status: 204, body: "" }); return;
+    }
+    importLoads += 1;
+    await route.fulfill({ json: { import: { id: importId, shortcut_version: 1,
+      pages: [{ page_index: 0, text: "SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50" }],
+      created_at: "2026-11-09T12:00:00.000Z", expires_at: "2026-11-16T12:30:00.000Z" } } });
+  });
+  await page.route("**/api/v1/mobile/receipts", (route) => route.fulfill({ status: 201, json: {
+    draft: { contract: "receipt_draft/v1", id: "durable-draft", revision: 1, digest: "a".repeat(64),
+      status: "editing", merchant: "SYNTHETIC MARKET", purchase_date: null, currency: "USD",
+      masked_payment_hint: null, page_count: 1, subtotal_minor: 450, discount_minor: 0,
+      tax_minor: 0, tip_minor: 0, fees_minor: 0, total_minor: 450, lines: [],
+      created_at: "2026-11-09", updated_at: "2026-11-09", retention_at: "2027-02-07" },
+    replayed: false,
+  } }));
+
+  await page.goto(`${viewer}/receipts/new`);
+  const launchUrl = new URL(await page.getByRole("link", { name: "Scan with iPhone" }).getAttribute("href") ?? "");
+  expect(launchUrl.searchParams.get("text")).toBe(`receipt_queue_handoff/v1\n${handoffId}`);
+  await page.goto(`${viewer}/receipts`);
+  await expect(page.getByText("Waiting for Mac", { exact: true })).toBeVisible();
+
+  ready = true;
+  await page.reload();
+  await page.getByText("Ready to review", { exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Receipt details" })).toBeVisible();
+  expect(importLoads).toBe(1);
+});
+
 test("receipt model comparison waits for an explicit choice before creating a draft", async ({ page }) => {
   const importId = "00000000-0000-4000-8000-000000000005";
   const validation = {

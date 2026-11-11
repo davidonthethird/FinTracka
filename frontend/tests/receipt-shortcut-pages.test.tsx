@@ -1,16 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
 
 import {
   buildReceiptShortcutUrl,
   createReceiptScanSession,
   deleteReceiptImport,
+  getReceiptQueueHandoff,
   getReceiptScanResult,
   getReceiptImport,
+  listReceiptQueueHandoffs,
   retryReceiptImport,
   selectReceiptModelResult,
   watchReceiptScanSession,
   type PublicReceiptImport,
 } from "../src/viewer/receipts/receiptShortcutApi";
+import { ReceiptQueueHandoffView } from "../src/viewer/receipts/ReceiptInboxPage";
 import { finalizeReceiptImport } from "../src/viewer/receipts/ReceiptShortcutImportPage";
 import { receiptBenchmarkDiagnostic } from "../src/viewer/receipts/ReceiptBenchmarkSummary";
 
@@ -21,6 +25,15 @@ const session = {
   token: "sensitive-one-time-token",
   upload_url: "https://viewer.example/api/v1/mobile/shortcut/receipt-imports",
   expires_at: "2026-11-02T12:30:00.000Z",
+};
+
+const queueSession = {
+  contract: "receipt_queue_handoff/v1" as const,
+  shortcut_version: 4 as const,
+  comparison_enabled: true as const,
+  shortcut_name: "FinTracka Receipt Scanner" as const,
+  handoff_id: "00000000-0000-4000-8000-000000000004",
+  expires_at: "2026-11-09T12:30:00.000Z",
 };
 
 describe("receipt Shortcut pages", () => {
@@ -45,6 +58,84 @@ describe("receipt Shortcut pages", () => {
     expect(JSON.parse(parsed.searchParams.get("text") ?? "")).toEqual(session);
     expect(url).not.toMatch(/^https?:/);
     vi.unstubAllGlobals();
+  });
+
+  it("launches version 4 with only the private queue contract and opaque handoff id", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(queueSession), {
+      status: 201, headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const prepared = await createReceiptScanSession();
+    const parsed = new URL(buildReceiptShortcutUrl(prepared));
+
+    expect(parsed.searchParams.get("text")).toBe(
+      `receipt_queue_handoff/v1\n${queueSession.handoff_id}`,
+    );
+    expect(parsed.toString()).not.toMatch(/token|upload_url|https?%3A/i);
+    vi.unstubAllGlobals();
+  });
+
+  it("rediscovers member-scoped queued handoffs after the page is recreated", async () => {
+    const handoffs = [{ id: queueSession.handoff_id, status: "pending" as const,
+      created_at: "2026-11-09T12:00:00.000Z", expires_at: queueSession.expires_at }];
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ handoffs }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(listReceiptQueueHandoffs()).resolves.toEqual(handoffs);
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/mobile/receipt-queue-handoffs",
+      expect.objectContaining({ credentials: "same-origin", cache: "no-store" }));
+    vi.unstubAllGlobals();
+  });
+
+  it("polls a version 4 handoff and navigates to its one ready review", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ handoff: {
+        id: queueSession.handoff_id, status: "pending", created_at: "2026-11-09T12:00:00.000Z",
+        expires_at: queueSession.expires_at,
+      } }), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ handoff: {
+        id: queueSession.handoff_id, status: "ready", created_at: "2026-11-09T12:00:00.000Z",
+        expires_at: queueSession.expires_at, review_path: "/receipts/import/import-v4",
+      } }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onReady = vi.fn();
+
+    const stop = watchReceiptScanSession(queueSession, { onReady, onError: vi.fn() }, 1_500);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(onReady).toHaveBeenCalledTimes(1);
+    expect(onReady).toHaveBeenCalledWith("/receipts/import/import-v4");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/v1/mobile/receipt-queue-handoffs/${queueSession.handoff_id}`,
+      expect.objectContaining({ credentials: "same-origin", cache: "no-store" }),
+    );
+    stop();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("shows durable handoff states and safe failed guidance in the existing inbox", () => {
+    const html = renderToStaticMarkup(<ReceiptQueueHandoffView handoffs={[
+      { id: "pending", status: "pending", created_at: "2026-11-09T12:00:00.000Z",
+        expires_at: "2026-11-16T12:00:00.000Z" },
+      { id: "processing", status: "processing", created_at: "2026-11-09T12:01:00.000Z",
+        expires_at: "2026-11-16T12:01:00.000Z" },
+      { id: "ready", status: "ready", created_at: "2026-11-09T12:02:00.000Z",
+        expires_at: "2026-11-16T12:02:00.000Z", review_path: "/receipts/import/ready" },
+      { id: "failed", status: "failed", created_at: "2026-11-09T12:03:00.000Z",
+        expires_at: "2026-11-16T12:03:00.000Z", error_code: "INVALID_PACKAGE" },
+    ]} onOpen={() => undefined} />);
+
+    expect(html).toContain("Waiting for Mac");
+    expect(html).toContain("Processing");
+    expect(html).toContain("Ready to review");
+    expect(html).toContain("Scan again or check the shared iCloud folder");
+    expect(html).not.toContain("INVALID_PACKAGE");
   });
 
   it("gets, retries, and deletes only the opaque import URL", async () => {

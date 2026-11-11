@@ -1,6 +1,6 @@
 import { MobileCommandApiError, mobileJson } from "../api";
 
-export interface ReceiptScanSession {
+export interface LegacyReceiptScanSession {
   contract: "receipt_scan_session/v1";
   shortcut_version: 2 | 3;
   comparison_enabled?: boolean;
@@ -10,9 +10,29 @@ export interface ReceiptScanSession {
   expires_at: string;
 }
 
+export interface QueueReceiptScanSession {
+  contract: "receipt_queue_handoff/v1";
+  shortcut_version: 4;
+  comparison_enabled: true;
+  shortcut_name: "FinTracka Receipt Scanner";
+  handoff_id: string;
+  expires_at: string;
+}
+
+export type ReceiptScanSession = LegacyReceiptScanSession | QueueReceiptScanSession;
+
 export type ReceiptScanResult =
   | { status: "pending" }
   | { status: "ready"; review_path: string };
+
+export interface ReceiptQueueHandoff {
+  id: string;
+  status: "pending" | "processing" | "ready" | "failed";
+  created_at: string;
+  expires_at: string;
+  review_path?: string;
+  error_code?: string;
+}
 
 export interface PublicReceiptImport {
   id: string;
@@ -91,8 +111,20 @@ export async function getReceiptScanResult(token: string): Promise<ReceiptScanRe
   });
 }
 
+export async function listReceiptQueueHandoffs(): Promise<ReceiptQueueHandoff[]> {
+  return (await mobileJson<{ handoffs: ReceiptQueueHandoff[] }>(
+    "/api/v1/mobile/receipt-queue-handoffs",
+  )).handoffs;
+}
+
+export async function getReceiptQueueHandoff(id: string): Promise<ReceiptQueueHandoff> {
+  return (await mobileJson<{ handoff: ReceiptQueueHandoff }>(
+    `/api/v1/mobile/receipt-queue-handoffs/${encodeURIComponent(id)}`,
+  )).handoff;
+}
+
 export function watchReceiptScanSession(
-  token: string,
+  session: ReceiptScanSession | string,
   callbacks: { onReady: (path: string) => void; onError: (error: unknown) => void },
   intervalMs = 1_500,
 ): () => void {
@@ -104,9 +136,13 @@ export function watchReceiptScanSession(
     if (!active || checking) return;
     checking = true;
     try {
-      const result = await getReceiptScanResult(token);
+      const result = typeof session === "string"
+        ? await getReceiptScanResult(session)
+        : session.shortcut_version === 4
+          ? await getReceiptQueueHandoff(session.handoff_id)
+          : await getReceiptScanResult(session.token);
       if (!active) return;
-      if (result.status === "ready") {
+      if (result.status === "ready" && result.review_path) {
         active = false;
         callbacks.onReady(result.review_path);
         return;
@@ -185,10 +221,13 @@ export async function deleteReceiptBenchmarkHistory(): Promise<void> {
 }
 
 export function buildReceiptShortcutUrl(session: ReceiptScanSession): string {
+  const text = session.shortcut_version === 4
+    ? `${session.contract}\n${session.handoff_id}`
+    : JSON.stringify(session);
   const query = [
     `name=${encodeURIComponent(session.shortcut_name)}`,
     "input=text",
-    `text=${encodeURIComponent(JSON.stringify(session))}`,
+    `text=${encodeURIComponent(text)}`,
   ].join("&");
   return `shortcuts://run-shortcut?${query}`;
 }
