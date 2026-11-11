@@ -21,6 +21,10 @@ document.transactions = document.transactions.map((item: any) => ({ ...item, cla
 type Command = Record<string, any>;
 let commands: Command[] = [];
 let commandSequence = 0;
+let receiptHandoffReads = 0;
+const receiptHandoffId = "00000000-0000-4000-8000-000000000004";
+const receiptImportId = "00000000-0000-4000-8000-000000000014";
+let receiptDrafts: Record<string, any>[] = [];
 const port = Number(process.env.FINTRACKA_VIEWER_E2E_PORT || 8789);
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
 
@@ -31,8 +35,45 @@ createServer(async (request, response) => {
   if (url.pathname === "/api/v1/status") return json(response, 200, { available: true, published_at: "2026-10-27T12:01:00Z", stale: false });
   if (url.pathname === "/api/v1/mobile/session") return json(response, 200, {
     member: { id: "member-fixture", display_name: "Fixture member" },
-    capabilities: { "transaction.set_classification": [1, 2] }, server_time: new Date().toISOString(),
+    capabilities: { "transaction.set_classification": [1, 2], "receipts.drafts": [1] },
+    server_time: new Date().toISOString(),
   });
+  if (url.pathname === "/api/v1/mobile/receipt-scan-sessions" && request.method === "POST") {
+    await readJson(request);
+    return json(response, 201, { contract: "receipt_queue_handoff/v1", shortcut_version: 4,
+      comparison_enabled: true, shortcut_name: "FinTracka Receipt Scanner",
+      handoff_id: receiptHandoffId, expires_at: "2026-11-18T12:30:00.000Z" });
+  }
+  if (url.pathname === "/api/v1/mobile/receipt-queue-handoffs" && request.method === "GET") {
+    receiptHandoffReads += 1;
+    const ready = receiptHandoffReads > 1;
+    return json(response, 200, { handoffs: [{ id: receiptHandoffId,
+      status: ready ? "ready" : "pending", created_at: "2026-11-11T12:00:00.000Z",
+      expires_at: "2026-11-18T12:30:00.000Z",
+      ...(ready ? { review_path: `/receipts/import/${receiptImportId}` } : {}) }] });
+  }
+  if (url.pathname === `/api/v1/mobile/receipt-queue-handoffs/${receiptHandoffId}`
+      && request.method === "GET") {
+    return json(response, 200, { handoff: { id: receiptHandoffId, status: "pending",
+      created_at: "2026-11-11T12:00:00.000Z", expires_at: "2026-11-18T12:30:00.000Z" } });
+  }
+  if (url.pathname === `/api/v1/mobile/receipt-imports/${receiptImportId}`) {
+    if (request.method === "DELETE") { response.statusCode = 204; return response.end(); }
+    return json(response, 200, { import: { id: receiptImportId, shortcut_version: 1,
+      pages: [{ page_index: 0, text: "SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50" }],
+      created_at: "2026-11-11T12:00:00.000Z", expires_at: "2026-11-18T12:30:00.000Z" } });
+  }
+  if (url.pathname === "/api/v1/mobile/receipts" && request.method === "GET") {
+    return json(response, 200, { drafts: receiptDrafts });
+  }
+  if (url.pathname === "/api/v1/mobile/receipts" && request.method === "POST") {
+    const body = await readJson(request);
+    const draft = { ...body.draft, id: "fixture-receipt-draft", revision: 1,
+      digest: "a".repeat(64), created_at: "2026-11-11", updated_at: "2026-11-11",
+      retention_at: "2027-02-09" };
+    receiptDrafts = [draft];
+    return json(response, 201, { draft, replayed: false });
+  }
   if (url.pathname === "/api/v1/mobile/commands" && request.method === "GET") return json(response, 200, { commands });
   if (url.pathname === "/api/v1/mobile/commands" && request.method === "POST") {
     const body = await readJson(request);
