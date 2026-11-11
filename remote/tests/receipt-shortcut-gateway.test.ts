@@ -190,6 +190,41 @@ describe("receipt shortcut gateway", () => {
     } });
   });
 
+  it("imports the explicit percent-encoded JSON emitted by the signed Shortcut", async () => {
+    const gateway = makeGateway();
+    const testEnv = gatewayEnv(true, true);
+    const session = await createSession(gateway, testEnv);
+    const capture = v3Capture();
+    const modelResult = capture.runs[0].model_result;
+    const uploaded = await gateway.fetch(shortcutRequest({
+      contract: "receipt_shortcut_capture/v3",
+      idempotency_key: "b".repeat(64),
+      shortcut_version: 3,
+      payload_encoding: "percent",
+      text: encodeURIComponent(capture.text),
+      on_device_status: "completed",
+      on_device_duration_ms: "1000",
+      on_device_model_result: encodeURIComponent(modelResult),
+      private_cloud_compute_status: "completed",
+      private_cloud_compute_duration_ms: "2000",
+      private_cloud_compute_model_result: encodeURIComponent(modelResult),
+    }, session.token), testEnv);
+
+    expect(uploaded.status).toBe(201);
+    const { import_id: importId } = await uploaded.json() as { import_id: string };
+    const imported = await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipt-imports/${importId}`,
+    ), testEnv);
+    expect(imported.status).toBe(200);
+    expect(await imported.json()).toMatchObject({ import: {
+      pages: [{ text: capture.text }],
+      comparison: { recommendation: "tie", runs: [
+        { model: "on_device", status: "completed", duration_ms: 1000 },
+        { model: "private_cloud_compute", status: "completed", duration_ms: 2000 },
+      ] },
+    } });
+  });
+
   it("lets the originating web app discover the completed scan without a browser redirect", async () => {
     const gateway = makeGateway();
     const testEnv = gatewayEnv(true);

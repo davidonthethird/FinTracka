@@ -14,7 +14,7 @@ Comparison mode is temporary and feature gated. Installing the benchmark artifac
 6. Record the start/end time around **Use Model → On-Device**, output Text, Follow Up off, broad world knowledge off, then freeze its response into plain text.
 7. Record the start/end time around **Use Model → Cloud**, output Text, Follow Up off, broad world knowledge off, then freeze its response into plain text.
 8. Generate a SHA-256 idempotency key from the current date and plain recognized text.
-9. POST one flat `receipt_shortcut_capture/v3` JSON body to the session upload URL with the bearer token. The request references only the three plain-text values, never the photo-backed action outputs.
+9. Build one explicit `receipt_shortcut_capture/v3` JSON Text value from the URL-encoded OCR and model strings, then POST that text to the session upload URL with the bearer token. This avoids Shortcuts' typed-dictionary coercion and never references photo-backed action outputs at the network boundary.
 10. Show the user that both results were sent and instruct them to tap Back to FinTracka.
 
 The repository artifact intentionally uses the photo library for repeatable A/B tests against the same private receipt corpus. The production v2 scanner's camera path is unchanged.

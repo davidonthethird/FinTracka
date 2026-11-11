@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import plistlib
 from pathlib import Path
 
@@ -20,15 +21,6 @@ MATCH_UUIDS = {
     "11000000-0000-4000-8000-000000000026",
 }
 
-
-def _dictionary_items(field: dict) -> list[dict]:
-    return field["Value"]["WFDictionaryFieldValueItems"]
-
-
-def _literal(field: dict) -> str:
-    return field["Value"]["string"]
-
-
 def test_receipt_upload_contains_only_plain_text_snapshots() -> None:
     with SHORTCUT.open("rb") as source:
         workflow = plistlib.load(source)
@@ -39,13 +31,49 @@ def test_receipt_upload_contains_only_plain_text_snapshots() -> None:
         if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.downloadurl"
     )
     parameters = upload["WFWorkflowActionParameters"]
-    payload = {
-        _literal(item["WFKey"]): item["WFValue"]
-        for item in _dictionary_items(parameters["WFJSONValues"])
+    assert parameters["WFHTTPBodyType"] == "File"
+    assert "WFJSONValues" not in parameters
+    body_uuid = parameters["WFRequestVariable"]["Value"]["OutputUUID"]
+    body_action = next(
+        action for action in actions
+        if action["WFWorkflowActionParameters"].get("UUID") == body_uuid
+    )
+    assert body_action["WFWorkflowActionIdentifier"] == "is.workflow.actions.gettext"
+    body = body_action["WFWorkflowActionParameters"]["WFTextActionText"]
+    body_template = body["Value"]["string"]
+    assert '"payload_encoding":"percent"' in body_template
+    assert '"shortcut_version":3' in body_template
+    body_outputs = {
+        attachment["OutputUUID"]
+        for attachment in body["Value"]["attachmentsByRange"].values()
     }
+    assert set(PLAIN_TEXT_UUIDS.values()) <= body_outputs
 
-    for key, expected_uuid in PLAIN_TEXT_UUIDS.items():
-        assert payload[key]["Value"]["OutputUUID"] == expected_uuid
+    rendered = body_template
+    replacements = {
+        61: "a" * 64,
+        122: "ACME%20MARKETS%0ATOTAL%206.35",
+        181: "1234",
+        210: "%7B%22merchant%22%3A%22ACME%22%7D",
+        293: "2345",
+        334: "%7B%22merchant%22%3A%22ACME%22%7D",
+    }
+    for position in sorted(replacements, reverse=True):
+        assert rendered[position] == "￼"
+        rendered = rendered[:position] + replacements[position] + rendered[position + 1:]
+    assert json.loads(rendered) == {
+        "contract": "receipt_shortcut_capture/v3",
+        "idempotency_key": "a" * 64,
+        "shortcut_version": 3,
+        "payload_encoding": "percent",
+        "text": "ACME%20MARKETS%0ATOTAL%206.35",
+        "on_device_status": "completed",
+        "on_device_duration_ms": "1234",
+        "on_device_model_result": "%7B%22merchant%22%3A%22ACME%22%7D",
+        "private_cloud_compute_status": "completed",
+        "private_cloud_compute_duration_ms": "2345",
+        "private_cloud_compute_model_result": "%7B%22merchant%22%3A%22ACME%22%7D",
+    }
 
     serialized_upload = plistlib.dumps(upload)
     for forbidden_uuid in (PHOTO_UUID, RAW_OCR_UUID, RAW_ON_DEVICE_UUID, RAW_CLOUD_UUID):
@@ -57,8 +85,6 @@ def test_receipt_upload_contains_only_plain_text_snapshots() -> None:
         if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.urlencode"
     }
     assert set(PLAIN_TEXT_UUIDS.values()) <= encoded_text_actions
-
-    assert _literal(payload["payload_encoding"]) == "percent"
 
     match_actions = {
         action["WFWorkflowActionParameters"].get("UUID")

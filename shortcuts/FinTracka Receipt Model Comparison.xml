@@ -532,6 +532,32 @@ Create a repeat-safe key, send recognized text plus both model outputs and measu
     </dict>
     <dict>
       <key>WFWorkflowActionIdentifier</key>
+      <string>is.workflow.actions.gettext</string>
+      <key>WFWorkflowActionParameters</key>
+      <dict>
+        <key>UUID</key><string>FF7C260C-E8C4-47BC-B982-247E1A326525</string>
+        <key>CustomOutputName</key><string>Upload JSON</string>
+        <key>WFTextActionText</key>
+        <dict>
+          <key>Value</key>
+          <dict>
+            <key>attachmentsByRange</key>
+            <dict>
+              <key>{61, 1}</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000009</string><key>OutputName</key><string>Hash</string><key>Type</key><string>ActionOutput</string></dict>
+              <key>{122, 1}</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000028</string><key>OutputName</key><string>Encoded Text</string><key>Type</key><string>ActionOutput</string></dict>
+              <key>{181, 1}</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000014</string><key>OutputName</key><string>On-Device Duration</string><key>Type</key><string>ActionOutput</string></dict>
+              <key>{210, 1}</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000029</string><key>OutputName</key><string>Encoded Text</string><key>Type</key><string>ActionOutput</string></dict>
+              <key>{293, 1}</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000018</string><key>OutputName</key><string>Cloud Duration</string><key>Type</key><string>ActionOutput</string></dict>
+              <key>{334, 1}</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000030</string><key>OutputName</key><string>Encoded Text</string><key>Type</key><string>ActionOutput</string></dict>
+            </dict>
+            <key>string</key><string>{"contract":"receipt_shortcut_capture/v3","idempotency_key":"￼","shortcut_version":3,"payload_encoding":"percent","text":"￼","on_device_status":"completed","on_device_duration_ms":"￼","on_device_model_result":"￼","private_cloud_compute_status":"completed","private_cloud_compute_duration_ms":"￼","private_cloud_compute_model_result":"￼"}</string>
+          </dict>
+          <key>WFSerializationType</key><string>WFTextTokenString</string>
+        </dict>
+      </dict>
+    </dict>
+    <dict>
+      <key>WFWorkflowActionIdentifier</key>
       <string>is.workflow.actions.downloadurl</string>
       <key>WFWorkflowActionParameters</key>
       <dict>
@@ -540,26 +566,14 @@ Create a repeat-safe key, send recognized text plus both model outputs and measu
         <key>WFURL</key>
         <dict><key>Value</key><dict><key>attachmentsByRange</key><dict><key>{0, 1}</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000003</string><key>OutputName</key><string>Dictionary Value</string><key>Type</key><string>ActionOutput</string></dict></dict><key>string</key><string>￼</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict>
         <key>WFHTTPMethod</key><string>POST</string>
-        <key>WFHTTPBodyType</key><string>JSON</string>
+        <key>WFHTTPBodyType</key><string>File</string>
         <key>WFHTTPHeaders</key>
         <dict><key>Value</key><dict><key>WFDictionaryFieldValueItems</key><array>
           <dict><key>WFItemType</key><integer>0</integer><key>WFKey</key><dict><key>Value</key><dict><key>string</key><string>Authorization</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict><key>WFValue</key><dict><key>Value</key><dict><key>attachmentsByRange</key><dict><key>{7, 1}</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000002</string><key>OutputName</key><string>Dictionary Value</string><key>Type</key><string>ActionOutput</string></dict></dict><key>string</key><string>Bearer ￼</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict></dict>
           <dict><key>WFItemType</key><integer>0</integer><key>WFKey</key><dict><key>Value</key><dict><key>string</key><string>Content-Type</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict><key>WFValue</key><dict><key>Value</key><dict><key>string</key><string>application/json</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict></dict>
         </array></dict><key>WFSerializationType</key><string>WFDictionaryFieldValue</string></dict>
-        <key>WFJSONValues</key>
-        <dict><key>Value</key><dict><key>WFDictionaryFieldValueItems</key><array>
-          <dict><key>WFItemType</key><integer>0</integer><key>WFKey</key><dict><key>Value</key><dict><key>string</key><string>contract</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict><key>WFValue</key><dict><key>Value</key><dict><key>string</key><string>receipt_shortcut_capture/v3</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict></dict>
-          <dict><key>WFItemType</key><integer>0</integer><key>WFKey</key><dict><key>Value</key><dict><key>string</key><string>idempotency_key</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict><key>WFValue</key><dict><key>Value</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000009</string><key>OutputName</key><string>Hash</string><key>Type</key><string>ActionOutput</string></dict><key>WFSerializationType</key><string>WFTextTokenAttachment</string></dict></dict>
-          <dict><key>WFItemType</key><integer>0</integer><key>WFKey</key><dict><key>Value</key><dict><key>string</key><string>shortcut_version</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict><key>WFValue</key><dict><key>Value</key><dict><key>string</key><string>3</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict></dict>
-          <dict><key>WFItemType</key><integer>0</integer><key>WFKey</key><dict><key>Value</key><dict><key>string</key><string>payload_encoding</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict><key>WFValue</key><dict><key>Value</key><dict><key>string</key><string>percent</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict></dict>
-          <dict><key>WFItemType</key><integer>0</integer><key>WFKey</key><dict><key>Value</key><dict><key>string</key><string>text</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict><key>WFValue</key><dict><key>Value</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000028</string><key>OutputName</key><string>Encoded Text</string><key>Type</key><string>ActionOutput</string></dict><key>WFSerializationType</key><string>WFTextTokenAttachment</string></dict></dict>
-          <dict><key>WFItemType</key><integer>0</integer><key>WFKey</key><dict><key>Value</key><dict><key>string</key><string>on_device_status</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict><key>WFValue</key><dict><key>Value</key><dict><key>string</key><string>completed</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict></dict>
-          <dict><key>WFItemType</key><integer>0</integer><key>WFKey</key><dict><key>Value</key><dict><key>string</key><string>on_device_duration_ms</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict><key>WFValue</key><dict><key>Value</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000014</string><key>OutputName</key><string>On-Device Duration</string><key>Type</key><string>ActionOutput</string></dict><key>WFSerializationType</key><string>WFTextTokenAttachment</string></dict></dict>
-          <dict><key>WFItemType</key><integer>0</integer><key>WFKey</key><dict><key>Value</key><dict><key>string</key><string>on_device_model_result</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict><key>WFValue</key><dict><key>Value</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000029</string><key>OutputName</key><string>Encoded Text</string><key>Type</key><string>ActionOutput</string></dict><key>WFSerializationType</key><string>WFTextTokenAttachment</string></dict></dict>
-          <dict><key>WFItemType</key><integer>0</integer><key>WFKey</key><dict><key>Value</key><dict><key>string</key><string>private_cloud_compute_status</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict><key>WFValue</key><dict><key>Value</key><dict><key>string</key><string>completed</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict></dict>
-          <dict><key>WFItemType</key><integer>0</integer><key>WFKey</key><dict><key>Value</key><dict><key>string</key><string>private_cloud_compute_duration_ms</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict><key>WFValue</key><dict><key>Value</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000018</string><key>OutputName</key><string>Cloud Duration</string><key>Type</key><string>ActionOutput</string></dict><key>WFSerializationType</key><string>WFTextTokenAttachment</string></dict></dict>
-          <dict><key>WFItemType</key><integer>0</integer><key>WFKey</key><dict><key>Value</key><dict><key>string</key><string>private_cloud_compute_model_result</string></dict><key>WFSerializationType</key><string>WFTextTokenString</string></dict><key>WFValue</key><dict><key>Value</key><dict><key>OutputUUID</key><string>11000000-0000-4000-8000-000000000030</string><key>OutputName</key><string>Encoded Text</string><key>Type</key><string>ActionOutput</string></dict><key>WFSerializationType</key><string>WFTextTokenAttachment</string></dict></dict>
-        </array></dict><key>WFSerializationType</key><string>WFDictionaryFieldValue</string></dict>
+        <key>WFRequestVariable</key>
+        <dict><key>Value</key><dict><key>OutputUUID</key><string>FF7C260C-E8C4-47BC-B982-247E1A326525</string><key>OutputName</key><string>Text</string><key>Type</key><string>ActionOutput</string></dict><key>WFSerializationType</key><string>WFTextTokenAttachment</string></dict>
       </dict>
     </dict>
     <dict>
