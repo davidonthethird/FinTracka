@@ -8,9 +8,12 @@ from pathlib import Path
 
 import pytest
 
+import fintracka.receipt_refinement_service as receipt_service
+from fintracka.db import connect, migrate
 from fintracka.mobile_command_client import ClaimedReceiptRefinement, MobileCommandClientError
 from fintracka.receipt_refinement_service import (
     _run_ocr_helper,
+    process_configured_receipt_refinements,
     process_receipt_queue_handoffs,
     process_receipt_refinements,
 )
@@ -430,6 +433,55 @@ def test_ocr_helper_uses_ocr_only_mode_and_parses_text(tmp_path: Path) -> None:
 
     assert _run_ocr_helper(binary, package, environment={"ARGUMENTS": str(arguments)}) == "MAC OCR"
     assert arguments.read_text().splitlines() == ["--ocr-only", str(package)]
+
+
+def test_configured_processor_keeps_queue_result_when_legacy_refinement_is_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = tmp_path / "data"
+    tools = data / "tools"
+    tools.mkdir(parents=True)
+    (tools / "fintracka-receipt-refiner").touch()
+    database = data / "fintracka.sqlite3"
+    connection = connect(database)
+    migrate(connection)
+    connection.execute(
+        """UPDATE mobile_command_settings
+           SET enabled = 1, gateway_url = 'https://example.invalid',
+               access_client_id_ref = 'id', access_client_secret_ref = 'secret'
+           WHERE id = 1"""
+    )
+    connection.commit()
+    connection.close()
+
+    class ConfiguredClient:
+        def active_receipt_queue_handoff_ids(self):
+            return frozenset()
+
+    client = ConfiguredClient()
+    monkeypatch.setattr(
+        receipt_service.MobileCommandClient,
+        "from_settings",
+        classmethod(lambda cls, settings, secrets: client),
+    )
+    monkeypatch.setattr(
+        receipt_service,
+        "process_receipt_queue_handoffs",
+        lambda *args, **kwargs: {"claimed": 0, "completed": 0, "failed": 0, "deferred": 0},
+    )
+    monkeypatch.setattr(
+        receipt_service,
+        "process_receipt_refinements",
+        lambda *args, **kwargs: (_ for _ in ()).throw(MobileCommandClientError("MOBILE_NOT_FOUND")),
+    )
+
+    result = process_configured_receipt_refinements(database, data, object())
+
+    assert result == {
+        "claimed": 0, "completed": 0, "failed": 0, "deferred": 0,
+        "skipped": False,
+        "queue_handoffs": {"claimed": 0, "completed": 0, "failed": 0, "deferred": 0},
+    }
 
 
 MODEL_RESULT = json.dumps({

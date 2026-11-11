@@ -446,12 +446,16 @@ def process_configured_receipt_refinements(
             if binary.is_file() else None,
             active_ids=queue_ids,
         )
-        result = (process_receipt_refinements(
-            client, queue, lambda package: _run_helper(binary, package),
-            queue_ids | _local_queue_package_ids(queue),
-        ) if binary.is_file() else {
-            "claimed": 0, "completed": 0, "failed": 0, "deferred": 0,
-        })
+        result = {"claimed": 0, "completed": 0, "failed": 0, "deferred": 0}
+        if binary.is_file():
+            try:
+                result = process_receipt_refinements(
+                    client, queue, lambda package: _run_helper(binary, package),
+                    queue_ids | _local_queue_package_ids(queue),
+                )
+            except MobileCommandClientError as error:
+                if error.code != "MOBILE_NOT_FOUND":
+                    raise
     except MobileCommandClientError as error:
         return {"claimed": 0, "completed": 0, "failed": 0, "deferred": 0,
                 "skipped": True, "error_code": str(error)}
