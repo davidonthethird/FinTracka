@@ -225,6 +225,64 @@ describe("receipt shortcut gateway", () => {
     } });
   });
 
+  it("accepts the single JSON-string wrapper produced by a Shortcuts Text/File body", async () => {
+    const gateway = makeGateway();
+    const testEnv = gatewayEnv(true, true);
+    const session = await createSession(gateway, testEnv);
+    const capture = v3Capture();
+    const modelResult = capture.runs[0].model_result;
+    const nativeBody = {
+      contract: "receipt_shortcut_capture/v3",
+      idempotency_key: "7".repeat(64),
+      shortcut_version: 3,
+      payload_encoding: "percent",
+      text: encodeURIComponent(capture.text),
+      on_device_status: "completed",
+      on_device_duration_ms: "1000",
+      on_device_model_result: encodeURIComponent(modelResult),
+      private_cloud_compute_status: "completed",
+      private_cloud_compute_duration_ms: "2000",
+      private_cloud_compute_model_result: encodeURIComponent(modelResult),
+    };
+
+    const uploaded = await gateway.fetch(
+      shortcutRequest(JSON.stringify(nativeBody), session.token), testEnv,
+    );
+
+    expect(uploaded.status).toBe(201);
+    const { import_id: importId } = await uploaded.json() as { import_id: string };
+    const imported = await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipt-imports/${importId}`,
+    ), testEnv);
+    expect(await imported.json()).toMatchObject({ import: {
+      shortcut_version: 3,
+      pages: [{ text: capture.text }],
+      comparison: { recommendation: "tie" },
+    } });
+  });
+
+  it("returns a value-free field diagnostic when a native capture is malformed", async () => {
+    const gateway = makeGateway();
+    const testEnv = gatewayEnv(true, true);
+    const session = await createSession(gateway, testEnv);
+    const malformed = {
+      contract: "receipt_shortcut_capture/v3",
+      idempotency_key: "8".repeat(64),
+      shortcut_version: 3,
+      on_device_status: "completed",
+      on_device_duration_ms: "1000",
+      private_cloud_compute_status: "completed",
+      private_cloud_compute_duration_ms: "2000",
+    };
+
+    const response = await gateway.fetch(shortcutRequest(malformed, session.token), testEnv);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error_code: "INVALID_RECEIPT_SHORTCUT_CAPTURE_TEXT_INVALID_TYPE",
+    });
+  });
+
   it("lets the originating web app discover the completed scan without a browser redirect", async () => {
     const gateway = makeGateway();
     const testEnv = gatewayEnv(true);

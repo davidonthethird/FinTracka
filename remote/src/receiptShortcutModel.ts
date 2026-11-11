@@ -166,6 +166,23 @@ export const ReceiptShortcutCaptureSchema = z.union([
   ReceiptShortcutFlatCaptureV3Schema,
 ]);
 
+export function receiptShortcutCaptureErrorCode(value: unknown): string {
+  let parsed = ReceiptShortcutCaptureSchema.safeParse(value);
+  if (parsed.success) return "INVALID_RECEIPT_SHORTCUT_CAPTURE";
+  if (isRecord(value) && value.contract === "receipt_shortcut_capture/v3") {
+    parsed = ("runs" in value ? ReceiptShortcutCaptureV3Schema
+      : ReceiptShortcutFlatCaptureV3Schema).safeParse(value);
+  } else if (isRecord(value) && value.contract === "receipt_shortcut_capture/v2") {
+    parsed = ReceiptShortcutCaptureV2Schema.safeParse(value);
+  }
+  if (parsed.success) return "INVALID_RECEIPT_SHORTCUT_CAPTURE";
+  const issue = parsed.error.issues[0];
+  const path = issue?.path.map((part) => String(part).replace(/[^A-Za-z0-9_]/g, "_"))
+    .filter(Boolean).join("_") || "root";
+  const issueCode = issue?.code ?? "unknown";
+  return `INVALID_RECEIPT_SHORTCUT_CAPTURE_${path}_${issueCode}`.toUpperCase().slice(0, 120);
+}
+
 export type ReceiptShortcutCapture = z.infer<typeof ReceiptShortcutCaptureSchema>;
 
 export interface ScanSession {
@@ -242,6 +259,10 @@ function normalizeShortcutDuration(value: unknown): unknown {
   const match = value.trim().match(/^([0-9][0-9,]*(?:\.[0-9]+)?)\s*(ms|milliseconds?|s|seconds?)?$/i);
   if (!match) return value;
   return normalizeDurationParts(match[1], match[2] ?? "milliseconds");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeDurationParts(magnitude: unknown, unit: string): unknown {

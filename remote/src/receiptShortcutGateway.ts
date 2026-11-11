@@ -153,7 +153,13 @@ async function readJson(request: Request, limit: number): Promise<unknown> {
   const bytes = new Uint8Array(await request.arrayBuffer());
   if (bytes.byteLength > limit) throw new ReceiptShortcutGatewayError(413, "BODY_TOO_LARGE");
   try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
+    const decoded = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes),
+    ) as unknown;
+    // A Shortcuts Text value sent through a File request body can arrive as one
+    // JSON-string wrapper. Unwrap exactly once, then apply the same strict
+    // receipt schema. Nested wrappers and non-JSON text remain invalid.
+    return typeof decoded === "string" ? JSON.parse(decoded) as unknown : decoded;
   } catch {
     throw new ReceiptShortcutGatewayError(400, "INVALID_JSON");
   }

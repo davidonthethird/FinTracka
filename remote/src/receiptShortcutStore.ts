@@ -2,6 +2,7 @@ import {
   ReceiptShortcutCaptureSchema,
   canonicalReceiptShortcutCapture,
   compareCapture,
+  receiptShortcutCaptureErrorCode,
   type PublicReceiptImport,
   type ScanSession,
 } from "./receiptShortcutModel";
@@ -105,7 +106,9 @@ export class ReceiptShortcutStore {
     untrustedCapture: unknown,
   ): Promise<{ import: PublicReceiptImport; replayed: boolean }> {
     const parsed = ReceiptShortcutCaptureSchema.safeParse(untrustedCapture);
-    if (!parsed.success) throw new ReceiptShortcutStoreError("INVALID_RECEIPT_SHORTCUT_CAPTURE");
+    if (!parsed.success) throw new ReceiptShortcutStoreError(
+      receiptShortcutCaptureErrorCode(untrustedCapture),
+    );
     const canonical = canonicalReceiptShortcutCapture(untrustedCapture);
     if (new TextEncoder().encode(canonical).byteLength > BODY_LIMIT) {
       throw new ReceiptShortcutStoreError("RECEIPT_SHORTCUT_BODY_TOO_LARGE");
