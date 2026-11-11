@@ -2,32 +2,51 @@
 set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-python="$repo_dir/../../.venv/bin/python"
+shortcut_skill="$HOME/.codex/plugins/cache/shortcuts-playground/shortcuts-playground/1.2.1/skills/shortcuts-playground"
+common_git_dir=$(git -C "$repo_dir" rev-parse --path-format=absolute --git-common-dir)
+main_repo=$(CDPATH= cd -- "$(dirname -- "$common_git_dir")" && pwd)
+python="$main_repo/.venv/bin/python"
 if [ ! -x "$python" ]; then
   python="$repo_dir/.venv/bin/python"
 fi
+if [ ! -x "$python" ]; then
+  echo "FinTracka virtualenv is required" >&2
+  exit 1
+fi
 
-(cd "$repo_dir/remote" && npm test -- --run && npm run typecheck && npm run check:deployment)
+(cd "$repo_dir/remote" && NO_COLOR=1 CI=1 npm test -- --run && npm run typecheck && npm run check:deployment)
 
-(cd "$repo_dir/frontend" && npm test -- --run && npm run typecheck && npm run build && \
-  PATH="$(dirname "$python"):$PATH" npm run test:e2e)
+(cd "$repo_dir/frontend" && npm test -- --run && npm run typecheck && npm run build:viewer)
+if [ "${FINTRACKA_SKIP_EXTERNAL_BROWSER:-0}" = 1 ]; then
+  (cd "$repo_dir/frontend" && npx playwright test e2e/remote-viewer.spec.ts --list >/dev/null)
+else
+  (cd "$repo_dir/frontend" && PATH="$(dirname "$python"):$PATH" npm run test:e2e)
+fi
 
 PYTHONPATH="$repo_dir" "$python" -m pytest "$repo_dir/tests" -q
 
-(cd "$repo_dir/native/receipt-refiner" && swift build -c release && \
-  .build/release/fintracka-receipt-refiner --self-test)
-
 scratch=$(mktemp -d)
 trap 'find "$scratch" -depth -delete' EXIT HUP INT TERM
-package="$scratch/00000000-0000-4000-8000-000000000001"
-mkdir -p "$package"
-echo '{"contract":"receipt_refinement_package/v1","refinement_id":"wrong-job","page_count":1,"created_at":"2026-11-04T12:00:00Z"}' > "$package/manifest.json"
-: > "$package/page-001.heic"
-if "$repo_dir/native/receipt-refiner/.build/release/fintracka-receipt-refiner" "$package" \
-  >"$scratch/stdout" 2>"$scratch/stderr"; then
-  echo "native refiner accepted an invalid package" >&2
+"$repo_dir/scripts/build-receipt-refiner.sh" "$scratch/install"
+
+python3 "$repo_dir/scripts/build-receipt-shortcut-v4.py" >/dev/null
+plutil -lint "$repo_dir/shortcuts/FinTracka Receipt Scanner.plist"
+python3 "$repo_dir/scripts/verify-receipt-shortcut-v4.py" \
+  "$repo_dir/shortcuts/FinTracka Receipt Scanner.plist"
+python3 "$shortcut_skill/scripts/validate_shortcut.py" \
+  "$repo_dir/shortcuts/FinTracka Receipt Scanner.plist" --target-platform all
+test -s "$repo_dir/shortcuts/FinTracka Receipt Scanner.shortcut"
+find "$repo_dir/shortcuts" -mindepth 2 -maxdepth 2 -type f \
+  -name 'FinTracka Receipt Scanner-*.xml' | grep -q .
+
+python3 "$repo_dir/scripts/scan_local_secrets.py"
+if git -C "$repo_dir" ls-files | grep -Eiq '(^|/)(IMG_|Screenshot)[^/]*\.(heic|heif|jpe?g|png)$'; then
+  echo "tracked private-looking image artifact found" >&2
   exit 1
 fi
-grep -qx 'INVALID_PACKAGE' "$scratch/stderr"
+if git -C "$repo_dir" ls-files 'shortcuts/*' | grep -Eiq '\.(heic|heif|jpe?g|png)$'; then
+  echo "receipt image found in Shortcut artifacts" >&2
+  exit 1
+fi
 
 (cd "$repo_dir" && git diff --check)

@@ -1,131 +1,89 @@
 # Receipt processing runbook
 
-## Temporary Apple model benchmark
+FinTracka receipt capture uses one canonical **FinTracka Receipt Scanner v4** Shortcut. The iPhone runs Apple Vision OCR plus the two Apple Intelligence model routes, writes a private package to a shared iCloud Drive folder, and stops. David's Mac relays completed packages to the authenticated FinTracka Worker. There is no Shortcut URL upload, callback, clipboard handoff, browser OCR, or paid OCR/LLM service.
 
-`FEATURE_RECEIPT_MODEL_COMPARISON` advertises Shortcut contract version 3 and enables an authenticated, member-scoped comparison between Apple Intelligence On-Device and Private Cloud Compute. It is enabled only in the private production household while the benchmark is active; staging remains off. Full model results remain on the expiring import; the 30-day benchmark table stores only route/status/duration/validation/selection metadata. Images never leave the iPhone.
+See [receipt-shortcut-setup.md](receipt-shortcut-setup.md) for installation and [receipt-shortcut-v4-actions.md](receipt-shortcut-v4-actions.md) for the inspected action contract.
 
-Do not enable this flag in another environment as part of an ordinary receipt deployment. Install the signed benchmark Shortcut, run the private acceptance set, review both routes against the actual receipt images, and then disable comparison mode after choosing a production route. See [receipt-model-comparison-feasibility.md](receipt-model-comparison-feasibility.md) and [receipt-shortcut-v3-actions.md](receipt-shortcut-v3-actions.md).
+## Trust boundaries
 
-FinTracka uses Apple's on-device text recognition and Apple Intelligence through the reviewed `FinTracka Receipt Scanner` iPhone Shortcut. The Shortcut sends a versioned, text-only result directly to FinTracka's exact receipt-import endpoint with a member-bound, one-use token that expires after 30 minutes. Receipt photos never enter the request, and the clipboard is never used. The authenticated Viewer waits for that exact session and opens the completed result automatically when the user returns. D1 never stores images. A reviewed structured draft is stored in household D1, and SQLite on the Mac remains the financial system of record. Build and deploy the Shortcut only from [receipt-shortcut-setup.md](receipt-shortcut-setup.md).
+- The browser creates an opaque, member-bound handoff ID. The Shortcut receives only the contract name and that ID.
+- The shared `FinTracka Receipt Queue` folder is private to David and Ariela. Receipt images, OCR, and model output remain there until the Mac relays them.
+- The Mac accepts only active handoff IDs, strict filenames, 1–12 ordered HEIC pages, bounded UTF-8 files, a manifest written last, and no symlinks.
+- The Worker revalidates the member-bound session, canonicalizes the capture, rejects changed replay, and exposes handoffs only to the member who created them.
+- A receipt import never changes the ledger. The household user reviews it and explicitly matches one exact posted transaction.
+- No log, browser storage, manifest, public response, or committed artifact may contain receipt text, photos, access credentials, account identifiers, or financial details.
 
-## Security and correctness boundaries
+## Automated gate
 
-- The browser must explicitly select a posted bank transaction. Matching is never automatic.
-- The Worker accepts only a negative transaction with the exact total and currency, within seven calendar days, and the current `split_revision`.
-- The command contains only IDs, revisions, and SHA-256 digests. It contains no merchant, item text, account name, or amount.
-- The Mac fetches the immutable receipt revision with its dedicated Access service identity, recalculates the digest, and repeats all transaction eligibility checks.
-- Receipt application, detailed splits, audit data, and the permanent command receipt commit in one SQLite transaction. A retried command is a no-op.
-- D1 stores no images or full card numbers. Local browser images expire after 30 days; D1 drafts/revisions expire after 90 days. Permanent redacted applications remain in SQLite to guarantee replay safety.
-- Refinement claims use five-minute leases and a per-claim secret digest. Imports waiting for refinement live for at most seven days; successful refinement resets review expiry to 30 minutes. Exact completion replay is allowed, but a wrong claim token, changed input digest, or changed result is rejected.
-- Successful iCloud packages are deleted. Temporary iCloud/model failures retry in `pending`; terminal invalid packages remain in `failed` for seven days. The Mac compares UUID-named pending packages with live jobs so discarded/expired packages are removed without touching unrelated files.
+Run from a clean worktree:
 
-## Safe deployment order
+```sh
+./scripts/verify-receipt-hybrid.sh
+```
 
-1. Create and verify a local SQLite backup. Keep the once-per-minute command processor disabled.
-2. Build and test the Viewer against snapshot schemas 1, 2, and 3.
-3. Apply D1 migrations through `0006_receipt_refinements.sql` in staging. Run the command again and require “no migrations to apply.”
-4. Deploy the Viewer Worker with `FEATURE_RECEIPT_DRAFTS=false`, `FEATURE_RECEIPT_MATCHING=false`, `FEATURE_RECEIPT_SHORTCUT=false`, and `FEATURE_RECEIPT_REFINEMENT=false`.
-5. Migrate a copied/synthetic SQLite database through migration 021 and require `PRAGMA foreign_key_check` to return no rows.
-6. Publish a synthetic snapshot v3. Verify older snapshots still read and v3 advertises `transaction.apply_receipt_split:[1]` and `receipts.matching:[1]`.
-7. Build/install the native refiner, verify Apple Intelligence availability, and enable the existing one-minute mobile-command LaunchAgent. Enable drafts and `FEATURE_RECEIPT_REFINEMENT` in staging only. Configure and test the exact receipt-upload Access path, then enable `FEATURE_RECEIPT_SHORTCUT` in staging and run the iPhone gate below. Keep financial matching false.
-8. Enable matching in staging and complete the controlled synthetic reconciliation.
-9. Repeat migrations, reader deployment, and idempotence checks in production with both flags false.
-10. Enable production drafts only after the iPhone gate. Enable production matching and the minute processor only after the user-selected live reconciliation.
+The gate runs Worker tests/typecheck/deployment checks, frontend tests/typecheck/viewer build, Python tests, Swift tests plus native OCR self-tests, the v4 Shortcut build/action audit, signed-artifact/archive checks, the local secret scan, private-image artifact checks, and `git diff --check`.
 
-## Required iPhone gate
+In an environment where policy forbids launching an external test browser, use:
 
-On each supported household iPhone in the protected staging Viewer, install the inspected canonical version-2 Shortcut and use the normal camera and library flows:
+```sh
+FINTRACKA_SKIP_EXTERNAL_BROWSER=1 ./scripts/verify-receipt-hybrid.sh
+```
 
-- one page completes without Safari OCR or a page reload;
-- six ordered pages return without duplicate or missing lines;
-- the Shortcut performs **Extract Text from Image** and **Use Model → On-Device** before its upload attempt;
-- a passing scan makes no image upload or third-party request; only recognized text and evidence-citing fields reach the exact Worker path;
-- a deliberately unreconciled scan writes one opaque package to the private iCloud queue and completes when the Mac wakes;
-- a long overlap is either collapsed only when exact or visibly flagged for review;
-- camera and photo-library permissions appear only when used, and a cancelled/failed scan creates zero drafts.
+That mode still parses and lists the focused Playwright suite but does not launch it. Browser behavior must then be checked through the permitted in-app browser and recorded separately; it is not equivalent to a Playwright pass.
 
-If this gate fails, keep both production receipt flags false. Do not substitute cloud OCR without a new privacy and threat-model review.
+## Safe rollout order
+
+1. Keep production v4 advertisement disabled.
+2. Apply D1 migration `0008_receipt_queue_handoffs.sql` in staging. Run the migration command again and require no pending migration.
+3. Deploy the Worker with queue routes present but v4 advertisement disabled. Verify legacy versions 2 and 3 still create their original session payloads.
+4. Install the updated Mac package parser/relay and the existing once-per-minute mobile-command schedule. Do not install a second daemon.
+5. With synthetic data, verify active-ID fetch, one package completion, exact replay returning the same import, changed replay rejection, redacted logs, successful package deletion, and temporary-failure retention.
+6. Deploy the viewer, enable v4 for David only, replace the canonical Shortcut, and complete David's matrix in [receipt-shortcut-v4-physical-matrix.md](receipt-shortcut-v4-physical-matrix.md).
+7. Enable v4 for Ariela only after David passes. Confirm the shared folder and member isolation, then complete Ariela's matrix.
+8. Review one real receipt without matching it automatically. Compare both model outputs to the receipt, select the better result, and verify summary arithmetic and all purchased lines.
+9. Enable v4 advertisement for both members only after the signed matrices pass. Keep legacy upload support for a seven-day drain window.
+
+## Mac relay operations
+
+```sh
+.venv/bin/fintracka remote commands schedule install
+.venv/bin/fintracka remote commands schedule status
+.venv/bin/fintracka remote commands process
+```
+
+Expected states:
+
+- `pending`: package has not been relayed yet; safe while the Mac is asleep.
+- `processing`: Mac is validating or uploading the package.
+- `ready`: one immutable receipt import exists and the inbox can open it.
+- `failed`: terminal safe error; the UI gives generic retry guidance and does not expose internal codes.
+
+Temporary iCloud, network, or model-unavailability conditions must retry without creating another handoff. Terminal invalid packages move to `failed`; unrelated files remain untouched.
 
 ## Controlled reconciliation
 
-The household user—not an agent—chooses a harmless receipt and its intended transaction.
+The household user—not an agent—chooses the receipt and intended transaction.
 
-1. Record the transaction ID, `split_revision`, current receipt/split/application/audit counts, and the current snapshot ID.
-2. Review every item, owner, category, and subcategory. Confirm the item allocations equal the receipt total exactly.
-3. Select the exact posted candidate and submit once.
-4. Run one manual processor cycle. Verify one receipt, one application, the expected split count, an increment of exactly one split revision, exact signed split sum, and one fresh snapshot.
-5. Run the processor again. Verify every recorded count and revision is unchanged.
-6. For correction testing, edit into a new immutable receipt revision, explicitly resubmit against the latest split revision, and verify the prior receipt-created splits are replaced atomically rather than duplicated.
-7. Test Mac-off pending behavior, restart recovery, command expiry, feature-flag rollback, and restoration of the pre-migration backup before enabling the minute schedule.
-
-## Verification commands
-
-```sh
-./scripts/verify.sh
-./scripts/verify-receipt-hybrid.sh
-cd remote
-npm run check:deployment
-npm run check:deployment -- --require-mac-access
-npm audit --omit=dev --audit-level=high
-cd ../frontend
-npm audit --omit=dev --audit-level=high
-cd ..
-.venv/bin/python -m pip_audit
-git diff --check
-```
-
-The repository currently has two dated baseline test failures documented in the implementation ledger: the manual-cash October fixture uses today’s date, and one savings-goal refill expectation differs from the implemented $25,000 cap. Receipt-specific, remote, frontend, migration, snapshot, and native processor suites must be green independently; do not hide new failures behind those baselines.
+1. Review merchant, date, every purchased line, subtotal, discounts, tax, tip, fees, total, owner, category, and subcategory.
+2. Compare both Apple model outputs to the photo. Do not accept an unsupported field merely because a model returned it.
+3. Select the exact posted transaction. Require exact currency and total and the current split revision.
+4. Apply once and run the Mac processor. Confirm one application, one split-revision increment, and exact signed split sum.
+5. Run the processor again. Confirm counts and revision do not change.
 
 ## Rollback
 
-1. Set `FEATURE_RECEIPT_REFINEMENT=false`, `FEATURE_RECEIPT_SHORTCUT=false`, and `FEATURE_RECEIPT_MATCHING=false` and redeploy. Remove only the exact receipt-upload public destination override from the Viewer Access application. Pending receipt commands remain inert when refinement is disabled.
-2. Disable and remove the command schedule with the existing CLI commands.
-3. Keep `FEATURE_RECEIPT_DRAFTS=true` only if capture/review should remain available; set it false to hide the entire receipt surface.
-4. Do not reverse a D1 or SQLite migration in place. Restore the verified pre-migration SQLite backup if local rollback is necessary; D1 columns/tables may remain unused.
-5. Never delete local command receipts before restoring an older database: they are the exact-once evidence.
+1. Disable v4 advertisement first and redeploy. New scans then fail closed to the accepted legacy path.
+2. Stop the existing mobile-command schedule only if relay processing itself must stop.
+3. Reinstall the last accepted signed Shortcut if capture must roll back.
+4. Leave additive D1/SQLite migrations and queued packages in place. Do not delete the shared folder until every package is reviewed or expired.
+5. Never delete local command receipts; they are the exact-once evidence.
 
-The private shared iCloud folder is a transient refinement queue, not a receipt backup. It is the only approved image-cloud path and must not be reused as permanent storage.
+## Production completion rule
 
-## 2026-11-01 deployment evidence
+Do not call v4 complete, fixed, or working on iPhone until:
 
-- Staging D1 applied `0003` and `0004`; the second application reported no pending migrations.
-- Production D1 applied `0003` and `0004`; the second application reported no pending migrations.
-- Staging Viewer version: `74639ae2-de3e-4899-946f-a125ef8e686e`.
-- Production Viewer version: `1ee1ac56-9bce-405d-ae0d-8a94f5dc1a37`.
-- Both deployments have `FEATURE_RECEIPT_DRAFTS=false` and `FEATURE_RECEIPT_MATCHING=false`.
-- Synthetic local migration reached schema 21 with an empty `PRAGMA foreign_key_check` result.
-- Worker deployment configuration and separate Mac Access audience passed, at an estimated 1,440 indexed empty polls per day.
-- Frontend and remote production-dependency audits reported zero vulnerabilities. Python audit reported zero known vulnerabilities after pinning `pyasn1==0.6.5`.
-
-At that deployment, no live receipt was selected or applied. The iPhone performance gate and user-selected controlled live reconciliation remained deliberate activation gates, not implementation gaps.
-
-## 2026-11-01 browser OCR benchmark evidence (superseded for production capture)
-
-- Replaced Tesseract with self-hosted PaddleOCR.js 0.4.2 and pinned PP-OCRv6-small detection/recognition models after comparing both engines against the real photos. Model hashes are verified during the build and no OCR CDN fallback exists.
-- The final cold Mac/headless-browser benchmark completed one prepared Target page in 7.0 seconds. The OCR chunk lazy-loads only on the scan route; ordinary Viewer startup no longer includes the roughly 10 MB OCR JavaScript chunk.
-- All nine real HEIC photos—including glare, wrinkles, perspective, faint thermal print, a photographed checkout screen, and two views of one receipt—produced exact visible merchant/summary fields and exact monetary lines. The ACME pair collapsed to one 16-line receipt. Stop & Shop's three ambiguous final digits were corrected only after the printed subtotal proved the 12-cent reconciliation, and those lines remain marked for review.
-- The Target photograph contains no visible purchase date; the parser correctly leaves it blank rather than inferring or inventing one.
-- Four exact posted purchases were applied locally after timestamped SQLite backups: ACME $109.61 (16 detailed lines), Target $38.11 (one detailed line), Home Depot $23.89 (one detailed line), and Liquor Wine Warehouse $162.20 (four detailed lines). Each increased `split_revision` exactly once, reconciled to the signed transaction amount, passed `PRAGMA foreign_key_check`, and was unchanged by an identical replay. The same-day Lowe's and Stop & Shop receipts remain unmatched until their bank transactions post.
-- iPhone Mirroring displayed the protected Viewer but macOS automation could not interact with the mirrored window. These results remain parser benchmark evidence only. Production capture now uses Apple Vision through the Shortcut, and its physical-iPhone gate remains required before activation.
-
-## Apple Vision Shortcut activation evidence
-
-Pending. Record the date, staging Worker version, exact-path Access application review, security-matrix result, both member-isolation scans, camera/library results, offline Vision result, and private-receipt acceptance result here before enabling production. Do not record tokens, import IDs, host/account identifiers, or receipt text.
-
-### 2026-11-02 implementation verification
-
-- Worker: 10 files / 88 tests passed; TypeScript typecheck passed.
-- Viewer: 21 files / 131 tests passed; Viewer typecheck and production build passed.
-- Browser: all 8 Playwright flows passed, including populated Shortcut return, safe navigation during import, unusable/expired import behavior, no production OCR request, and safe inbox dismissal/conflict refresh.
-- Local application: all 256 Python tests passed.
-- Production Viewer build contains no PaddleOCR worker, model, runtime, or receipt-fixture assets. The private development benchmark remains available only under the development server.
-- Production retains `FEATURE_RECEIPT_SHORTCUT=false`. No Shortcut was installed, no private receipt text was uploaded, and no real-device acceptance result is claimed by this automated gate.
-
-### 2026-11-02 staging Access and feature gate
-
-- Staging D1 applied migration `0005`; the immediate second application reported no pending migrations.
-- The existing staging Viewer Access application retains its household Allow policy and now has one exact `public` destination override for the receipt import endpoint. No wildcard or separate prefix-matching application remains.
-- Unauthenticated `GET`, `PUT`, `PATCH`, `DELETE`, and `OPTIONS` on the exact endpoint returned `405` with `Allow: POST`; `POST` without a bearer token returned `401 RECEIPT_SCAN_SESSION_INVALID`.
-- The deeper receipt-import path, its parent path, authenticated receipt-claim path, and Viewer root still redirect to Access. The equivalent production endpoint also remains Access-protected.
-- Staging Viewer version `1e90a825-698d-49be-ae4d-9a318878d0a1` is deployed with `FEATURE_RECEIPT_SHORTCUT=true`; production remains false.
-- Valid-token replay, cross-member isolation, camera/library, offline Vision, and private-receipt acceptance still require physical iPhone testing before production activation.
+- the automated gate passes from a clean commit;
+- both signed phone matrices pass;
+- the allowed browser check passes;
+- the production URL advertises v4 to both intended members;
+- one user-reviewed real receipt reaches the existing review screen exactly once.
