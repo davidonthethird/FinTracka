@@ -135,6 +135,51 @@ def test_lists_active_refinements_and_parses_retry_status() -> None:
     assert requests[0].full_url.endswith("/receipt-refinements/active")
 
 
+def test_lists_and_completes_receipt_queue_handoffs_with_access_headers() -> None:
+    handoff_id = "00000000-0000-4000-8000-000000000099"
+    import_id = "00000000-0000-4000-8000-000000000100"
+    requests = []
+    responses = [Response({"handoff_ids": [handoff_id]}),
+                 Response({"review_path": f"/receipts/import/{import_id}"})]
+
+    def opener(request, _timeout):
+        requests.append(request)
+        return responses.pop(0)
+
+    client = MobileCommandClient("https://viewer.example.test", "id", "secret", opener=opener)
+    assert client.active_receipt_queue_handoff_ids() == frozenset({handoff_id})
+    capture = {"contract": "receipt_shortcut_capture/v3", "text": "TOTAL 1.00"}
+    assert client.complete_receipt_queue_handoff(handoff_id, capture) == (
+        f"/receipts/import/{import_id}"
+    )
+    assert requests[0].method == "GET"
+    assert requests[0].headers["Cf-access-client-secret"] == "secret"
+    assert requests[1].full_url.endswith(f"/receipt-queue-handoffs/{handoff_id}/complete")
+    assert json.loads(requests[1].data) == capture
+
+
+@pytest.mark.parametrize("response", [
+    {"handoff_ids": ["not-a-uuid"]},
+    {"handoff_ids": ["00000000-0000-4000-8000-000000000001"] * 101},
+    {"handoff_ids": [], "secret": "leak"},
+])
+def test_receipt_queue_handoff_client_rejects_malformed_responses(response) -> None:
+    client = MobileCommandClient("https://viewer.example.test", "id", "secret",
+        opener=lambda *_: Response(response), sleep=lambda _: None)
+    with pytest.raises(MobileCommandClientError, match="MOBILE_INVALID_RESPONSE"):
+        client.active_receipt_queue_handoff_ids()
+
+
+def test_receipt_queue_completion_bounds_capture_and_review_path() -> None:
+    handoff_id = "00000000-0000-4000-8000-000000000099"
+    client = MobileCommandClient("https://viewer.example.test", "id", "secret",
+        opener=lambda *_: Response({"review_path": "/evil"}), sleep=lambda _: None)
+    with pytest.raises(MobileCommandClientError, match="MOBILE_INVALID_RESPONSE"):
+        client.complete_receipt_queue_handoff(handoff_id, {"text": "ok"})
+    with pytest.raises(ValueError, match="too large"):
+        client.complete_receipt_queue_handoff(handoff_id, {"text": "x" * (256 * 1024)})
+
+
 def test_claim_parses_v2_scope_and_normalizes_v1_to_one_time() -> None:
     def command(version: int, scope: str) -> dict[str, object]:
         return {

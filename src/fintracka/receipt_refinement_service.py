@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
 import subprocess
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Mapping, Protocol
 
 from fintracka.mobile_command_client import ClaimedReceiptRefinement
 from fintracka.db import connect, migrate
@@ -21,6 +23,14 @@ SAFE_ERRORS = {"MODEL_UNAVAILABLE", "VISION_FAILED", "INVALID_PACKAGE", "UNRECON
 RETRYABLE_ERRORS = {"MODEL_UNAVAILABLE", "VISION_FAILED", "PACKAGE_NOT_FOUND"}
 MAX_PAGE_BYTES = 20 * 1024 * 1024
 MAX_PACKAGE_BYTES = 100 * 1024 * 1024
+MAX_TEXT_BYTES = 400 * 1024
+SETTLE_SECONDS = 2
+QUEUE_MANIFEST_KEYS = {
+    "contract", "handoff_id", "page_count", "created_at", "on_device_status",
+    "on_device_duration_ms", "private_cloud_compute_status",
+    "private_cloud_compute_duration_ms",
+}
+MODEL_STATUSES = {"completed", "unavailable", "rate_limited", "failed"}
 
 
 class RefinementClient(Protocol):
@@ -31,15 +41,33 @@ class RefinementClient(Protocol):
     def fail_receipt_refinement(self, job_id: str, claim_token: str, error_code: str) -> str: ...
 
 
+class QueueHandoffClient(Protocol):
+    def active_receipt_queue_handoff_ids(self) -> frozenset[str]: ...
+    def complete_receipt_queue_handoff(
+        self, handoff_id: str, capture: Mapping[str, object],
+    ) -> str: ...
+
+
+class _PackageNotReady(RuntimeError):
+    pass
+
+
+class _InvalidQueuePackage(RuntimeError):
+    pass
+
+
 def process_receipt_refinements(
     client: RefinementClient,
     queue_directory: Path,
     helper: Callable[[Path], dict[str, str]],
+    preserve_ids: frozenset[str] = frozenset(),
 ) -> dict[str, int]:
     result = {"claimed": 0, "completed": 0, "failed": 0, "deferred": 0}
     queue_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     _remove_expired_failed_packages(queue_directory)
-    _remove_orphan_pending_packages(queue_directory, client.active_receipt_refinement_ids())
+    _remove_orphan_pending_packages(
+        queue_directory, client.active_receipt_refinement_ids() | preserve_ids,
+    )
     for job in client.claim_receipt_refinements(3):
         result["claimed"] += 1
         package = queue_directory / "pending" / job.id
@@ -76,6 +104,44 @@ def process_receipt_refinements(
                                                output["text"], output["model_result"])
         except Exception:
             # Completion may have committed even if its response was lost. Keep the package for idempotent retry.
+            result["deferred"] += 1
+            continue
+        _remove_package(package)
+        result["completed"] += 1
+    return result
+
+
+def process_receipt_queue_handoffs(
+    client: QueueHandoffClient,
+    queue_directory: Path,
+    ocr_fallback: Callable[[Path], str] | None = None,
+    *,
+    now: Callable[[], float] = time.time,
+    active_ids: frozenset[str] | None = None,
+) -> dict[str, int]:
+    result = {"found": 0, "completed": 0, "failed": 0, "deferred": 0}
+    queue_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _remove_expired_failed_packages(queue_directory)
+    active = active_ids if active_ids is not None else client.active_receipt_queue_handoff_ids()
+    pending = queue_directory / "pending"
+    if not pending.is_dir() or pending.is_symlink():
+        return result
+    candidates = [pending / item for item in sorted(active) if (pending / item).exists()][:3]
+    for package in candidates:
+        result["found"] += 1
+        try:
+            capture = _queue_capture(package, package.name, now() - SETTLE_SECONDS, ocr_fallback)
+        except _PackageNotReady:
+            result["deferred"] += 1
+            continue
+        except _InvalidQueuePackage:
+            _move_package_to_failed(queue_directory, package.name, package)
+            result["failed"] += 1
+            continue
+        try:
+            client.complete_receipt_queue_handoff(package.name, capture)
+        except Exception:
+            # The Worker may have committed. Keep the exact package for an idempotent retry.
             result["deferred"] += 1
             continue
         _remove_package(package)
@@ -131,12 +197,159 @@ def _remove_expired_failed_packages(queue_directory: Path) -> None:
             continue
 
 
+def _queue_capture(
+    package: Path,
+    handoff_id: str,
+    stable_before: float,
+    ocr_fallback: Callable[[Path], str] | None,
+) -> dict[str, object]:
+    if (JOB_ID.fullmatch(handoff_id) is None or package.name != handoff_id
+            or package.is_symlink() or not package.is_dir()):
+        raise _InvalidQueuePackage()
+    manifest_path = package / "manifest.txt"
+    if not manifest_path.exists():
+        raise _PackageNotReady()
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise _InvalidQueuePackage()
+    if _mtime(manifest_path) > stable_before:
+        raise _PackageNotReady()
+    manifest = _queue_manifest(_read_text(manifest_path))
+    try:
+        page_count = int(manifest["page_count"])
+    except ValueError as error:
+        raise _InvalidQueuePackage() from error
+    if (manifest["contract"] != "receipt_queue_capture/v1"
+            or manifest["handoff_id"] != handoff_id or not 1 <= page_count <= 12):
+        raise _InvalidQueuePackage()
+    try:
+        created_at = datetime.fromisoformat(manifest["created_at"].replace("Z", "+00:00"))
+    except ValueError as error:
+        raise _InvalidQueuePackage() from error
+    if created_at.tzinfo is None:
+        raise _InvalidQueuePackage()
+    expected = {
+        "manifest.txt", "ocr.txt", "on-device.txt", "private-cloud-compute.txt",
+        *(f"page-{index:03d}.heic" for index in range(1, page_count + 1)),
+    }
+    try:
+        actual = {path.name for path in package.iterdir()}
+    except OSError as error:
+        raise _PackageNotReady() from error
+    if not expected.issubset(actual):
+        raise _PackageNotReady()
+    if actual != expected:
+        raise _InvalidQueuePackage()
+    manifest_mtime = _mtime(manifest_path)
+    total = 0
+    for name in expected:
+        path = package / name
+        try:
+            if (path.is_symlink() or not path.is_file()
+                    or path.resolve().parent != package.resolve()):
+                raise _InvalidQueuePackage()
+            stat = path.stat()
+        except OSError as error:
+            raise _PackageNotReady() from error
+        if stat.st_mtime > stable_before or (name != "manifest.txt" and stat.st_mtime > manifest_mtime):
+            raise _PackageNotReady()
+        if name.startswith("page-") and (stat.st_size <= 0 or stat.st_size > MAX_PAGE_BYTES):
+            raise _InvalidQueuePackage()
+        if name.endswith(".txt") and stat.st_size > MAX_TEXT_BYTES:
+            raise _InvalidQueuePackage()
+        total += stat.st_size
+    if total > MAX_PACKAGE_BYTES:
+        raise _InvalidQueuePackage()
+
+    ocr = _read_text(package / "ocr.txt")
+    if len(ocr) > 100_000:
+        raise _InvalidQueuePackage()
+    if not ocr:
+        if ocr_fallback is None:
+            raise _PackageNotReady()
+        ocr = ocr_fallback(package)
+        if not isinstance(ocr, str) or not ocr or len(ocr) > 100_000:
+            raise _InvalidQueuePackage()
+    runs = [
+        _queue_model_run(manifest, package, "on_device", "on-device.txt"),
+        _queue_model_run(
+            manifest, package, "private_cloud_compute", "private-cloud-compute.txt",
+        ),
+    ]
+    return {
+        "contract": "receipt_shortcut_capture/v3",
+        "idempotency_key": _queue_digest(package, expected),
+        "shortcut_version": 3,
+        "text": ocr,
+        "runs": runs,
+    }
+
+
+def _queue_manifest(text: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line or line.count("=") != 1:
+            raise _InvalidQueuePackage()
+        key, value = line.split("=", 1)
+        if key in values:
+            raise _InvalidQueuePackage()
+        values[key] = value
+    if set(values) != QUEUE_MANIFEST_KEYS:
+        raise _InvalidQueuePackage()
+    return values
+
+
+def _queue_model_run(
+    manifest: dict[str, str], package: Path, model: str, filename: str,
+) -> dict[str, object]:
+    status_key = f"{model}_status"
+    duration_key = f"{model}_duration_ms"
+    status = manifest[status_key]
+    if status not in MODEL_STATUSES:
+        raise _InvalidQueuePackage()
+    duration = manifest[duration_key]
+    if not duration.isascii() or not duration.isdigit() or int(duration) > 86_400_000:
+        raise _InvalidQueuePackage()
+    model_result = _read_text(package / filename)
+    if len(model_result) > 100_000 or (status == "completed") != bool(model_result.strip()):
+        raise _InvalidQueuePackage()
+    return {
+        "model": model,
+        "status": status,
+        "duration_ms": int(duration),
+        "model_result": model_result,
+    }
+
+
+def _queue_digest(package: Path, names: set[str]) -> str:
+    digest = hashlib.sha256()
+    for name in sorted(names):
+        digest.update(name.encode())
+        digest.update(b"\0")
+        with (package / name).open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise _InvalidQueuePackage() from error
+
+
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError as error:
+        raise _PackageNotReady() from error
+
+
 def process_configured_receipt_refinements(
     database_path: Path, data_directory: Path, secrets: KeychainSecrets,
-) -> dict[str, int | bool | str]:
+) -> dict[str, object]:
     binary = data_directory / "tools" / "fintracka-receipt-refiner"
-    if not binary.is_file():
-        return {"claimed": 0, "completed": 0, "failed": 0, "skipped": True}
     connection = connect(database_path)
     try:
         migrate(connection)
@@ -147,14 +360,18 @@ def process_configured_receipt_refinements(
         return {"claimed": 0, "completed": 0, "failed": 0, "skipped": True}
     queue = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "FinTracka Receipt Queue"
     try:
-        result = process_receipt_refinements(
-            MobileCommandClient.from_settings(settings, secrets), queue,
-            lambda package: _run_helper(binary, package),
-        )
+        client = MobileCommandClient.from_settings(settings, secrets)
+        queue_ids = client.active_receipt_queue_handoff_ids()
+        handoffs = process_receipt_queue_handoffs(client, queue, active_ids=queue_ids)
+        result = (process_receipt_refinements(
+            client, queue, lambda package: _run_helper(binary, package), queue_ids,
+        ) if binary.is_file() else {
+            "claimed": 0, "completed": 0, "failed": 0, "deferred": 0,
+        })
     except MobileCommandClientError as error:
         return {"claimed": 0, "completed": 0, "failed": 0, "deferred": 0,
                 "skipped": True, "error_code": str(error)}
-    return {**result, "skipped": False}
+    return {**result, "skipped": False, "queue_handoffs": handoffs}
 
 
 def _run_helper(binary: Path, package: Path) -> dict[str, str]:

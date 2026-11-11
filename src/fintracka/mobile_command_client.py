@@ -21,6 +21,7 @@ from fintracka.receipts import ReceiptError, receipt_digest
 MAX_REQUEST_BYTES = 4_096
 MAX_RESPONSE_BYTES = 64 * 1024
 HEX_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z", re.I)
 CategorizationScope = Literal["one_time", "future", "past_and_future"]
 VALID_SCOPES = {"one_time", "future", "past_and_future"}
 
@@ -169,6 +170,34 @@ class MobileCommandClient:
         if not isinstance(items, list) or len(items) > 100:
             raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
         return frozenset(_bounded_string(item, 128) for item in items)
+
+    def active_receipt_queue_handoff_ids(self) -> frozenset[str]:
+        value = self._get("/api/v1/mobile/mac/receipt-queue-handoffs/active", maximum=64 * 1024)
+        root = _exact_dict(value, {"handoff_ids"})
+        items = root["handoff_ids"]
+        if not isinstance(items, list) or len(items) > 100:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        result = frozenset(_bounded_string(item, 36) for item in items)
+        if len(result) != len(items) or any(UUID.fullmatch(item) is None for item in result):
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        return result
+
+    def complete_receipt_queue_handoff(
+        self, handoff_id: str, capture: Mapping[str, object],
+    ) -> str:
+        if UUID.fullmatch(_bounded_string(handoff_id, 36)) is None:
+            raise ValueError("invalid receipt queue handoff id")
+        value = self._request(
+            f"/api/v1/mobile/mac/receipt-queue-handoffs/{quote(handoff_id, safe='')}/complete",
+            dict(capture), maximum_request=256 * 1024,
+        )
+        review_path = _exact_dict(value, {"review_path"})["review_path"]
+        if not isinstance(review_path, str) or re.fullmatch(
+            r"/receipts/import/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+            review_path, re.I,
+        ) is None:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        return review_path
 
     def complete_receipt_refinement(
         self, job_id: str, claim_token: str, input_digest: str, text: str, model_result: str,
