@@ -15,10 +15,10 @@ PLAIN_TEXT_UUIDS = {
     "on_device_model_result": "11000000-0000-4000-8000-000000000029",
     "private_cloud_compute_model_result": "11000000-0000-4000-8000-000000000030",
 }
-MATCH_UUIDS = {
-    "11000000-0000-4000-8000-000000000022",
-    "11000000-0000-4000-8000-000000000024",
-    "11000000-0000-4000-8000-000000000026",
+SNAPSHOT_UUIDS = {
+    PLAIN_TEXT_UUIDS["text"]: "11000000-0000-4000-8000-000000000019",
+    PLAIN_TEXT_UUIDS["on_device_model_result"]: "11000000-0000-4000-8000-000000000020",
+    PLAIN_TEXT_UUIDS["private_cloud_compute_model_result"]: "11000000-0000-4000-8000-000000000021",
 }
 
 def test_receipt_upload_contains_only_plain_text_snapshots() -> None:
@@ -80,18 +80,32 @@ def test_receipt_upload_contains_only_plain_text_snapshots() -> None:
         assert forbidden_uuid.encode() not in serialized_upload
 
     encoded_text_actions = {
-        action["WFWorkflowActionParameters"].get("UUID")
+        action["WFWorkflowActionParameters"].get("UUID"): action
         for action in actions
         if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.urlencode"
     }
-    assert set(PLAIN_TEXT_UUIDS.values()) <= encoded_text_actions
+    assert set(PLAIN_TEXT_UUIDS.values()) <= encoded_text_actions.keys()
+    for encoded_uuid, snapshot_uuid in SNAPSHOT_UUIDS.items():
+        encoded_input = encoded_text_actions[encoded_uuid]["WFWorkflowActionParameters"]["WFInput"]["Value"]
+        assert encoded_input["OutputUUID"] == snapshot_uuid
+        assert encoded_input["OutputName"] == "Text"
 
-    match_actions = {
-        action["WFWorkflowActionParameters"].get("UUID")
+    assert not any(
+        action["WFWorkflowActionIdentifier"] in {
+            "is.workflow.actions.text.match",
+            "is.workflow.actions.text.combine",
+        }
         for action in actions
-        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.text.match"
-    }
-    assert MATCH_UUIDS <= match_actions
+    )
+
+    idempotency_source = next(
+        action for action in actions
+        if action["WFWorkflowActionParameters"].get("CustomOutputName") == "Idempotency Source"
+    )
+    idempotency_attachments = idempotency_source["WFWorkflowActionParameters"]["WFTextActionText"]["Value"]["attachmentsByRange"]
+    recognized_text = idempotency_attachments["{2, 1}"]
+    assert recognized_text["OutputUUID"] == SNAPSHOT_UUIDS[PLAIN_TEXT_UUIDS["text"]]
+    assert recognized_text["OutputName"] == "Text"
 
 
 def test_apple_model_routes_use_saved_shortcuts_values() -> None:
