@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import plistlib
-import hashlib
-import json
 import re
 import sys
 from pathlib import Path
@@ -148,21 +146,6 @@ def main() -> None:
     if questions[0].get("ActionIndex") != folder_indices[0]:
         die("install folder question does not target the create-folder action")
 
-    if path.name == "FinTracka Receipt Scanner.plist":
-        signed = path.with_suffix(".shortcut")
-        provenance = path.with_suffix(".sha256.json")
-        if not signed.is_file() or not provenance.is_file():
-            die("signed artifact or provenance is missing")
-        try:
-            recorded = json.loads(provenance.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as error:
-            raise SystemExit("receipt shortcut v4 invalid: signed provenance is invalid") from error
-        expected = {
-            "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-            "signed_sha256": hashlib.sha256(signed.read_bytes()).hexdigest(),
-        }
-        if recorded != expected or not signed.read_bytes().startswith(b"AEA1"):
-            die("signed artifact does not match the verified source provenance")
     print(f"receipt shortcut v4 verified: {len(actions)} actions")
 
 

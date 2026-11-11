@@ -103,9 +103,6 @@ export class ReceiptQueueHandoffStore {
   async start(id: string): Promise<ReceiptQueueHandoff> {
     const row = await this.load(id);
     this.requireActive(row);
-    if (row.status === "completed" || row.status === "failed") {
-      throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_FINISHED");
-    }
     if (row.status === "pending") {
       await this.database.prepare(`UPDATE receipt_queue_handoffs SET status = 'processing',
         error_code = NULL, updated_at = ? WHERE id = ? AND status = 'pending'`)

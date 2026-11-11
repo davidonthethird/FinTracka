@@ -122,7 +122,7 @@ describe("receipt queue handoff store", () => {
       .first<{ count: number }>())?.count).toBe(1);
   });
 
-  it("records Mac processing and terminal failure without leaving the handoff active", async () => {
+  it("keeps terminal handoffs recoverable until the Mac confirms local cleanup", async () => {
     const shortcuts = new ReceiptShortcutStore(env.COMMANDS, () => NOW);
     const session = await shortcuts.createSession(HOUSEHOLD, MEMBER);
     const store = makeStore();
@@ -137,8 +137,26 @@ describe("receipt queue handoff store", () => {
       status: "failed", errorCode: "INVALID_PACKAGE",
     });
     await expect(store.listActiveIds()).resolves.toEqual(new Set());
+    await expect(store.start(handoff.id)).resolves.toMatchObject({
+      status: "failed", errorCode: "INVALID_PACKAGE",
+    });
     await expect(store.complete(handoff.id, capture()))
       .rejects.toMatchObject({ code: "RECEIPT_QUEUE_HANDOFF_FINISHED" });
+  });
+
+  it("lets the Mac confirm a completion whose HTTP response was lost", async () => {
+    const shortcuts = new ReceiptShortcutStore(env.COMMANDS, () => NOW);
+    const session = await shortcuts.createSession(HOUSEHOLD, MEMBER);
+    const store = makeStore();
+    const handoff = await store.create(HOUSEHOLD, MEMBER, session.token);
+
+    await store.start(handoff.id);
+    await store.complete(handoff.id, capture());
+
+    await expect(store.listActiveIds()).resolves.toEqual(new Set());
+    await expect(store.start(handoff.id)).resolves.toMatchObject({
+      status: "completed", importId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+    });
   });
 });
 

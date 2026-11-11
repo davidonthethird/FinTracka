@@ -37,6 +37,10 @@ python3 "$shortcut_skill/scripts/validate_shortcut.py" \
 test -s "$repo_dir/shortcuts/FinTracka Receipt Scanner.shortcut"
 find "$repo_dir/shortcuts" -mindepth 2 -maxdepth 2 -type f \
   -name 'FinTracka Receipt Scanner-*.xml' | grep -q .
+mkdir -p "$scratch/signed"
+printf 'AEA1unrelated' > "$scratch/signed/FinTracka Receipt Scanner.shortcut"
+"$repo_dir/scripts/sign-receipt-shortcut-v4.sh" "$scratch/signed" >/dev/null
+test "$(wc -c < "$scratch/signed/FinTracka Receipt Scanner.shortcut")" -gt 10000
 
 python3 "$repo_dir/scripts/scan_local_secrets.py"
 if git -C "$repo_dir" ls-files | grep -Eiq '(^|/)(IMG_|Screenshot)[^/]*\.(heic|heif|jpe?g|png)$'; then

@@ -176,6 +176,14 @@ def test_receipt_queue_handoff_client_rejects_malformed_responses(response) -> N
         client.active_receipt_queue_handoff_ids()
 
 
+@pytest.mark.parametrize("status", ["processing", "completed", "failed"])
+def test_receipt_queue_start_accepts_replayable_terminal_status(status: str) -> None:
+    handoff_id = "00000000-0000-4000-8000-000000000099"
+    client = MobileCommandClient("https://viewer.example.test", "id", "secret",
+        opener=lambda *_: Response({"status": status}), sleep=lambda _: None)
+    assert client.start_receipt_queue_handoff(handoff_id) == status
+
+
 def test_receipt_queue_completion_bounds_capture_and_review_path() -> None:
     handoff_id = "00000000-0000-4000-8000-000000000099"
     client = MobileCommandClient("https://viewer.example.test", "id", "secret",

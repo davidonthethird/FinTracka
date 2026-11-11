@@ -206,9 +206,10 @@ class MobileCommandClient:
             f"/api/v1/mobile/mac/receipt-queue-handoffs/{quote(handoff_id, safe='')}/processing",
             {},
         )
-        if _exact_dict(value, {"status"}) != {"status": "processing"}:
+        status = _exact_dict(value, {"status"})["status"]
+        if status not in {"processing", "completed", "failed"}:
             raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
-        return "processing"
+        return status
 
     def fail_receipt_queue_handoff(self, handoff_id: str, error_code: str) -> str:
         if UUID.fullmatch(_bounded_string(handoff_id, 36)) is None:

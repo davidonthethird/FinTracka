@@ -92,6 +92,12 @@ describe("receipt queue handoff gateway", () => {
     const replay = await gateway.fetch(macRequest(path, macJson(capture())), testEnv);
     expect(replay.status).toBe(200);
     expect(await replay.json()).toEqual(completed);
+    const recoverable = await gateway.fetch(macRequest(
+      "/api/v1/mobile/mac/receipt-queue-handoffs/active"), testEnv);
+    expect(await recoverable.json()).toEqual({ handoff_ids: [] });
+    const terminal = await gateway.fetch(macRequest(
+      `/api/v1/mobile/mac/receipt-queue-handoffs/${handoff.id}/processing`, macJson({})), testEnv);
+    expect(await terminal.json()).toEqual({ status: "completed" });
     const changed = await gateway.fetch(macRequest(path, macJson({
       ...capture(), text: "Changed\nTOTAL 12.00",
     })), testEnv);
@@ -127,6 +133,8 @@ describe("receipt queue handoff gateway", () => {
     })), testEnv);
     expect(failed.status).toBe(200);
     expect(await failed.json()).toEqual({ status: "failed" });
+    const terminal = await gateway.fetch(macRequest(`${base}/processing`, macJson({})), testEnv);
+    expect(await terminal.json()).toEqual({ status: "failed" });
     const status = await gateway.fetch(userRequest(
       `/api/v1/mobile/receipt-queue-handoffs/${handoff.id}`), testEnv);
     expect(await status.json()).toEqual({ handoff: {

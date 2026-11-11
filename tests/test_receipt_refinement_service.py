@@ -201,6 +201,7 @@ class QueueClient:
     starts: list[str] = field(default_factory=list)
     failures: list[tuple[str, str]] = field(default_factory=list)
     fail_error: bool = False
+    terminal: dict[str, str] = field(default_factory=dict)
 
     def active_receipt_queue_handoff_ids(self):
         return self.active
@@ -208,17 +209,23 @@ class QueueClient:
     def complete_receipt_queue_handoff(self, handoff_id, capture):
         self.captures.append((handoff_id, capture))
         if self.complete_error:
+            self.terminal[handoff_id] = "completed"
             raise OSError("response lost")
+        self.terminal[handoff_id] = "completed"
         return f"/receipts/import/{handoff_id}"
 
     def start_receipt_queue_handoff(self, handoff_id):
         self.starts.append(handoff_id)
-        return "processing"
+        return self.terminal.get(handoff_id, "processing")
 
     def fail_receipt_queue_handoff(self, handoff_id, error_code):
         self.failures.append((handoff_id, error_code))
+        if self.terminal.get(handoff_id) == "failed":
+            return "failed"
         if self.fail_error:
+            self.terminal[handoff_id] = "failed"
             raise OSError("response lost")
+        self.terminal[handoff_id] = "failed"
         return "failed"
 
 
@@ -300,6 +307,14 @@ def test_receipt_queue_processes_at_most_three_serially_and_retains_lost_complet
     assert [item[0] for item in client.captures] == ids[:3]
     assert all((tmp_path / "pending" / handoff_id).is_dir() for handoff_id in ids)
 
+    client.active = frozenset()
+    replay = process_receipt_queue_handoffs(client, tmp_path)
+
+    assert replay == {"found": 3, "completed": 3, "failed": 0, "deferred": 0}
+    assert [item[0] for item in client.captures] == ids[:3]
+    assert all(not (tmp_path / "pending" / handoff_id).exists() for handoff_id in ids[:3])
+    assert (tmp_path / "pending" / ids[3]).is_dir()
+
 
 def test_receipt_queue_uses_ocr_only_fallback_when_phone_text_is_blank(tmp_path: Path) -> None:
     handoff_id = "00000000-0000-4000-8000-000000000105"
@@ -344,6 +359,13 @@ def test_receipt_queue_keeps_package_when_terminal_failure_response_is_lost(tmp_
     assert result == {"found": 1, "completed": 0, "failed": 0, "deferred": 1}
     assert package.is_dir()
     assert not (tmp_path / "failed" / handoff_id).exists()
+
+    client.active = frozenset()
+    replay = process_receipt_queue_handoffs(client, tmp_path)
+
+    assert replay == {"found": 1, "completed": 0, "failed": 1, "deferred": 0}
+    assert not package.exists()
+    assert (tmp_path / "failed" / handoff_id).is_dir()
 
 
 def test_receipt_queue_never_invokes_ocr_helper_when_phone_text_exists(tmp_path: Path) -> None:

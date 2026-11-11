@@ -77,27 +77,10 @@ plutil -lint "shortcuts/FinTracka Receipt Scanner.plist"
 python3 scripts/verify-receipt-shortcut-v4.py \
   "shortcuts/FinTracka Receipt Scanner.plist"
 
-SHORTCUT_SKILL="$HOME/.codex/plugins/cache/shortcuts-playground/shortcuts-playground/1.2.1/skills/shortcuts-playground"
-python3 "$SHORTCUT_SKILL/scripts/validate_shortcut.py" \
-  "shortcuts/FinTracka Receipt Scanner.plist" --target-platform all
-SHORTCUTS_PLAYGROUND_OUTPUT_DIR="$PWD/shortcuts" \
-  "$SHORTCUT_SKILL/scripts/sign_shortcut.sh" \
-  "shortcuts/FinTracka Receipt Scanner.plist" --name "FinTracka Receipt Scanner"
-python3 - <<'PY'
-import hashlib, json
-from pathlib import Path
-base = Path("shortcuts/FinTracka Receipt Scanner")
-values = {
-    "source_sha256": hashlib.sha256(base.with_suffix(".plist").read_bytes()).hexdigest(),
-    "signed_sha256": hashlib.sha256(base.with_suffix(".shortcut").read_bytes()).hexdigest(),
-}
-base.with_suffix(".sha256.json").write_text(json.dumps(values, indent=2) + "\n")
-PY
-python3 scripts/verify-receipt-shortcut-v4.py \
-  "shortcuts/FinTracka Receipt Scanner.plist"
+./scripts/sign-receipt-shortcut-v4.sh "$PWD/shortcuts"
 ```
 
-The all-platform validator mode is required because Apple's current ToolKit snapshot mislabels the legacy Extract Text action even though that identifier exists in the known physical-iPhone export. The physical acceptance matrix below remains mandatory.
+The trusted signing script verifies and validates the inspected plist immediately before signing it, replacing any pre-existing output. This avoids treating an editable hash sidecar as proof of signed content. Its all-platform validator mode is required because Apple's current ToolKit snapshot mislabels the legacy Extract Text action even though that identifier exists in the known physical-iPhone export. The physical acceptance matrix below remains mandatory.
 
 ## Acceptance matrix
 

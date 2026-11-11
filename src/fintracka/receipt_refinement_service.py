@@ -128,9 +128,24 @@ def process_receipt_queue_handoffs(
     pending = queue_directory / "pending"
     if not pending.is_dir() or pending.is_symlink():
         return result
-    candidates = [pending / item for item in sorted(active) if (pending / item).exists()][:3]
+    local = _local_queue_package_ids(queue_directory)
+    ordered_ids = [*sorted(active & local), *sorted(local - active)]
+    candidates = [pending / item for item in ordered_ids[:3]]
     for package in candidates:
         result["found"] += 1
+        try:
+            status = client.start_receipt_queue_handoff(package.name)
+        except Exception:
+            result["deferred"] += 1
+            continue
+        if status == "completed":
+            _remove_package(package)
+            result["completed"] += 1
+            continue
+        if status == "failed":
+            _move_package_to_failed(queue_directory, package.name, package)
+            result["failed"] += 1
+            continue
         try:
             capture = _queue_capture(package, package.name, now() - SETTLE_SECONDS, ocr_fallback)
         except _PackageNotReady:
@@ -154,11 +169,6 @@ def process_receipt_queue_handoffs(
                 result["deferred"] += 1
             continue
         try:
-            client.start_receipt_queue_handoff(package.name)
-        except Exception:
-            result["deferred"] += 1
-            continue
-        try:
             client.complete_receipt_queue_handoff(package.name, capture)
         except Exception:
             # The Worker may have committed. Keep the exact package for an idempotent retry.
@@ -174,6 +184,16 @@ def _report_queue_failure(client: QueueHandoffClient, handoff_id: str, error_cod
         return client.fail_receipt_queue_handoff(handoff_id, error_code) == "failed"
     except Exception:
         return False
+
+
+def _local_queue_package_ids(queue_directory: Path) -> frozenset[str]:
+    pending = queue_directory / "pending"
+    if not pending.is_dir() or pending.is_symlink():
+        return frozenset()
+    return frozenset(
+        item.name for item in pending.iterdir()
+        if JOB_ID.fullmatch(item.name) and item.is_dir() and not item.is_symlink()
+    )
 
 
 def _remove_orphan_pending_packages(queue_directory: Path, active_ids: frozenset[str]) -> None:
@@ -396,7 +416,8 @@ def process_configured_receipt_refinements(
             active_ids=queue_ids,
         )
         result = (process_receipt_refinements(
-            client, queue, lambda package: _run_helper(binary, package), queue_ids,
+            client, queue, lambda package: _run_helper(binary, package),
+            queue_ids | _local_queue_package_ids(queue),
         ) if binary.is_file() else {
             "claimed": 0, "completed": 0, "failed": 0, "deferred": 0,
         })

@@ -54,24 +54,7 @@ python3 scripts/build-receipt-shortcut-v4.py
 python3 scripts/verify-receipt-shortcut-v4.py \
   "shortcuts/FinTracka Receipt Scanner.plist"
 
-SHORTCUT_SKILL="$HOME/.codex/plugins/cache/shortcuts-playground/shortcuts-playground/1.2.1/skills/shortcuts-playground"
-python3 "$SHORTCUT_SKILL/scripts/validate_shortcut.py" \
-  "shortcuts/FinTracka Receipt Scanner.plist" --target-platform all
-SHORTCUTS_PLAYGROUND_OUTPUT_DIR="$PWD/shortcuts" \
-  "$SHORTCUT_SKILL/scripts/sign_shortcut.sh" \
-  "shortcuts/FinTracka Receipt Scanner.plist" --name "FinTracka Receipt Scanner"
-python3 - <<'PY'
-import hashlib, json
-from pathlib import Path
-base = Path("shortcuts/FinTracka Receipt Scanner")
-values = {
-    "source_sha256": hashlib.sha256(base.with_suffix(".plist").read_bytes()).hexdigest(),
-    "signed_sha256": hashlib.sha256(base.with_suffix(".shortcut").read_bytes()).hexdigest(),
-}
-base.with_suffix(".sha256.json").write_text(json.dumps(values, indent=2) + "\n")
-PY
-python3 scripts/verify-receipt-shortcut-v4.py \
-  "shortcuts/FinTracka Receipt Scanner.plist"
+./scripts/sign-receipt-shortcut-v4.sh "$PWD/shortcuts"
 ```
 
-`--target-platform all` is intentional: Apple's current ToolKit snapshot labels the legacy Extract Text from Image identifier as macOS-only, although that same identifier is present in the existing physical-iPhone Shortcut export. The SHA-256 sidecar binds the inspected plist to the exact signed bytes used for installation. The signed artifact still requires physical acceptance on both phones before rollout, including a run where one model is unavailable because Apple does not document action-level error recovery for `Use Model`.
+The trusted signing script validates the already-inspected plist and replaces the target artifact in one step. `--target-platform all` is intentional: Apple's current ToolKit snapshot labels the legacy Extract Text from Image identifier as macOS-only, although that same identifier is present in the existing physical-iPhone Shortcut export. The signed artifact still requires physical acceptance on both phones before rollout, including a run where one model is unavailable because Apple does not document action-level error recovery for `Use Model`.

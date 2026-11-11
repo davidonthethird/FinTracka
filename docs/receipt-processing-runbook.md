@@ -58,7 +58,7 @@ Expected states:
 - `ready`: one immutable receipt import exists and the inbox can open it.
 - `failed`: terminal safe error; the UI gives generic retry guidance and does not expose internal codes.
 
-Temporary iCloud, network, or OCR-helper conditions retry without creating another handoff. A terminal invalid package is reported to the Worker first and moves to local `failed` storage only after that acknowledgment; if the acknowledgment is lost, the package stays pending for an idempotent retry. One bad package does not stop later packages in the same scheduled pass.
+Temporary iCloud, network, or OCR-helper conditions retry without creating another handoff. A terminal invalid package is reported to the Worker first and moves to local `failed` storage only after that acknowledgment; if the acknowledgment is lost, the package stays pending for an idempotent retry. The Mac probes every locally retained UUID package against the authenticated processing endpoint, which returns its existing completed/failed state even after it leaves the active queue; that acknowledgment removes or retains the package without creating a duplicate import. One bad package does not stop later packages in the same scheduled pass.
 
 ## Controlled reconciliation
 
