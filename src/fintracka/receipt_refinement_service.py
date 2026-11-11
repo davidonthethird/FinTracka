@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -129,13 +130,24 @@ def process_receipt_queue_handoffs(
     if not pending.is_dir() or pending.is_symlink():
         return result
     local = _local_queue_package_ids(queue_directory)
-    ordered_ids = [*sorted(active & local), *sorted(local - active)]
-    candidates = [pending / item for item in ordered_ids[:3]]
+    candidates = sorted(
+        (pending / item for item in local),
+        key=lambda package: (_package_mtime(package), package.name not in active, package.name),
+    )[:3]
     for package in candidates:
         result["found"] += 1
         try:
             status = client.start_receipt_queue_handoff(package.name)
+        except MobileCommandClientError as error:
+            if error.code in {"MOBILE_NOT_FOUND", "MOBILE_GONE"}:
+                _move_package_to_failed(queue_directory, package.name, package)
+                result["failed"] += 1
+            else:
+                _defer_queue_package(package)
+                result["deferred"] += 1
+            continue
         except Exception:
+            _defer_queue_package(package)
             result["deferred"] += 1
             continue
         if status == "completed":
@@ -149,6 +161,7 @@ def process_receipt_queue_handoffs(
         try:
             capture = _queue_capture(package, package.name, now() - SETTLE_SECONDS, ocr_fallback)
         except _PackageNotReady:
+            _defer_queue_package(package)
             result["deferred"] += 1
             continue
         except _InvalidQueuePackage:
@@ -156,22 +169,26 @@ def process_receipt_queue_handoffs(
                 _move_package_to_failed(queue_directory, package.name, package)
                 result["failed"] += 1
             else:
+                _defer_queue_package(package)
                 result["deferred"] += 1
             continue
         except Exception as error:
             code = str(error) if str(error) in SAFE_ERRORS else "UNRECONCILED"
             if code in RETRYABLE_ERRORS:
+                _defer_queue_package(package)
                 result["deferred"] += 1
             elif _report_queue_failure(client, package.name, code):
                 _move_package_to_failed(queue_directory, package.name, package)
                 result["failed"] += 1
             else:
+                _defer_queue_package(package)
                 result["deferred"] += 1
             continue
         try:
             client.complete_receipt_queue_handoff(package.name, capture)
         except Exception:
             # The Worker may have committed. Keep the exact package for an idempotent retry.
+            _defer_queue_package(package)
             result["deferred"] += 1
             continue
         _remove_package(package)
@@ -194,6 +211,20 @@ def _local_queue_package_ids(queue_directory: Path) -> frozenset[str]:
         item.name for item in pending.iterdir()
         if JOB_ID.fullmatch(item.name) and item.is_dir() and not item.is_symlink()
     )
+
+
+def _package_mtime(package: Path) -> float:
+    try:
+        return package.stat().st_mtime
+    except OSError:
+        return 0
+
+
+def _defer_queue_package(package: Path) -> None:
+    try:
+        os.utime(package, None, follow_symlinks=False)
+    except OSError:
+        pass
 
 
 def _remove_orphan_pending_packages(queue_directory: Path, active_ids: frozenset[str]) -> None:

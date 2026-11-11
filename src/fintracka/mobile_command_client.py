@@ -554,6 +554,7 @@ def _http_error_code(status: int) -> str:
         401: "MOBILE_UNAUTHORIZED",
         403: "MOBILE_FORBIDDEN",
         404: "MOBILE_NOT_FOUND",
+        410: "MOBILE_GONE",
         409: "MOBILE_CONFLICT",
         413: "MOBILE_TOO_LARGE",
         429: "MOBILE_RATE_LIMITED",

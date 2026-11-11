@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from fintracka.mobile_command_client import ClaimedReceiptRefinement
+from fintracka.mobile_command_client import ClaimedReceiptRefinement, MobileCommandClientError
 from fintracka.receipt_refinement_service import (
     _run_ocr_helper,
     process_receipt_queue_handoffs,
@@ -202,6 +202,7 @@ class QueueClient:
     failures: list[tuple[str, str]] = field(default_factory=list)
     fail_error: bool = False
     terminal: dict[str, str] = field(default_factory=dict)
+    start_errors: dict[str, str] = field(default_factory=dict)
 
     def active_receipt_queue_handoff_ids(self):
         return self.active
@@ -216,6 +217,8 @@ class QueueClient:
 
     def start_receipt_queue_handoff(self, handoff_id):
         self.starts.append(handoff_id)
+        if error_code := self.start_errors.get(handoff_id):
+            raise MobileCommandClientError(error_code)
         return self.terminal.get(handoff_id, "processing")
 
     def fail_receipt_queue_handoff(self, handoff_id, error_code):
@@ -310,10 +313,46 @@ def test_receipt_queue_processes_at_most_three_serially_and_retains_lost_complet
     client.active = frozenset()
     replay = process_receipt_queue_handoffs(client, tmp_path)
 
-    assert replay == {"found": 3, "completed": 3, "failed": 0, "deferred": 0}
-    assert [item[0] for item in client.captures] == ids[:3]
-    assert all(not (tmp_path / "pending" / handoff_id).exists() for handoff_id in ids[:3])
-    assert (tmp_path / "pending" / ids[3]).is_dir()
+    assert replay == {"found": 3, "completed": 2, "failed": 0, "deferred": 1}
+    assert [item[0] for item in client.captures] == ids
+    final = process_receipt_queue_handoffs(client, tmp_path)
+    assert final == {"found": 2, "completed": 2, "failed": 0, "deferred": 0}
+    assert all(not (tmp_path / "pending" / handoff_id).exists() for handoff_id in ids)
+
+
+def test_receipt_queue_rotates_deferred_packages_so_later_scans_are_not_starved(
+    tmp_path: Path,
+) -> None:
+    ids = [f"00000000-0000-4000-8000-{index:012d}" for index in range(211, 215)]
+    packages = [queue_handoff_package(tmp_path, handoff_id) for handoff_id in ids]
+    now = time.time()
+    for index, package in enumerate(packages):
+        os.utime(package, (now - 20 + index, now - 20 + index))
+    for package in packages[:3]:
+        os.utime(package / "manifest.txt", (now, now))
+    client = QueueClient(frozenset(ids), [])
+
+    first = process_receipt_queue_handoffs(client, tmp_path, now=lambda: now)
+    second = process_receipt_queue_handoffs(client, tmp_path, now=lambda: now)
+
+    assert first == {"found": 3, "completed": 0, "failed": 0, "deferred": 3}
+    assert second["completed"] == 1
+    assert [handoff_id for handoff_id, _ in client.captures] == [ids[3]]
+
+
+@pytest.mark.parametrize("error_code", ["MOBILE_NOT_FOUND", "MOBILE_GONE"])
+def test_receipt_queue_quarantines_handoffs_rejected_as_expired_or_unknown(
+    tmp_path: Path, error_code: str,
+) -> None:
+    handoff_id = "00000000-0000-4000-8000-000000000215"
+    package = queue_handoff_package(tmp_path, handoff_id)
+    client = QueueClient(frozenset(), [], start_errors={handoff_id: error_code})
+
+    result = process_receipt_queue_handoffs(client, tmp_path)
+
+    assert result == {"found": 1, "completed": 0, "failed": 1, "deferred": 0}
+    assert not package.exists()
+    assert (tmp_path / "failed" / handoff_id).is_dir()
 
 
 def test_receipt_queue_uses_ocr_only_fallback_when_phone_text_is_blank(tmp_path: Path) -> None:

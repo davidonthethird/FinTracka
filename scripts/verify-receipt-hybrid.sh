@@ -34,13 +34,26 @@ python3 "$repo_dir/scripts/verify-receipt-shortcut-v4.py" \
   "$repo_dir/shortcuts/FinTracka Receipt Scanner.plist"
 python3 "$shortcut_skill/scripts/validate_shortcut.py" \
   "$repo_dir/shortcuts/FinTracka Receipt Scanner.plist" --target-platform all
-test -s "$repo_dir/shortcuts/FinTracka Receipt Scanner.shortcut"
+if git -C "$repo_dir" ls-files --error-unmatch \
+  'shortcuts/FinTracka Receipt Scanner.shortcut' >/dev/null 2>&1; then
+  echo "unverifiable prebuilt receipt Scanner must not be tracked" >&2
+  exit 1
+fi
 find "$repo_dir/shortcuts" -mindepth 2 -maxdepth 2 -type f \
   -name 'FinTracka Receipt Scanner-*.xml' | grep -q .
 mkdir -p "$scratch/signed"
 printf 'AEA1unrelated' > "$scratch/signed/FinTracka Receipt Scanner.shortcut"
 "$repo_dir/scripts/sign-receipt-shortcut-v4.sh" "$scratch/signed" >/dev/null
-test "$(wc -c < "$scratch/signed/FinTracka Receipt Scanner.shortcut")" -gt 10000
+release_artifact="$scratch/signed/FinTracka Receipt Scanner.shortcut"
+test "$(wc -c < "$release_artifact")" -gt 10000
+python3 - "$release_artifact" <<'PY'
+from pathlib import Path
+import sys
+
+artifact = Path(sys.argv[1]).read_bytes()
+assert artifact.startswith(b"AEA1")
+assert artifact != b"AEA1unrelated"
+PY
 
 python3 "$repo_dir/scripts/scan_local_secrets.py"
 if git -C "$repo_dir" ls-files | grep -Eiq '(^|/)(IMG_|Screenshot)[^/]*\.(heic|heif|jpe?g|png)$'; then

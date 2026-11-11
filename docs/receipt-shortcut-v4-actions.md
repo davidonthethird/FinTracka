@@ -1,6 +1,6 @@
 # FinTracka Receipt Scanner Shortcut (version 4)
 
-The canonical signed artifact is [`shortcuts/FinTracka Receipt Scanner.shortcut`](../shortcuts/FinTracka%20Receipt%20Scanner.shortcut). Its inspectable source is `shortcuts/FinTracka Receipt Scanner.plist`; `scripts/build-receipt-shortcut-v4.py` rebuilds it and `scripts/verify-receipt-shortcut-v4.py` enforces the action contract.
+The inspectable source is `shortcuts/FinTracka Receipt Scanner.plist`; `scripts/build-receipt-shortcut-v4.py` rebuilds it and `scripts/verify-receipt-shortcut-v4.py` enforces the action contract. The installable artifact is created only by the trusted signing script so the file installed on a phone is the exact output of source verification and signing, not an opaque prebuilt binary from the repository.
 
 Version 4 deliberately has no network request, browser transfer, persistent secret, or nested Shortcut. It receives only:
 
@@ -54,7 +54,7 @@ python3 scripts/build-receipt-shortcut-v4.py
 python3 scripts/verify-receipt-shortcut-v4.py \
   "shortcuts/FinTracka Receipt Scanner.plist"
 
-./scripts/sign-receipt-shortcut-v4.sh "$PWD/shortcuts"
+./scripts/sign-receipt-shortcut-v4.sh "$PWD/dist/receipt-shortcut"
 ```
 
-The trusted signing script validates the already-inspected plist and replaces the target artifact in one step. `--target-platform all` is intentional: Apple's current ToolKit snapshot labels the legacy Extract Text from Image identifier as macOS-only, although that same identifier is present in the existing physical-iPhone Shortcut export. The signed artifact still requires physical acceptance on both phones before rollout, including a run where one model is unavailable because Apple does not document action-level error recovery for `Use Model`.
+Install only `dist/receipt-shortcut/FinTracka Receipt Scanner.shortcut` from that signing run. The trusted signing script validates the already-inspected plist and replaces the target artifact in one step. `--target-platform all` is intentional: Apple's current ToolKit snapshot labels the legacy Extract Text from Image identifier as macOS-only, although that same identifier is present in the existing physical-iPhone Shortcut export. The signed artifact still requires physical acceptance on both phones before rollout, including a run where one model is unavailable because Apple does not document action-level error recovery for `Use Model`.

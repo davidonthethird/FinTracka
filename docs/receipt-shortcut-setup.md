@@ -2,7 +2,7 @@
 
 This is the only supported receipt Shortcut. It captures receipt pages, runs Apple Vision OCR plus both Apple Intelligence model routes on the iPhone, and saves one private package to a shared iCloud Drive folder. It does not call FinTracka, open a browser, use the clipboard, or put a credential in the Shortcut.
 
-The canonical signed artifact is `shortcuts/FinTracka Receipt Scanner.shortcut`. Its action contract is documented in [receipt-shortcut-v4-actions.md](receipt-shortcut-v4-actions.md).
+The installable artifact is generated from the inspected source by the trusted signing script. FinTracka deliberately does not track a prebuilt Scanner binary because its contents cannot be reviewed or tied back to the source. The action contract is documented in [receipt-shortcut-v4-actions.md](receipt-shortcut-v4-actions.md).
 
 ## Privacy and data flow
 
@@ -20,7 +20,7 @@ The canonical signed artifact is `shortcuts/FinTracka Receipt Scanner.shortcut`.
 ## Install on each iPhone
 
 1. Delete every old or numbered FinTracka receipt Shortcut. There must be exactly one Shortcut named **FinTracka Receipt Scanner**.
-2. Install `shortcuts/FinTracka Receipt Scanner.shortcut`.
+2. Run `./scripts/sign-receipt-shortcut-v4.sh "$PWD/dist/receipt-shortcut"`, then install the exact `dist/receipt-shortcut/FinTracka Receipt Scanner.shortcut` file it creates.
 3. During installation, choose the shared **FinTracka Receipt Queue** folder when asked where receipt packages belong.
 4. Allow camera, Photos, iCloud Drive, Extract Text, and Apple Intelligence access when iOS asks. Choose **Always Allow** only for the actions shown inside this trusted signed Shortcut.
 5. Start scans from FinTracka. Do not run the Shortcut tile directly: direct runs have no handoff identifier and correctly stop.
@@ -77,10 +77,10 @@ plutil -lint "shortcuts/FinTracka Receipt Scanner.plist"
 python3 scripts/verify-receipt-shortcut-v4.py \
   "shortcuts/FinTracka Receipt Scanner.plist"
 
-./scripts/sign-receipt-shortcut-v4.sh "$PWD/shortcuts"
+./scripts/sign-receipt-shortcut-v4.sh "$PWD/dist/receipt-shortcut"
 ```
 
-The trusted signing script verifies and validates the inspected plist immediately before signing it, replacing any pre-existing output. This avoids treating an editable hash sidecar as proof of signed content. Its all-platform validator mode is required because Apple's current ToolKit snapshot mislabels the legacy Extract Text action even though that identifier exists in the known physical-iPhone export. The physical acceptance matrix below remains mandatory.
+Install only the exact artifact produced in `dist/receipt-shortcut` by that command. The trusted signing script verifies and validates the inspected plist immediately before signing it, replacing any pre-existing output. This avoids treating a checked-in opaque binary or editable hash sidecar as proof of signed content. Its all-platform validator mode is required because Apple's current ToolKit snapshot mislabels the legacy Extract Text action even though that identifier exists in the known physical-iPhone export. The physical acceptance matrix below remains mandatory.
 
 ## Acceptance matrix
 

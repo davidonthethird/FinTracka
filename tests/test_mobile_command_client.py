@@ -326,6 +326,7 @@ def test_from_settings_requires_separate_available_credentials() -> None:
         (HTTPError("https://x", 401, "private", {}, BytesIO(b"secret")), "MOBILE_UNAUTHORIZED"),
         (HTTPError("https://x", 403, "private", {}, BytesIO(b"secret")), "MOBILE_FORBIDDEN"),
         (HTTPError("https://x", 409, "private", {}, BytesIO(b"secret")), "MOBILE_CONFLICT"),
+        (HTTPError("https://x", 410, "private", {}, BytesIO(b"secret")), "MOBILE_GONE"),
         (socket.timeout("private network detail"), "MOBILE_TIMEOUT"),
     ],
 )
