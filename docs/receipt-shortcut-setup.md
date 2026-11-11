@@ -55,7 +55,7 @@ FinTracka Receipt Queue/
 4. Wait for the success message. The Shortcut can finish even while the Mac is asleep because the package waits privately in iCloud.
 5. Return to FinTracka. The inbox updates from **Queued on iPhone** to **Waiting for Mac**, **Processing**, and then **Ready to review**.
 
-If either Apple model is unavailable, its status is recorded as unavailable and the other evidence is retained. FinTracka must not invent missing receipt fields.
+If a model returns no usable response, its status is recorded as unavailable and the other captured evidence is retained. Apple does not document an action-level catch/continue control for `Use Model`; therefore a device-level model-action failure is a mandatory physical acceptance case and rollout remains blocked if it prevents the package from being saved. FinTracka must not invent missing receipt fields.
 
 ## Mac relay
 
@@ -83,7 +83,18 @@ python3 "$SHORTCUT_SKILL/scripts/validate_shortcut.py" \
 SHORTCUTS_PLAYGROUND_OUTPUT_DIR="$PWD/shortcuts" \
   "$SHORTCUT_SKILL/scripts/sign_shortcut.sh" \
   "shortcuts/FinTracka Receipt Scanner.plist" --name "FinTracka Receipt Scanner"
-test -s "shortcuts/FinTracka Receipt Scanner.shortcut"
+python3 - <<'PY'
+import hashlib, json
+from pathlib import Path
+base = Path("shortcuts/FinTracka Receipt Scanner")
+values = {
+    "source_sha256": hashlib.sha256(base.with_suffix(".plist").read_bytes()).hexdigest(),
+    "signed_sha256": hashlib.sha256(base.with_suffix(".shortcut").read_bytes()).hexdigest(),
+}
+base.with_suffix(".sha256.json").write_text(json.dumps(values, indent=2) + "\n")
+PY
+python3 scripts/verify-receipt-shortcut-v4.py \
+  "shortcuts/FinTracka Receipt Scanner.plist"
 ```
 
 The all-platform validator mode is required because Apple's current ToolKit snapshot mislabels the legacy Extract Text action even though that identifier exists in the known physical-iPhone export. The physical acceptance matrix below remains mandatory.
@@ -100,6 +111,7 @@ Run every row on both David's and Ariela's phones before production rollout:
 | Photo library | 2+ | Awake | Page order preserved; no duplicate lines |
 | Either | 1+ | Asleep | Package waits, then resumes after Mac wakes |
 | Either | 1+ | Awake | On-device and Private Cloud Compute outputs are shown separately for comparison |
+| Either | 1+ | Awake | If one `Use Model` action is unavailable, the package still saves the OCR and other model evidence; otherwise rollout is blocked |
 
 Also verify:
 

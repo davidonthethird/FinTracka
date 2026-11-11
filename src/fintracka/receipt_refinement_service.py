@@ -43,6 +43,8 @@ class RefinementClient(Protocol):
 
 class QueueHandoffClient(Protocol):
     def active_receipt_queue_handoff_ids(self) -> frozenset[str]: ...
+    def start_receipt_queue_handoff(self, handoff_id: str) -> str: ...
+    def fail_receipt_queue_handoff(self, handoff_id: str, error_code: str) -> str: ...
     def complete_receipt_queue_handoff(
         self, handoff_id: str, capture: Mapping[str, object],
     ) -> str: ...
@@ -135,8 +137,26 @@ def process_receipt_queue_handoffs(
             result["deferred"] += 1
             continue
         except _InvalidQueuePackage:
-            _move_package_to_failed(queue_directory, package.name, package)
-            result["failed"] += 1
+            if _report_queue_failure(client, package.name, "INVALID_PACKAGE"):
+                _move_package_to_failed(queue_directory, package.name, package)
+                result["failed"] += 1
+            else:
+                result["deferred"] += 1
+            continue
+        except Exception as error:
+            code = str(error) if str(error) in SAFE_ERRORS else "UNRECONCILED"
+            if code in RETRYABLE_ERRORS:
+                result["deferred"] += 1
+            elif _report_queue_failure(client, package.name, code):
+                _move_package_to_failed(queue_directory, package.name, package)
+                result["failed"] += 1
+            else:
+                result["deferred"] += 1
+            continue
+        try:
+            client.start_receipt_queue_handoff(package.name)
+        except Exception:
+            result["deferred"] += 1
             continue
         try:
             client.complete_receipt_queue_handoff(package.name, capture)
@@ -147,6 +167,13 @@ def process_receipt_queue_handoffs(
         _remove_package(package)
         result["completed"] += 1
     return result
+
+
+def _report_queue_failure(client: QueueHandoffClient, handoff_id: str, error_code: str) -> bool:
+    try:
+        return client.fail_receipt_queue_handoff(handoff_id, error_code) == "failed"
+    except Exception:
+        return False
 
 
 def _remove_orphan_pending_packages(queue_directory: Path, active_ids: frozenset[str]) -> None:

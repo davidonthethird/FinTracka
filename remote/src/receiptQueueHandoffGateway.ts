@@ -1,6 +1,8 @@
 import {
   ReceiptQueueHandoffStore,
   ReceiptQueueHandoffStoreError,
+  RECEIPT_QUEUE_FAILURE_CODES,
+  type ReceiptQueueFailureCode,
   type ReceiptQueueHandoff,
 } from "./receiptQueueHandoffStore";
 
@@ -38,12 +40,25 @@ export async function handleReceiptQueueHandoffMac(
     return json(200, { handoff_ids: [...await store.listActiveIds()] });
   }
   const match = url.pathname.match(
-    /^\/api\/v1\/mobile\/mac\/receipt-queue-handoffs\/([^/]+)\/complete$/,
+    /^\/api\/v1\/mobile\/mac\/receipt-queue-handoffs\/([^/]+)\/(processing|fail|complete)$/,
   );
   if (!match) return null;
   if (request.method !== "POST") return methodNotAllowed("POST");
+  const handoffId = decodeURIComponent(match[1]);
+  if (match[2] === "processing") {
+    requireExactObject(await readJson(request, BODY_LIMIT), []);
+    return json(200, { status: (await store.start(handoffId)).status });
+  }
+  if (match[2] === "fail") {
+    const body = requireExactObject(await readJson(request, BODY_LIMIT), ["error_code"]);
+    if (!RECEIPT_QUEUE_FAILURE_CODES.includes(body.error_code as ReceiptQueueFailureCode)) {
+      throw new ReceiptQueueHandoffGatewayError(400, "INVALID_RECEIPT_QUEUE_FAILURE");
+    }
+    await store.fail(handoffId, body.error_code as ReceiptQueueFailureCode);
+    return json(200, { status: "failed" });
+  }
   const result = await store.complete(
-    decodeURIComponent(match[1]),
+    handoffId,
     await readJson(request, BODY_LIMIT),
   );
   return json(result.replayed ? 200 : 201, {
@@ -57,9 +72,18 @@ export function mapReceiptQueueHandoffError(error: unknown): Response | null {
   const status = error.code === "RECEIPT_QUEUE_HANDOFF_NOT_FOUND" ? 404
     : error.code === "RECEIPT_QUEUE_HANDOFF_EXPIRED" ? 410
       : error.code === "RECEIPT_QUEUE_HANDOFF_CHANGED" ? 409
+        : error.code === "RECEIPT_QUEUE_HANDOFF_FINISHED" ? 409
         : error.code === "RECEIPT_QUEUE_HANDOFF_CREATE_FAILED" ? 503
           : 400;
   return errorResponse(status, error.code);
+}
+
+function requireExactObject(value: unknown, keys: string[]): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...keys].sort())) {
+    throw new ReceiptQueueHandoffGatewayError(400, "INVALID_JSON");
+  }
+  return value as Record<string, unknown>;
 }
 
 function browserHandoff(handoff: ReceiptQueueHandoff) {

@@ -106,6 +106,35 @@ describe("receipt queue handoff gateway", () => {
     } });
   });
 
+  it("publishes Mac processing and safe terminal failures to the owning browser", async () => {
+    const gateway = makeGateway();
+    const testEnv = gatewayEnv(true);
+    const handoff = await createHandoff(gateway, testEnv);
+    const base = `/api/v1/mobile/mac/receipt-queue-handoffs/${handoff.id}`;
+
+    const processing = await gateway.fetch(macRequest(`${base}/processing`, macJson({})), testEnv);
+    expect(processing.status).toBe(200);
+    expect(await processing.json()).toEqual({ status: "processing" });
+
+    const rejected = await gateway.fetch(macRequest(`${base}/fail`, macJson({
+      error_code: "PRIVATE_DETAILS",
+    })), testEnv);
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toEqual({ error_code: "INVALID_RECEIPT_QUEUE_FAILURE" });
+
+    const failed = await gateway.fetch(macRequest(`${base}/fail`, macJson({
+      error_code: "INVALID_PACKAGE",
+    })), testEnv);
+    expect(failed.status).toBe(200);
+    expect(await failed.json()).toEqual({ status: "failed" });
+    const status = await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipt-queue-handoffs/${handoff.id}`), testEnv);
+    expect(await status.json()).toEqual({ handoff: {
+      id: handoff.id, status: "failed", error_code: "INVALID_PACKAGE",
+      created_at: START.toISOString(), expires_at: "2026-11-18T12:00:00.000Z",
+    } });
+  });
+
   it("rejects oversized bodies and expired handoffs without exposing imports", async () => {
     let now = START;
     const gateway = makeGateway(() => now);

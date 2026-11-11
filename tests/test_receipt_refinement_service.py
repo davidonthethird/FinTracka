@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -198,6 +198,9 @@ class QueueClient:
     active: frozenset[str]
     captures: list[tuple[str, dict[str, object]]]
     complete_error: bool = False
+    starts: list[str] = field(default_factory=list)
+    failures: list[tuple[str, str]] = field(default_factory=list)
+    fail_error: bool = False
 
     def active_receipt_queue_handoff_ids(self):
         return self.active
@@ -207,6 +210,16 @@ class QueueClient:
         if self.complete_error:
             raise OSError("response lost")
         return f"/receipts/import/{handoff_id}"
+
+    def start_receipt_queue_handoff(self, handoff_id):
+        self.starts.append(handoff_id)
+        return "processing"
+
+    def fail_receipt_queue_handoff(self, handoff_id, error_code):
+        self.failures.append((handoff_id, error_code))
+        if self.fail_error:
+            raise OSError("response lost")
+        return "failed"
 
 
 def test_relays_stable_receipt_queue_package_and_deletes_only_after_completion(tmp_path: Path) -> None:
@@ -218,6 +231,7 @@ def test_relays_stable_receipt_queue_package_and_deletes_only_after_completion(t
 
     assert result == {"found": 1, "completed": 1, "failed": 0, "deferred": 0}
     assert not package.exists()
+    assert client.starts == [handoff_id]
     capture = client.captures[0][1]
     assert capture["contract"] == "receipt_shortcut_capture/v3"
     assert capture["shortcut_version"] == 3
@@ -268,6 +282,7 @@ def test_receipt_queue_rejects_complete_invalid_packages(tmp_path: Path, damage:
     result = process_receipt_queue_handoffs(client, tmp_path)
 
     assert result["failed"] == 1
+    assert client.failures == [(handoff_id, "INVALID_PACKAGE")]
     assert client.captures == []
     assert not package.exists()
     assert (tmp_path / "failed" / handoff_id).is_dir()
@@ -296,6 +311,39 @@ def test_receipt_queue_uses_ocr_only_fallback_when_phone_text_is_blank(tmp_path:
 
     assert result["completed"] == 1
     assert client.captures[0][1]["text"] == "MAC OCR\nTOTAL 1.00"
+
+
+def test_receipt_queue_isolates_retryable_ocr_failure_and_processes_later_package(tmp_path: Path) -> None:
+    failed_id = "00000000-0000-4000-8000-000000000107"
+    good_id = "00000000-0000-4000-8000-000000000108"
+    failed_package = queue_handoff_package(tmp_path, failed_id, ocr="")
+    queue_handoff_package(tmp_path, good_id)
+    client = QueueClient(frozenset({failed_id, good_id}), [])
+
+    def fallback(path):
+        if path == failed_package:
+            raise RuntimeError("VISION_FAILED")
+        return "unused"
+
+    result = process_receipt_queue_handoffs(client, tmp_path, ocr_fallback=fallback)
+
+    assert result == {"found": 2, "completed": 1, "failed": 0, "deferred": 1}
+    assert failed_package.is_dir()
+    assert [item[0] for item in client.captures] == [good_id]
+
+
+def test_receipt_queue_keeps_package_when_terminal_failure_response_is_lost(tmp_path: Path) -> None:
+    handoff_id = "00000000-0000-4000-8000-000000000109"
+    package = queue_handoff_package(tmp_path, handoff_id)
+    (package / "extra.txt").write_text("invalid")
+    make_stable(package)
+    client = QueueClient(frozenset({handoff_id}), [], fail_error=True)
+
+    result = process_receipt_queue_handoffs(client, tmp_path)
+
+    assert result == {"found": 1, "completed": 0, "failed": 0, "deferred": 1}
+    assert package.is_dir()
+    assert not (tmp_path / "failed" / handoff_id).exists()
 
 
 def test_receipt_queue_never_invokes_ocr_helper_when_phone_text_exists(tmp_path: Path) -> None:

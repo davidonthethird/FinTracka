@@ -12,8 +12,8 @@ receipt_queue_handoff/v1
 ## Exact action phases
 
 1. Match the complete two-line input against the handoff contract and UUID shape. Explain and stop on any mismatch.
-2. Create `pending/<handoff-id>` inside the private shared **FinTracka Receipt Queue** folder selected at install.
-3. Choose **Take photos** or **Choose from Photo Library**. Camera capture asks for 1–12 pages; library capture permits multiple images. Count and reject anything outside 1–12.
+2. Choose **Take photos** or **Choose from Photo Library**. Camera capture asks for 1–12 pages; library capture permits multiple images. Count and reject anything outside 1–12 without creating a queue folder.
+3. Create `pending/<handoff-id>` inside the private shared **FinTracka Receipt Queue** folder selected at install only after valid page selection.
 4. Repeat through pages in order. Convert each `Repeat Item` to HEIF, save it as `page-001.heic` through `page-012.heic`, and run Extract Text from Image once.
 5. Add `--- PAGE N ---` before each OCR result and combine all page text into `ocr.txt`.
 6. Give the same combined OCR and ordered pages to two fixed Use Model actions: **Apple Intelligence on Device** and **Private Cloud Compute**. Broad world knowledge and Follow Up stay off.
@@ -60,7 +60,18 @@ python3 "$SHORTCUT_SKILL/scripts/validate_shortcut.py" \
 SHORTCUTS_PLAYGROUND_OUTPUT_DIR="$PWD/shortcuts" \
   "$SHORTCUT_SKILL/scripts/sign_shortcut.sh" \
   "shortcuts/FinTracka Receipt Scanner.plist" --name "FinTracka Receipt Scanner"
-test -s "shortcuts/FinTracka Receipt Scanner.shortcut"
+python3 - <<'PY'
+import hashlib, json
+from pathlib import Path
+base = Path("shortcuts/FinTracka Receipt Scanner")
+values = {
+    "source_sha256": hashlib.sha256(base.with_suffix(".plist").read_bytes()).hexdigest(),
+    "signed_sha256": hashlib.sha256(base.with_suffix(".shortcut").read_bytes()).hexdigest(),
+}
+base.with_suffix(".sha256.json").write_text(json.dumps(values, indent=2) + "\n")
+PY
+python3 scripts/verify-receipt-shortcut-v4.py \
+  "shortcuts/FinTracka Receipt Scanner.plist"
 ```
 
-`--target-platform all` is intentional: Apple's current ToolKit snapshot labels the legacy Extract Text from Image identifier as macOS-only, although that same identifier is present in the existing physical-iPhone Shortcut export. The signed artifact still requires physical acceptance on both phones before rollout.
+`--target-platform all` is intentional: Apple's current ToolKit snapshot labels the legacy Extract Text from Image identifier as macOS-only, although that same identifier is present in the existing physical-iPhone Shortcut export. The SHA-256 sidecar binds the inspected plist to the exact signed bytes used for installation. The signed artifact still requires physical acceptance on both phones before rollout, including a run where one model is unavailable because Apple does not document action-level error recovery for `Use Model`.

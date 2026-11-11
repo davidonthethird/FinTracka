@@ -139,7 +139,8 @@ def test_lists_and_completes_receipt_queue_handoffs_with_access_headers() -> Non
     handoff_id = "00000000-0000-4000-8000-000000000099"
     import_id = "00000000-0000-4000-8000-000000000100"
     requests = []
-    responses = [Response({"handoff_ids": [handoff_id]}),
+    responses = [Response({"handoff_ids": [handoff_id]}), Response({"status": "processing"}),
+                 Response({"status": "failed"}),
                  Response({"review_path": f"/receipts/import/{import_id}"})]
 
     def opener(request, _timeout):
@@ -148,14 +149,19 @@ def test_lists_and_completes_receipt_queue_handoffs_with_access_headers() -> Non
 
     client = MobileCommandClient("https://viewer.example.test", "id", "secret", opener=opener)
     assert client.active_receipt_queue_handoff_ids() == frozenset({handoff_id})
+    assert client.start_receipt_queue_handoff(handoff_id) == "processing"
+    assert client.fail_receipt_queue_handoff(handoff_id, "INVALID_PACKAGE") == "failed"
     capture = {"contract": "receipt_shortcut_capture/v3", "text": "TOTAL 1.00"}
     assert client.complete_receipt_queue_handoff(handoff_id, capture) == (
         f"/receipts/import/{import_id}"
     )
     assert requests[0].method == "GET"
     assert requests[0].headers["Cf-access-client-secret"] == "secret"
-    assert requests[1].full_url.endswith(f"/receipt-queue-handoffs/{handoff_id}/complete")
-    assert json.loads(requests[1].data) == capture
+    assert requests[1].full_url.endswith(f"/receipt-queue-handoffs/{handoff_id}/processing")
+    assert requests[2].full_url.endswith(f"/receipt-queue-handoffs/{handoff_id}/fail")
+    assert json.loads(requests[2].data) == {"error_code": "INVALID_PACKAGE"}
+    assert requests[3].full_url.endswith(f"/receipt-queue-handoffs/{handoff_id}/complete")
+    assert json.loads(requests[3].data) == capture
 
 
 @pytest.mark.parametrize("response", [

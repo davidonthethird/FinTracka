@@ -54,11 +54,11 @@ That mode still parses and lists the focused Playwright suite but does not launc
 Expected states:
 
 - `pending`: package has not been relayed yet; safe while the Mac is asleep.
-- `processing`: Mac is validating or uploading the package.
+- `processing`: Mac validated the package and began its authenticated upload.
 - `ready`: one immutable receipt import exists and the inbox can open it.
 - `failed`: terminal safe error; the UI gives generic retry guidance and does not expose internal codes.
 
-Temporary iCloud, network, or model-unavailability conditions must retry without creating another handoff. Terminal invalid packages move to `failed`; unrelated files remain untouched.
+Temporary iCloud, network, or OCR-helper conditions retry without creating another handoff. A terminal invalid package is reported to the Worker first and moves to local `failed` storage only after that acknowledgment; if the acknowledgment is lost, the package stays pending for an idempotent retry. One bad package does not stop later packages in the same scheduled pass.
 
 ## Controlled reconciliation
 

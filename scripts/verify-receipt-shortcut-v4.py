@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import plistlib
+import hashlib
+import json
 import re
 import sys
 from pathlib import Path
@@ -90,6 +92,14 @@ def main() -> None:
         die("explicit OCR page markers are missing")
     if "WFSelectMultiplePhotos" not in all_text or "WFPhotoCount" not in all_text:
         die("camera and multi-photo-library inputs are not bounded")
+    folder_indices = [index for index, identifier in enumerate(identifiers)
+                      if identifier == "is.workflow.actions.file.createfolder"]
+    page_input_indices = [index for index, identifier in enumerate(identifiers)
+                          if identifier in {"is.workflow.actions.takephoto",
+                                            "is.workflow.actions.selectphoto",
+                                            "is.workflow.actions.count"}]
+    if len(folder_indices) != 1 or folder_indices[0] <= max(page_input_indices):
+        die("receipt package folder must be created only after valid page selection")
 
     saves = [
         (index, flatten(actions[max(0, index - 1) : index + 1]))
@@ -135,6 +145,24 @@ def main() -> None:
     questions = workflow.get("WFWorkflowImportQuestions", [])
     if len(questions) != 1 or questions[0].get("ParameterKey") != "WFFolder":
         die("install must ask once for the private shared iCloud folder")
+    if questions[0].get("ActionIndex") != folder_indices[0]:
+        die("install folder question does not target the create-folder action")
+
+    if path.name == "FinTracka Receipt Scanner.plist":
+        signed = path.with_suffix(".shortcut")
+        provenance = path.with_suffix(".sha256.json")
+        if not signed.is_file() or not provenance.is_file():
+            die("signed artifact or provenance is missing")
+        try:
+            recorded = json.loads(provenance.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise SystemExit("receipt shortcut v4 invalid: signed provenance is invalid") from error
+        expected = {
+            "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "signed_sha256": hashlib.sha256(signed.read_bytes()).hexdigest(),
+        }
+        if recorded != expected or not signed.read_bytes().startswith(b"AEA1"):
+            die("signed artifact does not match the verified source provenance")
     print(f"receipt shortcut v4 verified: {len(actions)} actions")
 
 

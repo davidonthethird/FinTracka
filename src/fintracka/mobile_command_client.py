@@ -199,6 +199,31 @@ class MobileCommandClient:
             raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
         return review_path
 
+    def start_receipt_queue_handoff(self, handoff_id: str) -> str:
+        if UUID.fullmatch(_bounded_string(handoff_id, 36)) is None:
+            raise ValueError("invalid receipt queue handoff id")
+        value = self._request(
+            f"/api/v1/mobile/mac/receipt-queue-handoffs/{quote(handoff_id, safe='')}/processing",
+            {},
+        )
+        if _exact_dict(value, {"status"}) != {"status": "processing"}:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        return "processing"
+
+    def fail_receipt_queue_handoff(self, handoff_id: str, error_code: str) -> str:
+        if UUID.fullmatch(_bounded_string(handoff_id, 36)) is None:
+            raise ValueError("invalid receipt queue handoff id")
+        if error_code not in {"MODEL_UNAVAILABLE", "VISION_FAILED", "INVALID_PACKAGE",
+                              "UNRECONCILED", "PACKAGE_NOT_FOUND"}:
+            raise ValueError("invalid receipt queue handoff error")
+        value = self._request(
+            f"/api/v1/mobile/mac/receipt-queue-handoffs/{quote(handoff_id, safe='')}/fail",
+            {"error_code": error_code},
+        )
+        if _exact_dict(value, {"status"}) != {"status": "failed"}:
+            raise MobileCommandClientError("MOBILE_INVALID_RESPONSE")
+        return "failed"
+
     def complete_receipt_refinement(
         self, job_id: str, claim_token: str, input_digest: str, text: str, model_result: str,
     ) -> None:

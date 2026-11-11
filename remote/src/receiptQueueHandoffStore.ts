@@ -8,6 +8,10 @@ import {
 const SEVEN_DAYS = 7 * 24 * 60 * 60_000;
 
 export type ReceiptQueueHandoffStatus = "pending" | "processing" | "completed" | "failed";
+export const RECEIPT_QUEUE_FAILURE_CODES = [
+  "INVALID_PACKAGE", "UNRECONCILED", "MODEL_UNAVAILABLE", "VISION_FAILED", "PACKAGE_NOT_FOUND",
+] as const;
+export type ReceiptQueueFailureCode = typeof RECEIPT_QUEUE_FAILURE_CODES[number];
 
 export interface ReceiptQueueHandoff {
   id: string;
@@ -96,13 +100,47 @@ export class ReceiptQueueHandoffStore {
     return this.loadActiveIds(limit);
   }
 
+  async start(id: string): Promise<ReceiptQueueHandoff> {
+    const row = await this.load(id);
+    this.requireActive(row);
+    if (row.status === "completed" || row.status === "failed") {
+      throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_FINISHED");
+    }
+    if (row.status === "pending") {
+      await this.database.prepare(`UPDATE receipt_queue_handoffs SET status = 'processing',
+        error_code = NULL, updated_at = ? WHERE id = ? AND status = 'pending'`)
+        .bind(this.clock().toISOString(), id).run();
+      row.status = "processing";
+      row.error_code = null;
+    }
+    return publicHandoff(row);
+  }
+
+  async fail(id: string, errorCode: ReceiptQueueFailureCode): Promise<ReceiptQueueHandoff> {
+    const row = await this.load(id);
+    this.requireActive(row);
+    if (row.status === "completed") {
+      throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_FINISHED");
+    }
+    if (row.status === "failed") {
+      if (row.error_code !== errorCode) {
+        throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_CHANGED");
+      }
+      return publicHandoff(row);
+    }
+    await this.database.prepare(`UPDATE receipt_queue_handoffs SET status = 'failed',
+      error_code = ?, updated_at = ? WHERE id = ? AND status IN ('pending', 'processing')`)
+      .bind(errorCode, this.clock().toISOString(), id).run();
+    row.status = "failed";
+    row.error_code = errorCode;
+    return publicHandoff(row);
+  }
+
   async complete(id: string, untrustedCapture: unknown) {
-    const row = await this.database.prepare(`SELECT id, session_token_digest, household_id,
-      actor_member_id, status, body_digest, import_id, error_code, created_at, expires_at
-      FROM receipt_queue_handoffs WHERE id = ?`).bind(id).first<HandoffRow>();
-    if (!row) throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_NOT_FOUND");
-    if (row.expires_at <= this.clock().toISOString()) {
-      throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_EXPIRED");
+    const row = await this.load(id);
+    this.requireActive(row);
+    if (row.status === "failed") {
+      throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_FINISHED");
     }
     const bodyDigest = await sha256Hex(canonicalReceiptShortcutCapture(untrustedCapture));
     if (row.body_digest && row.body_digest !== bodyDigest) {
@@ -137,6 +175,20 @@ export class ReceiptQueueHandoffStore {
     return this.database.prepare(`SELECT id, session_token_digest, household_id,
       actor_member_id, status, body_digest, import_id, error_code, created_at, expires_at
       FROM receipt_queue_handoffs WHERE session_token_digest = ?`).bind(digest).first<HandoffRow>();
+  }
+
+  private async load(id: string): Promise<HandoffRow> {
+    const row = await this.database.prepare(`SELECT id, session_token_digest, household_id,
+      actor_member_id, status, body_digest, import_id, error_code, created_at, expires_at
+      FROM receipt_queue_handoffs WHERE id = ?`).bind(id).first<HandoffRow>();
+    if (!row) throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_NOT_FOUND");
+    return row;
+  }
+
+  private requireActive(row: HandoffRow): void {
+    if (row.expires_at <= this.clock().toISOString()) {
+      throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_EXPIRED");
+    }
   }
 }
 

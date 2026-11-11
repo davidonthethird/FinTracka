@@ -199,17 +199,6 @@ def build() -> dict[str, Any]:
         )
     )
 
-    folder_uuid = fresh_uuid()
-    folder_index = len(actions)
-    actions.append(
-        action(
-            "is.workflow.actions.file.createfolder",
-            UUID=folder_uuid,
-            CustomOutputName="Receipt Package Folder",
-            WFFilePath=token_string("pending/", ref(handoff_uuid, "Item from List")),
-        )
-    )
-
     actions.append(comment("--- SELECT 1 TO 12 ORDERED RECEIPT PAGES ---"))
     menu_group = fresh_uuid()
     actions.append(
@@ -331,6 +320,17 @@ def build() -> dict[str, Any]:
     )
     actions.append(action("is.workflow.actions.exit"))
     actions.append(action("is.workflow.actions.conditional", GroupingIdentifier=page_bound_group, WFControlFlowMode=2))
+
+    folder_uuid = fresh_uuid()
+    folder_index = len(actions)
+    actions.append(
+        action(
+            "is.workflow.actions.file.createfolder",
+            UUID=folder_uuid,
+            CustomOutputName="Receipt Package Folder",
+            WFFilePath=token_string("pending/", ref(handoff_uuid, "Item from List")),
+        )
+    )
 
     actions.append(comment("--- SAVE EACH PAGE AND OCR IT ONCE ---"))
     repeat_group = fresh_uuid()

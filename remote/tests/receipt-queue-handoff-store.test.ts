@@ -121,6 +121,25 @@ describe("receipt queue handoff store", () => {
     expect((await env.COMMANDS.prepare("SELECT COUNT(*) AS count FROM receipt_shortcut_imports")
       .first<{ count: number }>())?.count).toBe(1);
   });
+
+  it("records Mac processing and terminal failure without leaving the handoff active", async () => {
+    const shortcuts = new ReceiptShortcutStore(env.COMMANDS, () => NOW);
+    const session = await shortcuts.createSession(HOUSEHOLD, MEMBER);
+    const store = makeStore();
+    const handoff = await store.create(HOUSEHOLD, MEMBER, session.token);
+
+    await expect(store.start(handoff.id)).resolves.toMatchObject({ status: "processing" });
+    await expect(store.start(handoff.id)).resolves.toMatchObject({ status: "processing" });
+    await expect(store.fail(handoff.id, "INVALID_PACKAGE")).resolves.toMatchObject({
+      status: "failed", errorCode: "INVALID_PACKAGE",
+    });
+    await expect(store.fail(handoff.id, "INVALID_PACKAGE")).resolves.toMatchObject({
+      status: "failed", errorCode: "INVALID_PACKAGE",
+    });
+    await expect(store.listActiveIds()).resolves.toEqual(new Set());
+    await expect(store.complete(handoff.id, capture()))
+      .rejects.toMatchObject({ code: "RECEIPT_QUEUE_HANDOFF_FINISHED" });
+  });
 });
 
 function makeStore() {
