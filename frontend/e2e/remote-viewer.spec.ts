@@ -279,6 +279,7 @@ test("iPhone receipt Shortcut handoff imports populated text without loading bro
     pages: [{ page_index: 0, text: "SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50" }],
     created_at: "2026-11-02T12:00:00.000Z", expires_at: "2026-11-02T12:30:00.000Z" };
   let createdBody: any;
+  let createdDraft: any;
   await page.route(`**/api/v1/mobile/receipt-imports/${imported.id}`, async (route) => {
     if (route.request().method() === "DELETE") await route.fulfill({ status: 204, body: "" });
     else await route.fulfill({ json: { import: imported } });
@@ -288,10 +289,13 @@ test("iPhone receipt Shortcut handoff imports populated text without loading bro
       await route.fulfill({ json: { drafts: [] } }); return;
     }
     createdBody = route.request().postDataJSON();
-    await route.fulfill({ status: 201, json: { draft: { ...createdBody.draft, id: "shortcut-draft-1",
+    createdDraft = { ...createdBody.draft, id: "shortcut-draft-1",
       revision: 1, digest: "a".repeat(64), created_at: "2026-11-02", updated_at: "2026-11-02",
-      retention_at: "2027-01-31" }, replayed: false } });
+      retention_at: "2027-01-31" };
+    await route.fulfill({ status: 201, json: { draft: createdDraft, replayed: false } });
   });
+  await page.route("**/api/v1/mobile/receipts/shortcut-draft-1", (route) =>
+    route.fulfill({ json: { draft: createdDraft } }));
   await page.goto(`${viewer}/receipts/import/${imported.id}`);
   await expect(page.getByRole("heading", { name: "Receipt details" })).toBeVisible();
   expect(createdBody.idempotency_key).toBe(`shortcut-import-${imported.id}`);
