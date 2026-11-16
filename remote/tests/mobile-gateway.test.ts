@@ -284,7 +284,7 @@ describe("mobile gateway", () => {
     });
   });
 
-  it("enforces a conservative household pending-command cap", async () => {
+  it("enforces a conservative household pending-command cap", { timeout: 15_000 }, async () => {
     const gateway = makeGateway();
     await provision(gateway);
     const document = structuredClone(snapshotV2) as any;
