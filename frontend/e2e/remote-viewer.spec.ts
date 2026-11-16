@@ -284,6 +284,9 @@ test("iPhone receipt Shortcut handoff imports populated text without loading bro
     else await route.fulfill({ json: { import: imported } });
   });
   await page.route("**/api/v1/mobile/receipts", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ json: { drafts: [] } }); return;
+    }
     createdBody = route.request().postDataJSON();
     await route.fulfill({ status: 201, json: { draft: { ...createdBody.draft, id: "shortcut-draft-1",
       revision: 1, digest: "a".repeat(64), created_at: "2026-11-02", updated_at: "2026-11-02",
@@ -320,14 +323,16 @@ test("durable receipt handoff survives page recreation and opens one ready revie
       pages: [{ page_index: 0, text: "SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50" }],
       created_at: "2026-11-09T12:00:00.000Z", expires_at: "2026-11-16T12:30:00.000Z" } } });
   });
-  await page.route("**/api/v1/mobile/receipts", (route) => route.fulfill({ status: 201, json: {
-    draft: { contract: "receipt_draft/v1", id: "durable-draft", revision: 1, digest: "a".repeat(64),
-      status: "editing", merchant: "SYNTHETIC MARKET", purchase_date: null, currency: "USD",
-      masked_payment_hint: null, page_count: 1, subtotal_minor: 450, discount_minor: 0,
-      tax_minor: 0, tip_minor: 0, fees_minor: 0, total_minor: 450, lines: [],
-      created_at: "2026-11-09", updated_at: "2026-11-09", retention_at: "2027-02-07" },
-    replayed: false,
-  } }));
+  await page.route("**/api/v1/mobile/receipts", (route) => route.request().method() === "GET"
+    ? route.fulfill({ json: { drafts: [] } })
+    : route.fulfill({ status: 201, json: {
+      draft: { contract: "receipt_draft/v1", id: "durable-draft", revision: 1, digest: "a".repeat(64),
+        status: "editing", merchant: "SYNTHETIC MARKET", purchase_date: null, currency: "USD",
+        masked_payment_hint: null, page_count: 1, subtotal_minor: 450, discount_minor: 0,
+        tax_minor: 0, tip_minor: 0, fees_minor: 0, total_minor: 450, lines: [],
+        created_at: "2026-11-09", updated_at: "2026-11-09", retention_at: "2027-02-07" },
+      replayed: false,
+    } }));
 
   await page.goto(`${viewer}/receipts/new`);
   const launchUrl = new URL(await page.getByRole("link", { name: "Scan with iPhone" }).getAttribute("href") ?? "");
@@ -379,6 +384,9 @@ test("receipt model comparison waits for an explicit choice before creating a dr
     } } });
   });
   await page.route("**/api/v1/mobile/receipts", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ json: { drafts: [] } }); return;
+    }
     createCalls += 1;
     const body = route.request().postDataJSON();
     await route.fulfill({ status: 201, json: { draft: { ...body.draft, id: "comparison-draft-1",
@@ -411,6 +419,7 @@ test("leaving a receipt import before it loads does not create a draft", async (
     } } });
   });
   await page.route("**/api/v1/mobile/receipts", (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ json: { drafts: [] } });
     createCalls += 1;
     return route.abort();
   });
@@ -432,7 +441,10 @@ test("receipt import keeps unusable text reviewable and explains expired imports
     id: unusableId, shortcut_version: 1, pages: [{ page_index: 0, text: "###\n---" }],
     created_at: "2026-11-02T12:00:00.000Z", expires_at: "2026-11-02T12:30:00.000Z",
   } } }));
-  await page.route("**/api/v1/mobile/receipts", (route) => { createCalls += 1; return route.abort(); });
+  await page.route("**/api/v1/mobile/receipts", (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ json: { drafts: [] } });
+    createCalls += 1; return route.abort();
+  });
   await page.goto(`${viewer}/receipts/import/${unusableId}`);
   const unusable = page.getByRole("alert");
   await expect(unusable).toContainText("did not contain a usable");
