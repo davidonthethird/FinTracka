@@ -1,6 +1,6 @@
 -e .[bank,google]
 dnspython>=2.9.2,<3
-fastapi[standard]==0.143.0
+fastapi[standard]==0.162.6
 playwright==1.63.0
 pip-audit==2.10.1
 pytest==9.1.1
