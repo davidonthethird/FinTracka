@@ -4,7 +4,7 @@ Do not put receipt text, photos, handoff/import IDs, account details, hostnames,
 
 ## Build under test
 
-- Commit: `feat/immediate-receipt-review` working tree; commit deferred until physical acceptance
+- Commit: `68e3ef0`
 - Signed Shortcut archive: SHA-256 `edfbdf963ad05ac2c32d0a6d00842820262b4968834587ede897fc69845e5397`
 - Viewer/Worker deployment version: `5e812775-3e29-4be7-a579-ead46a5c0ebd`
 - Mac helper build: `src/fintracka/receipt_refinement_service.py` from the same working tree
