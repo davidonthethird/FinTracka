@@ -57,7 +57,7 @@
         "FEATURE_RECEIPT_SHORTCUT": "true",
         "FEATURE_RECEIPT_REFINEMENT": "false",
         "FEATURE_RECEIPT_MODEL_COMPARISON": "true",
-        "FEATURE_RECEIPT_QUEUE_HANDOFF_ADVERTISE": "false"
+        "FEATURE_RECEIPT_QUEUE_HANDOFF_ADVERTISE": "true"
       }
     }
   }
