@@ -26,7 +26,7 @@ Do not put receipt text, photos, handoff/import IDs, account details, hostnames,
 | Mac awake: one ready review, no duplicate | Not run | | |
 | Mac asleep then awake: queued scan resumes | Not run | | |
 | Viewer closed/reopened: queued scan rediscovered | Not run | | |
-| One Apple model unavailable: other evidence remains visible | Not run | | |
+| One Apple model fails: no manifest is written and retry is safe | Not run | | |
 | Blank OCR invokes OCR-only Mac fallback | Not run | | |
 | Network loss retries without changed replay | Not run | | |
 | Successful package is removed; unrelated files remain | Not run | | |

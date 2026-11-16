@@ -55,7 +55,7 @@ FinTracka Receipt Queue/
 4. Wait for the success message. The Shortcut can finish even while the Mac is asleep because the package waits privately in iCloud.
 5. Return to FinTracka. The inbox updates from **Queued on iPhone** to **Waiting for Mac**, **Processing**, and then **Ready to review**.
 
-If a model returns no usable response, its status is recorded as unavailable and the other captured evidence is retained. Apple does not document an action-level catch/continue control for `Use Model`; therefore a device-level model-action failure is a mandatory physical acceptance case and rollout remains blocked if it prevents the package from being saved. FinTracka must not invent missing receipt fields.
+Apple does not document an action-level catch/continue control for `Use Model`. The Shortcut therefore saves each model response only after that action succeeds and writes `manifest.txt` last. If either model action fails, the Shortcut stops without a manifest and the Mac ignores the incomplete package. The user can retry; FinTracka must not invent missing receipt fields.
 
 ## Mac relay
 
@@ -94,13 +94,13 @@ Run every row on both David's and Ariela's phones before production rollout:
 | Photo library | 2+ | Awake | Page order preserved; no duplicate lines |
 | Either | 1+ | Asleep | Package waits, then resumes after Mac wakes |
 | Either | 1+ | Awake | On-device and Private Cloud Compute outputs are shown separately for comparison |
-| Either | 1+ | Awake | If one `Use Model` action is unavailable, the package still saves the OCR and other model evidence; otherwise rollout is blocked |
+| Either | 1+ | Awake | Both model actions succeed and the complete package relays; a failed model action leaves no processable manifest and the user retries |
 
 Also verify:
 
 - Directly running the Shortcut stops with the missing/invalid handoff message and creates no package.
 - Reusing the same handoff ID creates no duplicate receipt.
-- Missing model output is visibly unavailable, not silently accepted.
+- Missing model output never becomes a processable package because `manifest.txt` is absent.
 - A malformed or oversized package is rejected without deleting unrelated files.
 - Receipt photos and text never appear in logs, browser storage, or a public Worker response.
 - No receipt affects the ledger until a user explicitly reviews and matches it.

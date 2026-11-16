@@ -35,4 +35,4 @@ Both actions executed sequentially. The Cloud route returned JSON-shaped output.
 
 The production receipt scanner remains version 2 while the comparison flag is off. Version 3 is used only for the temporary private benchmark. A model response is never trusted directly: FinTracka requires exact recognized-text evidence, integer cents, unique line evidence, and arithmetic consistency before a result can become an editable draft.
 
-If either model action aborts the Shortcut instead of returning a result, that scan is recorded as an unavailable-route test and comparison mode stays disabled until the workflow can preserve the successful route safely.
+If either model action aborts the Shortcut, no manifest is written and the Mac ignores the incomplete package. That device behavior must be recorded in the physical matrix; comparison mode stays disabled until successful two-route runs pass acceptance.

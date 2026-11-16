@@ -460,7 +460,7 @@ def build() -> dict[str, Any]:
     )
     save_named(actions, ref(combined_ocr_uuid, "Combined Text"), "ocr.txt", folder_uuid)
 
-    def add_model_route(label: str, model: str, filename: str, status_variable: str) -> tuple[str, str]:
+    def add_model_route(label: str, model: str, filename: str) -> tuple[str, str]:
         started_uuid = fresh_uuid()
         actions.append(
             action(
@@ -531,70 +531,22 @@ def build() -> dict[str, Any]:
                 WFRoundMode="Normal",
             )
         )
-        result_group = fresh_uuid()
         actions.append(
             comment(
-                f"Record {label} independently.\n"
-                f"• Input: {label} model result\n• Has text: completed\n• Otherwise: unavailable with an empty file"
+                f"Save the {label} result only after the model action succeeds. "
+                "If Apple Intelligence fails, Shortcuts stops before the manifest is written, "
+                "so the Mac never processes an incomplete package."
             )
         )
-        actions.append(
-            action(
-                "is.workflow.actions.conditional",
-                GroupingIdentifier=result_group,
-                WFControlFlowMode=0,
-                WFCondition=100,
-                WFInput=conditional_input(ref(model_uuid, "Model Result")),
-            )
-        )
-        completed_action, completed_uuid = text_action(f"{label} Completed Status", "completed")
-        actions.append(completed_action)
-        actions.append(set_variable(status_variable, ref(completed_uuid, "Text")))
-        result_action, result_text_uuid = text_action(f"{label} Saved Result", ref(model_uuid, "Model Result"))
-        actions.append(result_action)
-        actions.append(set_variable(f"{label} File Text", ref(result_text_uuid, "Text")))
-        actions.append(action("is.workflow.actions.conditional", GroupingIdentifier=result_group, WFControlFlowMode=1))
-        unavailable_action, unavailable_uuid = text_action(f"{label} Unavailable Status", "unavailable")
-        actions.append(unavailable_action)
-        actions.append(set_variable(status_variable, ref(unavailable_uuid, "Text")))
-        blank_action, blank_uuid = text_action(
-            f"{label} Empty Result", ref(empty_uuid, "Nothing")
-        )
-        actions.append(blank_action)
-        actions.append(set_variable(f"{label} File Text", ref(blank_uuid, "Text")))
-        actions.append(
-            action(
-                "is.workflow.actions.conditional",
-                GroupingIdentifier=result_group,
-                WFControlFlowMode=2,
-            )
-        )
-        result_file_uuid = fresh_uuid()
-        actions.append(
-            action(
-                "is.workflow.actions.getvariable",
-                UUID=result_file_uuid,
-                CustomOutputName=f"{label} File Text",
-                WFVariable=attachment(variable(f"{label} File Text")),
-            )
-        )
-        save_named(actions, ref(result_file_uuid, "Variable"), filename, folder_uuid)
-        return rounded_uuid, result_file_uuid
+        save_named(actions, ref(model_uuid, "Model Result"), filename, folder_uuid)
+        return rounded_uuid, model_uuid
 
     actions.append(comment("--- RUN THE SAME EVIDENCE THROUGH BOTH APPLE MODEL ROUTES ---"))
-    empty_uuid = fresh_uuid()
-    actions.append(
-        action(
-            "is.workflow.actions.nothing",
-            UUID=empty_uuid,
-            CustomOutputName="Empty Model Result",
-        )
-    )
     on_duration_uuid, _ = add_model_route(
-        "On-Device", "Apple Intelligence on Device", "on-device.txt", "On Device Status"
+        "On-Device", "Apple Intelligence on Device", "on-device.txt"
     )
     pcc_duration_uuid, _ = add_model_route(
-        "Private Cloud Compute", "Private Cloud Compute", "private-cloud-compute.txt", "PCC Status"
+        "Private Cloud Compute", "Private Cloud Compute", "private-cloud-compute.txt"
     )
 
     created_uuid = fresh_uuid()
@@ -626,12 +578,10 @@ def build() -> dict[str, Any]:
         ref(page_count_uuid, "Count"),
         "\ncreated_at=",
         ref(formatted_date_uuid, "Formatted Date"),
-        "\non_device_status=",
-        variable("On Device Status"),
+        "\non_device_status=completed",
         "\non_device_duration_ms=",
         ref(on_duration_uuid, "Rounded Number"),
-        "\nprivate_cloud_compute_status=",
-        variable("PCC Status"),
+        "\nprivate_cloud_compute_status=completed",
         "\nprivate_cloud_compute_duration_ms=",
         ref(pcc_duration_uuid, "Rounded Number"),
     )
