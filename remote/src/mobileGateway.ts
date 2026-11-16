@@ -99,8 +99,7 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
       const benchmarkStore = new ReceiptBenchmarkStore(env.COMMANDS, now);
       const queueStore = new ReceiptQueueHandoffStore(env.COMMANDS, now);
       const comparisonEnabled = receiptShortcutEnabled(env.FEATURE_RECEIPT_MODEL_COMPARISON);
-      const queueAdvertise = comparisonEnabled
-        && receiptShortcutEnabled(env.FEATURE_RECEIPT_QUEUE_HANDOFF_ADVERTISE);
+      const queueAdvertise = receiptShortcutEnabled(env.FEATURE_RECEIPT_QUEUE_HANDOFF_ADVERTISE);
       try {
         if (!validSeparateAudiences(env.ACCESS_USER_AUD, env.ACCESS_MAC_AUD)) {
           return errorResponse(503, "MOBILE_AUTH_MISCONFIGURED");
@@ -109,7 +108,7 @@ export function createMobileGateway(dependencies: GatewayDependencies = {}) {
           if (!receiptShortcutEnabled(env.FEATURE_RECEIPT_SHORTCUT)) {
             return errorResponse(404, "NOT_FOUND");
           }
-          return await handleReceiptShortcutUpload(request, shortcutStore);
+          return await handleReceiptShortcutUpload(request, shortcutStore, queueStore);
         }
         if (url.pathname.startsWith("/api/v1/mobile/mac/")) {
           const identity = await resolveProcessorIdentity(request, {

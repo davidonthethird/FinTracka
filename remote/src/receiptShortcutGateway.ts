@@ -1,7 +1,10 @@
 import { z } from "zod";
 
 import { ReceiptBenchmarkStore } from "./receiptBenchmarkStore";
-import { ReceiptQueueHandoffStore } from "./receiptQueueHandoffStore";
+import {
+  ReceiptQueueHandoffStore,
+  ReceiptQueueHandoffStoreError,
+} from "./receiptQueueHandoffStore";
 import { ReceiptShortcutStore, ReceiptShortcutStoreError } from "./receiptShortcutStore";
 
 const BODY_LIMIT = 256 * 1024;
@@ -12,6 +15,7 @@ const sessionResultInput = z.object({
 const selectionInput = z.object({
   selection: z.enum(["on_device", "private_cloud_compute", "tie", "neither"]),
 }).strict();
+const draftLinkInput = z.object({ draft_id: z.uuid() }).strict();
 
 export class ReceiptShortcutGatewayError extends Error {
   constructor(readonly status: number, readonly code: string) { super(code); }
@@ -24,12 +28,23 @@ export function receiptShortcutEnabled(value: string | undefined): boolean {
 export async function handleReceiptShortcutUpload(
   request: Request,
   store: ReceiptShortcutStore,
+  queueStore?: ReceiptQueueHandoffStore,
 ): Promise<Response> {
   if (request.method !== "POST") return methodNotAllowed("POST");
   const token = bearerToken(request.headers.get("Authorization"));
   if (!token) throw new ReceiptShortcutGatewayError(401, "RECEIPT_SCAN_SESSION_INVALID");
   const input = await readJson(request, BODY_LIMIT);
   const result = await store.createImport(token, input as never);
+  if (queueStore) {
+    try {
+      await queueStore.markReviewableBySession(
+        result.sessionTokenDigest, result.import.id, result.bodyDigest,
+      );
+    } catch (error) {
+      if (!(error instanceof ReceiptQueueHandoffStoreError)
+          || error.code !== "RECEIPT_QUEUE_HANDOFF_NOT_FOUND") throw error;
+    }
+  }
   const origin = new URL(request.url).origin;
   return json(result.replayed ? 200 : 201, {
     import_id: result.import.id,
@@ -77,11 +92,12 @@ export async function handleReceiptShortcutBrowser(
     if (options.queueAdvertise && options.queueStore) {
       const handoff = await options.queueStore.create(member.household_id, member.id, session.token);
       return json(201, {
-        contract: "receipt_queue_handoff/v1",
-        shortcut_version: 4,
-        comparison_enabled: true,
+        contract: "receipt_immediate_handoff/v1",
+        shortcut_version: 5,
+        comparison_enabled: false,
         shortcut_name: "FinTracka Receipt Scanner",
         handoff_id: handoff.id,
+        token: session.token,
         expires_at: handoff.expiresAt,
       });
     }
@@ -104,6 +120,17 @@ export async function handleReceiptShortcutBrowser(
     const selected = await store.selectImport(member.household_id, member.id,
       decodeURIComponent(selection[1]), input.data.selection);
     return json(200, { import: selected });
+  }
+  const draftLink = url.pathname.match(/^\/api\/v1\/mobile\/receipt-imports\/([^/]+)\/draft$/);
+  if (draftLink) {
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    if (!options.queueStore) return null;
+    const input = draftLinkInput.safeParse(await readBrowserJson(request, 4_096));
+    if (!input.success) throw new ReceiptShortcutGatewayError(400, "INVALID_RECEIPT_DRAFT_LINK");
+    const linked = await options.queueStore.linkDraft(
+      member.household_id, member.id, decodeURIComponent(draftLink[1]), input.data.draft_id,
+    );
+    return json(200, { handoff_id: linked.id, verification_status: "pending" });
   }
   const item = url.pathname.match(/^\/api\/v1\/mobile\/receipt-imports\/([^/]+)$/);
   const retry = url.pathname.match(/^\/api\/v1\/mobile\/receipt-imports\/([^/]+)\/retry$/);

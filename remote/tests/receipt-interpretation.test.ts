@@ -40,6 +40,13 @@ describe("receipt shortcut v2", () => {
     }).shortcut_version).toBe(1);
   });
 
+  it("accepts the numeric shortcut version as serialized by Shortcuts", () => {
+    expect(ReceiptShortcutCaptureSchema.parse({
+      contract: "receipt_shortcut_capture/v2", idempotency_key: "d".repeat(64), shortcut_version: "2",
+      text: OCR, model_result: interpretation(),
+    }).shortcut_version).toBe(2);
+  });
+
   it("normalizes a native Shortcuts Dictionary model result without manual JSON conversion", () => {
     const parsed = ReceiptShortcutCaptureSchema.parse({
       contract: "receipt_shortcut_capture/v2", idempotency_key: "c".repeat(64), shortcut_version: 2,

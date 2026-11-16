@@ -6,6 +6,7 @@ import { canDismissReceipt, ReceiptInboxView } from "../src/viewer/receipts/Rece
 import { ReceiptCapturePage } from "../src/viewer/receipts/ReceiptCapturePage";
 import { ReceiptProvider } from "../src/viewer/receipts/ReceiptProvider";
 import { ReceiptReviewForm } from "../src/viewer/receipts/ReceiptReviewPage";
+import { ReceiptMatchPanel } from "../src/viewer/receipts/ReceiptMatchPanel";
 import { createReceipt, replaceReceipt } from "../src/viewer/receipts/receiptApi";
 import type { ReceiptDraft } from "../src/viewer/receipts/types";
 
@@ -72,9 +73,19 @@ describe("receipt API and pages", () => {
     expect(html).toContain("Preparing secure scan");
     expect(html).toContain("private shared iCloud folder");
     expect(html).toContain("Shortcut not installed or out of date?");
-    expect(html).toContain("private handoff remains available for seven days");
+    expect(html).toContain("private Mac fallback remains available for seven days");
     expect(html).toContain("FinTracka Receipt Scanner");
     expect(html).not.toContain("type=\"file\"");
+  });
+
+  it("allows owner review but blocks bank matching until Mac verification succeeds", () => {
+    const html = renderToStaticMarkup(<ReceiptMatchPanel
+      draft={{ ...persistedDraft(), status: "waiting_for_bank",
+        verification: { status: "pending", error_code: null } }}
+      transactions={[]} available onMatch={async () => undefined} />);
+    expect(html).toContain("Verifying receipt on your Mac");
+    expect(html).toContain("David, Ariela, and Shared assignments are saved");
+    expect(html).not.toContain("Match selected transaction");
   });
 });
 
@@ -93,5 +104,6 @@ function draft() {
 
 function persistedDraft(): ReceiptDraft {
   return { ...draft(), id: "receipt-1", revision: 1, digest: "a".repeat(64),
-    created_at: "2026-11-01", updated_at: "2026-11-01", retention_at: "2027-01-30" };
+    created_at: "2026-11-01", updated_at: "2026-11-01", retention_at: "2027-01-30",
+    verification: null };
 }

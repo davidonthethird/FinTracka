@@ -347,18 +347,18 @@ def _queue_capture(
         ocr = ocr_fallback(package)
         if not isinstance(ocr, str) or not ocr or len(ocr) > 100_000:
             raise _InvalidQueuePackage()
-    runs = [
-        _queue_model_run(manifest, package, "on_device", "on-device.txt"),
-        _queue_model_run(
-            manifest, package, "private_cloud_compute", "private-cloud-compute.txt",
-        ),
-    ]
+    _queue_model_run(manifest, package, "on_device", "on-device.txt")
+    cloud = _queue_model_run(
+        manifest, package, "private_cloud_compute", "private-cloud-compute.txt",
+    )
+    if cloud["status"] != "completed":
+        raise _InvalidQueuePackage()
     return {
-        "contract": "receipt_shortcut_capture/v3",
-        "idempotency_key": _queue_digest(package, expected),
-        "shortcut_version": 3,
+        "contract": "receipt_shortcut_capture/v2",
+        "idempotency_key": handoff_id,
+        "shortcut_version": 2,
         "text": ocr,
-        "runs": runs,
+        "model_result": cloud["model_result"],
     }
 
 
@@ -388,26 +388,17 @@ def _queue_model_run(
     if not duration.isascii() or not duration.isdigit() or int(duration) > 86_400_000:
         raise _InvalidQueuePackage()
     model_result = _read_text(package / filename)
-    if len(model_result) > 100_000 or (status == "completed") != bool(model_result.strip()):
+    stripped = model_result.strip()
+    if (len(model_result) > 100_000
+            or (status == "completed" and not stripped)
+            or (status != "completed" and stripped not in {"", "UNAVAILABLE"})):
         raise _InvalidQueuePackage()
     return {
         "model": model,
         "status": status,
         "duration_ms": int(duration),
-        "model_result": model_result,
+        "model_result": model_result if status == "completed" else "",
     }
-
-
-def _queue_digest(package: Path, names: set[str]) -> str:
-    digest = hashlib.sha256()
-    for name in sorted(names):
-        digest.update(name.encode())
-        digest.update(b"\0")
-        with (package / name).open("rb") as source:
-            while chunk := source.read(1024 * 1024):
-                digest.update(chunk)
-        digest.update(b"\0")
-    return digest.hexdigest()
 
 
 def _read_text(path: Path) -> str:

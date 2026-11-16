@@ -19,6 +19,15 @@ export function ReceiptMatchPanel({ draft, transactions, available, onMatch }: {
   }
   if (draft.status === "matched") return <section className="receipt-match-state"><CheckCircle2 />
     <h2>Receipt matched</h2><p>This receipt’s item-level split is now part of your ledger.</p></section>;
+  if (draft.verification && draft.verification.status !== "verified") {
+    const failed = draft.verification.status === "failed";
+    return <section className="receipt-match-state"><Landmark />
+      <h2>{failed ? "Receipt verification needs attention" : "Verifying receipt on your Mac"}</h2>
+      <p>{failed
+        ? "Your assignments are saved, but this receipt cannot be matched until it is verified again."
+        : "David, Ariela, and Shared assignments are saved. Bank matching unlocks after the Mac confirms the same receipt data."}</p>
+    </section>;
+  }
   if (!available) return <section className="receipt-match-state"><Landmark /><h2>Waiting for matching</h2>
     <p>Capture and review are safe. Financial matching remains disabled until the Mac and private gateway are ready.</p></section>;
   async function submit() {

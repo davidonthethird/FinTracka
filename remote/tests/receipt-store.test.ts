@@ -3,6 +3,8 @@ import { applyD1Migrations } from "cloudflare:test";
 import type { D1Migration } from "@cloudflare/vitest-plugin";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { ReceiptQueueHandoffStore } from "../src/receiptQueueHandoffStore";
+import { ReceiptShortcutStore } from "../src/receiptShortcutStore";
 import { ReceiptStore } from "../src/receiptStore";
 import { draft } from "./receipt-model.test";
 
@@ -26,6 +28,9 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await env.COMMANDS.batch([
+    env.COMMANDS.prepare("DELETE FROM receipt_queue_handoffs"),
+    env.COMMANDS.prepare("DELETE FROM receipt_shortcut_imports"),
+    env.COMMANDS.prepare("DELETE FROM receipt_scan_sessions"),
     env.COMMANDS.prepare("DELETE FROM receipt_events"),
     env.COMMANDS.prepare("DELETE FROM receipt_lines"),
     env.COMMANDS.prepare("DELETE FROM receipt_revisions"),
@@ -99,6 +104,34 @@ describe("receipt store", () => {
     await expect(store.create(HOUSEHOLD, MEMBER, {
       idempotency_key: "receipt-bound-003", draft: draft(),
     })).rejects.toMatchObject({ code: "RECEIPT_WRITE_RATE_LIMITED" });
+  });
+
+  it("exposes Mac verification state and blocks matching until verification completes", async () => {
+    const store = makeStore();
+    const created = await store.create(HOUSEHOLD, MEMBER, {
+      idempotency_key: "receipt-verification-001",
+      draft: { ...draft(), status: "waiting_for_bank" },
+    });
+    const shortcuts = new ReceiptShortcutStore(env.COMMANDS, () => NOW);
+    const session = await shortcuts.createSession(HOUSEHOLD, MEMBER);
+    const queue = new ReceiptQueueHandoffStore(env.COMMANDS, () => NOW);
+    const handoff = await queue.create(HOUSEHOLD, MEMBER, session.token);
+    await env.COMMANDS.prepare(`UPDATE receipt_queue_handoffs
+      SET status = 'reviewable', draft_id = ? WHERE id = ?`)
+      .bind(created.draft.id, handoff.id).run();
+
+    await expect(store.get(HOUSEHOLD, created.draft.id)).resolves.toMatchObject({
+      verification: { status: "pending", error_code: null },
+    });
+    await expect(store.markMatchPending(
+      HOUSEHOLD, MEMBER, created.draft.id, 1, "transaction-1", 0, "command-1",
+    )).rejects.toMatchObject({ code: "RECEIPT_NOT_VERIFIED" });
+
+    await env.COMMANDS.prepare(`UPDATE receipt_queue_handoffs
+      SET status = 'completed' WHERE id = ?`).bind(handoff.id).run();
+    await expect(store.get(HOUSEHOLD, created.draft.id)).resolves.toMatchObject({
+      verification: { status: "verified", error_code: null },
+    });
   });
 });
 

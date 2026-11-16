@@ -61,9 +61,11 @@ export async function handleReceiptQueueHandoffMac(
     handoffId,
     await readJson(request, BODY_LIMIT),
   );
-  return json(result.replayed ? 200 : 201, {
-    review_path: `/receipts/import/${encodeURIComponent(result.import.id)}`,
-  });
+  const reviewPath = result.kind === "verified"
+    ? result.draftId ? `/receipts/${encodeURIComponent(result.draftId)}`
+      : result.importId ? `/receipts/import/${encodeURIComponent(result.importId)}` : "/receipts"
+    : `/receipts/import/${encodeURIComponent(result.import.id)}`;
+  return json(result.replayed ? 200 : 201, { review_path: reviewPath });
 }
 
 export function mapReceiptQueueHandoffError(error: unknown): Response | null {
@@ -71,7 +73,7 @@ export function mapReceiptQueueHandoffError(error: unknown): Response | null {
   if (!(error instanceof ReceiptQueueHandoffStoreError)) return null;
   const status = error.code === "RECEIPT_QUEUE_HANDOFF_NOT_FOUND" ? 404
     : error.code === "RECEIPT_QUEUE_HANDOFF_EXPIRED" ? 410
-      : error.code === "RECEIPT_QUEUE_HANDOFF_CHANGED" ? 409
+      : error.code === "RECEIPT_QUEUE_HANDOFF_CHANGED" || error.code === "CAPTURE_MISMATCH" ? 409
         : error.code === "RECEIPT_QUEUE_HANDOFF_FINISHED" ? 409
         : error.code === "RECEIPT_QUEUE_HANDOFF_CREATE_FAILED" ? 503
           : 400;
@@ -89,12 +91,17 @@ function requireExactObject(value: unknown, keys: string[]): Record<string, unkn
 function browserHandoff(handoff: ReceiptQueueHandoff) {
   const base = {
     id: handoff.id,
-    status: handoff.status === "completed" ? "ready" : handoff.status,
+    status: ["reviewable", "completed"].includes(handoff.status) ? "ready" : handoff.status,
     created_at: handoff.createdAt,
     expires_at: handoff.expiresAt,
   };
-  if (handoff.status === "completed" && handoff.importId) {
-    return { ...base, review_path: `/receipts/import/${encodeURIComponent(handoff.importId)}` };
+  if ((handoff.status === "reviewable" || handoff.status === "completed")
+      && (handoff.draftId || handoff.importId)) {
+    return { ...base,
+      verification_status: handoff.status === "completed" ? "verified" : "pending",
+      review_path: handoff.draftId
+        ? `/receipts/${encodeURIComponent(handoff.draftId)}`
+        : `/receipts/import/${encodeURIComponent(handoff.importId!)}` };
   }
   if (handoff.status === "failed" && handoff.errorCode) {
     return { ...base, error_code: handoff.errorCode };

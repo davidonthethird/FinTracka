@@ -30,7 +30,7 @@ trap 'find "$scratch" -depth -delete' EXIT HUP INT TERM
 "$repo_dir/scripts/build-receipt-refiner.sh" "$scratch/install"
 
 plutil -lint "$repo_dir/shortcuts/FinTracka Receipt Scanner.plist"
-python3 "$repo_dir/scripts/verify-receipt-shortcut-v4.py" \
+python3 "$repo_dir/scripts/verify-receipt-shortcut-v5.py" \
   "$repo_dir/shortcuts/FinTracka Receipt Scanner.plist"
 python3 "$shortcut_skill/scripts/validate_shortcut.py" \
   "$repo_dir/shortcuts/FinTracka Receipt Scanner.plist" --target-platform all
@@ -43,7 +43,7 @@ find "$repo_dir/shortcuts" -mindepth 2 -maxdepth 2 -type f \
   -name 'FinTracka Receipt Scanner-*.xml' | grep -q .
 mkdir -p "$scratch/signed"
 printf 'AEA1unrelated' > "$scratch/signed/FinTracka Receipt Scanner.shortcut"
-"$repo_dir/scripts/sign-receipt-shortcut-v4.sh" "$scratch/signed" >/dev/null
+"$repo_dir/scripts/sign-receipt-shortcut-v5.sh" "$scratch/signed" >/dev/null
 release_artifact="$scratch/signed/FinTracka Receipt Scanner.shortcut"
 test "$(wc -c < "$release_artifact")" -gt 10000
 python3 - "$release_artifact" <<'PY'

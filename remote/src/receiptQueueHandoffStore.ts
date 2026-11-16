@@ -7,9 +7,10 @@ import {
 
 const SEVEN_DAYS = 7 * 24 * 60 * 60_000;
 
-export type ReceiptQueueHandoffStatus = "pending" | "processing" | "completed" | "failed";
+export type ReceiptQueueHandoffStatus = "pending" | "reviewable" | "processing" | "completed" | "failed";
 export const RECEIPT_QUEUE_FAILURE_CODES = [
   "INVALID_PACKAGE", "UNRECONCILED", "MODEL_UNAVAILABLE", "VISION_FAILED", "PACKAGE_NOT_FOUND",
+  "CAPTURE_MISMATCH",
 ] as const;
 export type ReceiptQueueFailureCode = typeof RECEIPT_QUEUE_FAILURE_CODES[number];
 
@@ -17,6 +18,7 @@ export interface ReceiptQueueHandoff {
   id: string;
   status: ReceiptQueueHandoffStatus;
   importId: string | null;
+  draftId: string | null;
   errorCode: string | null;
   createdAt: string;
   expiresAt: string;
@@ -30,6 +32,7 @@ interface HandoffRow {
   status: ReceiptQueueHandoffStatus;
   body_digest: string | null;
   import_id: string | null;
+  draft_id: string | null;
   error_code: string | null;
   created_at: string;
   expires_at: string;
@@ -69,12 +72,12 @@ export class ReceiptQueueHandoffStore {
       if (raced) return publicHandoff(raced);
       throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_CREATE_FAILED");
     }
-    return { id, status: "pending", importId: null, errorCode: null, createdAt, expiresAt };
+    return { id, status: "pending", importId: null, draftId: null, errorCode: null, createdAt, expiresAt };
   }
 
   async listForMember(householdId: string, memberId: string): Promise<ReceiptQueueHandoff[]> {
     const result = await this.database.prepare(`SELECT id, session_token_digest, household_id,
-      actor_member_id, status, body_digest, import_id, error_code, created_at, expires_at
+      actor_member_id, status, body_digest, import_id, draft_id, error_code, created_at, expires_at
       FROM receipt_queue_handoffs WHERE household_id = ? AND actor_member_id = ? AND expires_at > ?
       ORDER BY created_at DESC LIMIT 100`).bind(householdId, memberId, this.clock().toISOString())
       .all<HandoffRow>();
@@ -83,7 +86,7 @@ export class ReceiptQueueHandoffStore {
 
   async get(householdId: string, memberId: string, id: string): Promise<ReceiptQueueHandoff> {
     const row = await this.database.prepare(`SELECT id, session_token_digest, household_id,
-      actor_member_id, status, body_digest, import_id, error_code, created_at, expires_at
+      actor_member_id, status, body_digest, import_id, draft_id, error_code, created_at, expires_at
       FROM receipt_queue_handoffs WHERE id = ? AND household_id = ? AND actor_member_id = ?`)
       .bind(id, householdId, memberId).first<HandoffRow>();
     if (!row) throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_NOT_FOUND");
@@ -103,9 +106,9 @@ export class ReceiptQueueHandoffStore {
   async start(id: string): Promise<ReceiptQueueHandoff> {
     const row = await this.load(id);
     this.requireActive(row);
-    if (row.status === "pending") {
+    if (row.status === "pending" || row.status === "reviewable") {
       await this.database.prepare(`UPDATE receipt_queue_handoffs SET status = 'processing',
-        error_code = NULL, updated_at = ? WHERE id = ? AND status = 'pending'`)
+        error_code = NULL, updated_at = ? WHERE id = ? AND status IN ('pending', 'reviewable')`)
         .bind(this.clock().toISOString(), id).run();
       row.status = "processing";
       row.error_code = null;
@@ -126,7 +129,7 @@ export class ReceiptQueueHandoffStore {
       return publicHandoff(row);
     }
     await this.database.prepare(`UPDATE receipt_queue_handoffs SET status = 'failed',
-      error_code = ?, updated_at = ? WHERE id = ? AND status IN ('pending', 'processing')`)
+      error_code = ?, updated_at = ? WHERE id = ? AND status IN ('pending', 'reviewable', 'processing')`)
       .bind(errorCode, this.clock().toISOString(), id).run();
     row.status = "failed";
     row.error_code = errorCode;
@@ -141,7 +144,23 @@ export class ReceiptQueueHandoffStore {
     }
     const bodyDigest = await sha256Hex(canonicalReceiptShortcutCapture(untrustedCapture));
     if (row.body_digest && row.body_digest !== bodyDigest) {
-      throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_CHANGED");
+      if (row.status === "completed") {
+        throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_CHANGED");
+      }
+      await this.database.prepare(`UPDATE receipt_queue_handoffs SET status = 'failed',
+        error_code = 'CAPTURE_MISMATCH', updated_at = ? WHERE id = ?`)
+        .bind(this.clock().toISOString(), id).run();
+      throw new ReceiptQueueHandoffStoreError("CAPTURE_MISMATCH");
+    }
+    if (row.body_digest) {
+      const replayed = row.status === "completed";
+      if (!replayed) {
+        await this.database.prepare(`UPDATE receipt_queue_handoffs SET status = 'completed',
+          error_code = NULL, updated_at = ? WHERE id = ? AND body_digest = ?`)
+          .bind(this.clock().toISOString(), id, bodyDigest).run();
+      }
+      return { kind: "verified" as const, replayed, importId: row.import_id,
+        draftId: row.draft_id };
     }
     let result;
     try {
@@ -158,25 +177,94 @@ export class ReceiptQueueHandoffStore {
       body_digest = ?, import_id = ?, error_code = NULL, updated_at = ?
       WHERE id = ? AND (body_digest IS NULL OR body_digest = ?)`)
       .bind(bodyDigest, result.import.id, now, id, bodyDigest).run();
-    return result;
+    return { kind: "import" as const, ...result };
+  }
+
+  async markReviewableBySession(
+    sessionTokenDigest: string,
+    importId: string,
+    bodyDigest: string,
+  ): Promise<ReceiptQueueHandoff> {
+    const row = await this.findBySession(sessionTokenDigest);
+    if (!row) throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_NOT_FOUND");
+    this.requireActive(row);
+    if (row.status === "failed" || (row.import_id && row.import_id !== importId)
+        || (row.body_digest && row.body_digest !== bodyDigest)) {
+      throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_CHANGED");
+    }
+    if (!/^[a-f0-9]{64}$/.test(bodyDigest)) {
+      throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_CHANGED");
+    }
+    if (row.status === "pending" || row.status === "processing") {
+      const result = await this.database.prepare(`UPDATE receipt_queue_handoffs
+        SET status = 'reviewable', body_digest = ?, import_id = ?, error_code = NULL, updated_at = ?
+        WHERE id = ? AND status IN ('pending', 'processing') AND import_id IS NULL AND body_digest IS NULL`)
+        .bind(bodyDigest, importId, this.clock().toISOString(), row.id).run();
+      if ((result.meta.changes ?? 0) !== 1) {
+        const raced = await this.findBySession(sessionTokenDigest);
+        if (!raced || raced.import_id !== importId || raced.body_digest !== bodyDigest) {
+          throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_CHANGED");
+        }
+        return publicHandoff(raced);
+      }
+      row.status = "reviewable";
+      row.body_digest = bodyDigest;
+      row.import_id = importId;
+      row.error_code = null;
+    }
+    return publicHandoff(row);
+  }
+
+  async linkDraft(
+    householdId: string,
+    memberId: string,
+    importId: string,
+    draftId: string,
+  ): Promise<ReceiptQueueHandoff> {
+    const row = await this.database.prepare(`SELECT id, session_token_digest, household_id,
+      actor_member_id, status, body_digest, import_id, draft_id, error_code, created_at, expires_at
+      FROM receipt_queue_handoffs WHERE import_id = ? AND household_id = ? AND actor_member_id = ?`)
+      .bind(importId, householdId, memberId).first<HandoffRow>();
+    if (!row) throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_NOT_FOUND");
+    this.requireActive(row);
+    const draft = await this.database.prepare(`SELECT id FROM receipt_drafts
+      WHERE id = ? AND household_id = ? AND creator_member_id = ?`)
+      .bind(draftId, householdId, memberId).first();
+    if (!draft) throw new ReceiptQueueHandoffStoreError("RECEIPT_DRAFT_NOT_FOUND");
+    if (row.draft_id && row.draft_id !== draftId) {
+      throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_CHANGED");
+    }
+    if (!row.draft_id) {
+      const result = await this.database.prepare(`UPDATE receipt_queue_handoffs SET draft_id = ?, updated_at = ?
+        WHERE id = ? AND draft_id IS NULL`).bind(draftId, this.clock().toISOString(), row.id).run();
+      if ((result.meta.changes ?? 0) !== 1) {
+        const raced = await this.load(row.id);
+        if (raced.draft_id !== draftId) {
+          throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_CHANGED");
+        }
+        return publicHandoff(raced);
+      }
+      row.draft_id = draftId;
+    }
+    return publicHandoff(row);
   }
 
   private async loadActiveIds(limit: number): Promise<Set<string>> {
     const result = await this.database.prepare(`SELECT id FROM receipt_queue_handoffs
-      WHERE status IN ('pending', 'processing') AND expires_at > ? ORDER BY created_at LIMIT ?`)
+      WHERE status IN ('pending', 'reviewable', 'processing') AND expires_at > ? ORDER BY created_at LIMIT ?`)
       .bind(this.clock().toISOString(), limit).all<{ id: string }>();
     return new Set(result.results.map((row) => row.id));
   }
 
   private async findBySession(digest: string): Promise<HandoffRow | null> {
     return this.database.prepare(`SELECT id, session_token_digest, household_id,
-      actor_member_id, status, body_digest, import_id, error_code, created_at, expires_at
+      actor_member_id, status, body_digest, import_id, draft_id, error_code, created_at, expires_at
       FROM receipt_queue_handoffs WHERE session_token_digest = ?`).bind(digest).first<HandoffRow>();
   }
 
   private async load(id: string): Promise<HandoffRow> {
     const row = await this.database.prepare(`SELECT id, session_token_digest, household_id,
-      actor_member_id, status, body_digest, import_id, error_code, created_at, expires_at
+      actor_member_id, status, body_digest, import_id, draft_id, error_code, created_at, expires_at
       FROM receipt_queue_handoffs WHERE id = ?`).bind(id).first<HandoffRow>();
     if (!row) throw new ReceiptQueueHandoffStoreError("RECEIPT_QUEUE_HANDOFF_NOT_FOUND");
     return row;
@@ -190,7 +278,8 @@ export class ReceiptQueueHandoffStore {
 }
 
 function publicHandoff(row: HandoffRow): ReceiptQueueHandoff {
-  return { id: row.id, status: row.status, importId: row.import_id, errorCode: row.error_code,
+  return { id: row.id, status: row.status, importId: row.import_id, draftId: row.draft_id,
+    errorCode: row.error_code,
     createdAt: row.created_at, expiresAt: row.expires_at };
 }
 

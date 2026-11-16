@@ -108,6 +108,7 @@ export function mapReceiptError(error: unknown): Response | null {
     : error.code === "RECEIPT_WRITE_RATE_LIMITED" || error.code === "TOO_MANY_ACTIVE_RECEIPTS"
       ? 429
       : error.code.includes("CONFLICT") || error.code === "RECEIPT_NOT_DISMISSIBLE"
+          || error.code === "RECEIPT_NOT_VERIFIED"
         ? 409
         : error.code === "MEMBER_NOT_AUTHORIZED" ? 403 : 400;
   return jsonError(status, error.code);

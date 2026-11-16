@@ -2,7 +2,7 @@
 
 FinTracka receipt capture uses one canonical **FinTracka Receipt Scanner v4** Shortcut. The iPhone runs Apple Vision OCR plus the two Apple Intelligence model routes, writes a private package to a shared iCloud Drive folder, and stops. David's Mac relays completed packages to the authenticated FinTracka Worker. There is no Shortcut URL upload, callback, clipboard handoff, browser OCR, or paid OCR/LLM service.
 
-See [receipt-shortcut-setup.md](receipt-shortcut-setup.md) for installation and [receipt-shortcut-v4-actions.md](receipt-shortcut-v4-actions.md) for the inspected action contract.
+See [receipt-shortcut-setup.md](receipt-shortcut-setup.md) for installation and [receipt-shortcut-v5-actions.md](receipt-shortcut-v5-actions.md) for the inspected action contract.
 
 ## Trust boundaries
 
@@ -38,7 +38,7 @@ That mode still parses and lists the focused Playwright suite but does not launc
 3. Deploy the Worker with queue routes present but v4 advertisement disabled. Verify legacy versions 2 and 3 still create their original session payloads.
 4. Install the updated Mac package parser/relay and the existing once-per-minute mobile-command schedule. Do not install a second daemon.
 5. With synthetic data, verify active-ID fetch, one package completion, exact replay returning the same import, changed replay rejection, redacted logs, successful package deletion, and temporary-failure retention.
-6. Deploy the viewer, enable v4 for David only, replace the canonical Shortcut, and complete David's matrix in [receipt-shortcut-v4-physical-matrix.md](receipt-shortcut-v4-physical-matrix.md).
+6. Deploy the viewer, advertise v5, replace the canonical Shortcut, and complete David's matrix in [receipt-shortcut-v5-physical-matrix.md](receipt-shortcut-v5-physical-matrix.md).
 7. Enable v4 for Ariela only after David passes. Confirm the shared folder and member isolation, then complete Ariela's matrix.
 8. Review one real receipt without matching it automatically. Compare both model outputs to the receipt, select the better result, and verify summary arithmetic and all purchased lines.
 9. Enable v4 advertisement for both members only after the signed matrices pass. Keep legacy upload support for a seven-day drain window.

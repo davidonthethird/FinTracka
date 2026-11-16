@@ -5,6 +5,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createMobileGateway, type MobileGatewayEnv } from "../src/mobileGateway";
 import type { AccessClaims, AccessTokenVerifier } from "../src/mobileIdentity";
+import { ReceiptStore } from "../src/receiptStore";
 
 declare global {
   namespace Cloudflare {
@@ -41,7 +42,7 @@ beforeEach(async () => {
 });
 
 describe("receipt queue handoff gateway", () => {
-  it("advertises a token-free v4 handoff and scopes its status to the owning member", async () => {
+  it("advertises a v5 immediate handoff and scopes its status to the owning member", async () => {
     const gateway = makeGateway();
     const response = await gateway.fetch(userRequest("/api/v1/mobile/receipt-scan-sessions", json({})),
       gatewayEnv(true));
@@ -49,14 +50,14 @@ describe("receipt queue handoff gateway", () => {
     expect(response.status).toBe(201);
     const created = await response.json() as Record<string, unknown>;
     expect(created).toEqual({
-      contract: "receipt_queue_handoff/v1",
-      shortcut_version: 4,
-      comparison_enabled: true,
+      contract: "receipt_immediate_handoff/v1",
+      shortcut_version: 5,
+      comparison_enabled: false,
       shortcut_name: "FinTracka Receipt Scanner",
       handoff_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
       expires_at: "2026-11-18T12:00:00.000Z",
     });
-    expect(created).not.toHaveProperty("token");
     expect(created).not.toHaveProperty("upload_url");
 
     const id = String(created.handoff_id);
@@ -109,6 +110,7 @@ describe("receipt queue handoff gateway", () => {
     expect(await status.json()).toEqual({ handoff: {
       id: handoff.id, status: "ready", created_at: START.toISOString(),
       expires_at: "2026-11-18T12:00:00.000Z", review_path: completed.review_path,
+      verification_status: "verified",
     } });
   });
 
@@ -143,6 +145,68 @@ describe("receipt queue handoff gateway", () => {
     } });
   });
 
+  it("publishes a reviewable handoff before Mac verification", async () => {
+    const gateway = makeGateway();
+    const testEnv = gatewayEnv(true);
+    const handoff = await createHandoff(gateway, testEnv);
+    const row = await env.COMMANDS.prepare(`SELECT session_token_digest FROM receipt_queue_handoffs
+      WHERE id = ?`).bind(handoff.id).first<{ session_token_digest: string }>();
+    const imported = await new (await import("../src/receiptShortcutStore")).ReceiptShortcutStore(
+      env.COMMANDS, () => START,
+    ).createQueuedImport(row!.session_token_digest, capture());
+    const session = await env.COMMANDS.prepare(`SELECT body_digest FROM receipt_scan_sessions
+      WHERE token_digest = ?`).bind(row!.session_token_digest).first<{ body_digest: string }>();
+    const store = new (await import("../src/receiptQueueHandoffStore")).ReceiptQueueHandoffStore(
+      env.COMMANDS, () => START,
+    );
+    await store.markReviewableBySession(
+      row!.session_token_digest, imported.import.id, session!.body_digest,
+    );
+
+    const status = await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipt-queue-handoffs/${handoff.id}`), testEnv);
+    expect(await status.json()).toEqual({ handoff: {
+      id: handoff.id, status: "ready", verification_status: "pending",
+      created_at: START.toISOString(), expires_at: "2026-11-18T12:00:00.000Z",
+      review_path: `/receipts/import/${imported.import.id}`,
+    } });
+  });
+
+  it("keeps the draft review path after its temporary import is deleted", async () => {
+    const gateway = makeGateway();
+    const testEnv = gatewayEnv(true);
+    const handoff = await createHandoff(gateway, testEnv);
+    const row = await env.COMMANDS.prepare(`SELECT session_token_digest FROM receipt_queue_handoffs
+      WHERE id = ?`).bind(handoff.id).first<{ session_token_digest: string }>();
+    const imported = await new (await import("../src/receiptShortcutStore")).ReceiptShortcutStore(
+      env.COMMANDS, () => START,
+    ).createQueuedImport(row!.session_token_digest, capture());
+    const session = await env.COMMANDS.prepare(`SELECT body_digest FROM receipt_scan_sessions
+      WHERE token_digest = ?`).bind(row!.session_token_digest).first<{ body_digest: string }>();
+    const store = new (await import("../src/receiptQueueHandoffStore")).ReceiptQueueHandoffStore(
+      env.COMMANDS, () => START,
+    );
+    await store.markReviewableBySession(
+      row!.session_token_digest, imported.import.id, session!.body_digest,
+    );
+    const receipt = await new ReceiptStore(env.COMMANDS, () => START).create(
+      HOUSEHOLD, "member-david", {
+        idempotency_key: "draft-after-cleanup", draft: receiptDraft(),
+      },
+    );
+    await store.linkDraft(HOUSEHOLD, "member-david", imported.import.id, receipt.draft.id);
+    await env.COMMANDS.prepare("DELETE FROM receipt_shortcut_imports WHERE id = ?")
+      .bind(imported.import.id).run();
+
+    const status = await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipt-queue-handoffs/${handoff.id}`), testEnv);
+    expect(await status.json()).toEqual({ handoff: {
+      id: handoff.id, status: "ready", verification_status: "pending",
+      created_at: START.toISOString(), expires_at: "2026-11-18T12:00:00.000Z",
+      review_path: `/receipts/${receipt.draft.id}`,
+    } });
+  });
+
   it("rejects oversized bodies and expired handoffs without exposing imports", async () => {
     let now = START;
     const gateway = makeGateway(() => now);
@@ -158,7 +222,7 @@ describe("receipt queue handoff gateway", () => {
     expect(await expired.json()).toEqual({ error_code: "RECEIPT_QUEUE_HANDOFF_EXPIRED" });
   });
 
-  it("keeps legacy upload sessions available while v4 advertisement is off", async () => {
+  it("keeps legacy upload sessions available while v5 advertisement is off", async () => {
     const gateway = makeGateway();
     const testEnv = gatewayEnv(false);
     const session = await gateway.fetch(userRequest("/api/v1/mobile/receipt-scan-sessions", json({})), testEnv);
@@ -223,6 +287,19 @@ function capture() {
       { model: "on_device", status: "completed", duration_ms: 1000, model_result },
       { model: "private_cloud_compute", status: "completed", duration_ms: 2000, model_result },
     ],
+  };
+}
+
+function receiptDraft() {
+  return {
+    contract: "receipt_draft/v1" as const, status: "editing" as const,
+    merchant: "Synthetic Market", purchase_date: "2026-11-11", currency: "USD",
+    masked_payment_hint: null, page_count: 1, subtotal_minor: 1000, discount_minor: 0,
+    tax_minor: 0, tip_minor: 0, fees_minor: 0, total_minor: 1000,
+    lines: [{ id: "line-1", order: 0, source_page: 0, description: "ITEM", quantity: "1",
+      unit_amount_minor: 1000, item_total_minor: 1000, line_discount_minor: 0,
+      tax_minor: 0, tip_minor: 0, fees_minor: 0, taxable: true, owner: "Shared" as const,
+      category_id: null, subcategory_id: null, confidence_basis_points: 9000, review_flags: [] }],
   };
 }
 

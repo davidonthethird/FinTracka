@@ -55,6 +55,13 @@ interface ImportRow {
   expires_at: string;
 }
 
+interface ReceiptImportCreation {
+  import: PublicReceiptImport;
+  replayed: boolean;
+  sessionTokenDigest: string;
+  bodyDigest: string;
+}
+
 export class ReceiptShortcutStoreError extends Error {
   constructor(readonly code: string) { super(code); this.name = "ReceiptShortcutStoreError"; }
 }
@@ -105,7 +112,7 @@ export class ReceiptShortcutStore {
   async createImport(
     token: string,
     untrustedCapture: unknown,
-  ): Promise<{ import: PublicReceiptImport; replayed: boolean }> {
+  ): Promise<ReceiptImportCreation> {
     return this.createImportForSessionDigest(
       await receiptSessionTokenDigest(token), untrustedCapture, true, THIRTY_MINUTES,
     );
@@ -114,7 +121,7 @@ export class ReceiptShortcutStore {
   async createQueuedImport(
     sessionTokenDigest: string,
     untrustedCapture: unknown,
-  ): Promise<{ import: PublicReceiptImport; replayed: boolean }> {
+  ): Promise<ReceiptImportCreation> {
     if (!/^[a-f0-9]{64}$/.test(sessionTokenDigest)) {
       throw new ReceiptShortcutStoreError("RECEIPT_SCAN_SESSION_INVALID");
     }
@@ -128,7 +135,7 @@ export class ReceiptShortcutStore {
     untrustedCapture: unknown,
     requireUnexpiredSession: boolean,
     importLifetime: number,
-  ): Promise<{ import: PublicReceiptImport; replayed: boolean }> {
+  ): Promise<ReceiptImportCreation> {
     const parsed = ReceiptShortcutCaptureSchema.safeParse(untrustedCapture);
     if (!parsed.success) throw new ReceiptShortcutStoreError(
       receiptShortcutCaptureErrorCode(untrustedCapture),
@@ -159,7 +166,7 @@ export class ReceiptShortcutStore {
       await this.ensureBenchmark(comparison, session.consumed_import_id, session.household_id,
         session.actor_member_id);
       return { import: await this.requireImport(session.household_id, session.actor_member_id,
-        session.consumed_import_id), replayed: true };
+        session.consumed_import_id), replayed: true, sessionTokenDigest: tokenDigest, bodyDigest };
     }
     await this.ensureMember(session.household_id, session.actor_member_id);
     const active = await this.database.prepare(`SELECT COUNT(*) AS count FROM receipt_shortcut_imports
@@ -216,13 +223,14 @@ export class ReceiptShortcutStore {
         await this.ensureBenchmark(comparison, raced.consumed_import_id, raced.household_id,
           raced.actor_member_id);
         return { import: await this.requireImport(raced.household_id, raced.actor_member_id,
-          raced.consumed_import_id), replayed: true };
+          raced.consumed_import_id), replayed: true, sessionTokenDigest: tokenDigest, bodyDigest };
       }
       throw new ReceiptShortcutStoreError("RECEIPT_SCAN_SESSION_CONSUMED");
     }
     await this.ensureRefinement(validation, id, session.household_id, session.actor_member_id, bodyDigest);
     await this.ensureBenchmark(comparison, id, session.household_id, session.actor_member_id);
-    return { import: await this.requireImport(session.household_id, session.actor_member_id, id), replayed: false };
+    return { import: await this.requireImport(session.household_id, session.actor_member_id, id),
+      replayed: false, sessionTokenDigest: tokenDigest, bodyDigest };
   }
 
   async getSessionResult(

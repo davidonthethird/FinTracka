@@ -8,6 +8,7 @@ import {
   getReceiptQueueHandoff,
   getReceiptScanResult,
   getReceiptImport,
+  linkReceiptImportDraft,
   listReceiptQueueHandoffs,
   retryReceiptImport,
   selectReceiptModelResult,
@@ -28,11 +29,12 @@ const session = {
 };
 
 const queueSession = {
-  contract: "receipt_queue_handoff/v1" as const,
-  shortcut_version: 4 as const,
-  comparison_enabled: true as const,
+  contract: "receipt_immediate_handoff/v1" as const,
+  shortcut_version: 5 as const,
+  comparison_enabled: false as const,
   shortcut_name: "FinTracka Receipt Scanner" as const,
   handoff_id: "00000000-0000-4000-8000-000000000004",
+  token: "A".repeat(43),
   expires_at: "2026-11-09T12:30:00.000Z",
 };
 
@@ -60,7 +62,7 @@ describe("receipt Shortcut pages", () => {
     vi.unstubAllGlobals();
   });
 
-  it("launches version 4 with only the private queue contract and opaque handoff id", async () => {
+  it("launches version 5 with the immediate handoff, id, and one-time token", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify(queueSession), {
       status: 201, headers: { "Content-Type": "application/json" },
     }));
@@ -70,9 +72,9 @@ describe("receipt Shortcut pages", () => {
     const parsed = new URL(buildReceiptShortcutUrl(prepared));
 
     expect(parsed.searchParams.get("text")).toBe(
-      `receipt_queue_handoff/v1\n${queueSession.handoff_id}`,
+      `receipt_immediate_handoff/v1\n${queueSession.handoff_id}\n${queueSession.token}`,
     );
-    expect(parsed.toString()).not.toMatch(/token|upload_url|https?%3A/i);
+    expect(parsed.toString()).not.toMatch(/upload_url|https?%3A/i);
     vi.unstubAllGlobals();
   });
 
@@ -90,7 +92,7 @@ describe("receipt Shortcut pages", () => {
     vi.unstubAllGlobals();
   });
 
-  it("polls a version 4 handoff and navigates to its one ready review", async () => {
+  it("polls a version 5 handoff and navigates to its one ready review", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ handoff: {
@@ -126,15 +128,20 @@ describe("receipt Shortcut pages", () => {
       { id: "processing", status: "processing", created_at: "2026-11-09T12:01:00.000Z",
         expires_at: "2026-11-16T12:01:00.000Z" },
       { id: "ready", status: "ready", created_at: "2026-11-09T12:02:00.000Z",
-        expires_at: "2026-11-16T12:02:00.000Z", review_path: "/receipts/import/ready" },
+        expires_at: "2026-11-16T12:02:00.000Z", review_path: "/receipts/import/ready",
+        verification_status: "pending" },
+      { id: "verified", status: "ready", created_at: "2026-11-09T12:02:30.000Z",
+        expires_at: "2026-11-16T12:02:30.000Z", review_path: "/receipts/verified",
+        verification_status: "verified" },
       { id: "failed", status: "failed", created_at: "2026-11-09T12:03:00.000Z",
         expires_at: "2026-11-16T12:03:00.000Z", error_code: "INVALID_PACKAGE" },
     ]} onOpen={() => undefined} />);
 
-    expect(html).toContain("Waiting for Mac");
-    expect(html).toContain("Processing");
-    expect(html).toContain("Ready to review");
-    expect(html).toContain("Scan again or check the shared iCloud folder");
+    expect(html).toContain("Saved privately");
+    expect(html).toContain("Verifying on Mac");
+    expect(html).toContain("Ready to assign");
+    expect(html).toContain("Verified");
+    expect(html).toContain("Verification failed");
     expect(html).not.toContain("INVALID_PACKAGE");
   });
 
@@ -236,6 +243,36 @@ describe("receipt Shortcut pages", () => {
 
     expect(result).toEqual({ status: "created", draft: persisted });
     expect(events).toEqual([`create:shortcut-import-${imported.id}:450`, "cleanup"]);
+  });
+
+  it("links the deterministic draft before removing the temporary import", async () => {
+    const events: string[] = [];
+    const imported = receiptImport("SYNTHETIC MARKET\nAPPLES 4.50\nTOTAL 4.50");
+    const persistedId = "00000000-0000-4000-8000-000000000009";
+    const persisted = { id: persistedId } as never;
+
+    await expect(finalizeReceiptImport(imported, {
+      create: async () => { events.push("create"); return persisted; },
+      link: async (draftId) => { events.push(`link:${draftId}`); },
+      cleanup: async () => { events.push("cleanup"); },
+    })).resolves.toEqual({ status: "created", draft: persisted });
+    expect(events).toEqual(["create", `link:${persistedId}`, "cleanup"]);
+  });
+
+  it("posts a draft link before import cleanup", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      handoff_id: queueSession.handoff_id, verification_status: "pending",
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await linkReceiptImportDraft("import-id", "00000000-0000-4000-8000-000000000009");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/mobile/receipt-imports/import-id/draft",
+      expect.objectContaining({ method: "POST", credentials: "same-origin",
+        body: JSON.stringify({ draft_id: "00000000-0000-4000-8000-000000000009" }) }),
+    );
+    vi.unstubAllGlobals();
   });
 
   it("never creates a v3 draft before the member selects a model result", async () => {

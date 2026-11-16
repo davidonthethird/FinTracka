@@ -7,13 +7,15 @@ import { draftFromParsedReceipt, draftFromValidatedReceipt, isUsableParsedReceip
 import { receiptPagesFromPlainText } from "./receiptPlainText";
 import { parseReceiptPages } from "./receiptParser";
 import { ReceiptModelComparison } from "./ReceiptModelComparison";
-import { deleteReceiptImport, getReceiptImport, retryReceiptImport, selectReceiptModelResult,
+import { deleteReceiptImport, getReceiptImport, linkReceiptImportDraft, retryReceiptImport,
+  selectReceiptModelResult,
   type PublicReceiptImport, type ReceiptModelSelection } from "./receiptShortcutApi";
 import { useReceipts } from "./ReceiptProvider";
 import type { ReceiptDraft, ReceiptDraftV1 } from "./types";
 
 interface FinalizerDependencies {
   create: (draft: ReceiptDraftV1, idempotencyKey: string) => Promise<ReceiptDraft>;
+  link?: (draftId: string) => Promise<void>;
   cleanup: () => Promise<void>;
   cancelled?: () => boolean;
 }
@@ -42,6 +44,7 @@ export async function finalizeReceiptImport(
       if (dependencies.cancelled?.()) return { status: "cancelled" };
       const draft = await dependencies.create(draftFromValidatedReceipt(imported.validation.receipt,
         imported.pages.length, imported.validation.issues, sourceText(imported)), `shortcut-import-${imported.id}`);
+      await dependencies.link?.(draft.id);
       try { await dependencies.cleanup(); } catch { /* deterministic replay retries cleanup */ }
       return { status: "created", draft };
     }
@@ -52,6 +55,7 @@ export async function finalizeReceiptImport(
   if (dependencies.cancelled?.()) return { status: "cancelled" };
   const draft = await dependencies.create(draftFromParsedReceipt(parsed, imported.pages.length, sourceText(imported)),
     `shortcut-import-${imported.id}`);
+  await dependencies.link?.(draft.id);
   try { await dependencies.cleanup(); } catch { /* deterministic replay retries cleanup */ }
   return { status: "created", draft };
 }
@@ -71,6 +75,7 @@ export function ReceiptShortcutImportPage({ id, navigate }: { id: string; naviga
       if (!active) return;
       const result = await finalizeReceiptImport(value, {
         create: receipts.create,
+        link: (draftId) => linkReceiptImportDraft(value.id, draftId),
         cleanup: () => deleteReceiptImport(value.id),
         cancelled: () => !active,
       });
@@ -131,6 +136,7 @@ export function ReceiptShortcutImportPage({ id, navigate }: { id: string; naviga
       const draft = await receipts.create(draftFromValidatedReceipt(validation.receipt,
         imported.pages.length, [...validation.issues, "manual_review_before_refinement"], sourceText(imported)),
       `shortcut-import-${imported.id}`);
+      await linkReceiptImportDraft(imported.id, draft.id);
       try { await deleteReceiptImport(imported.id); } catch { /* deterministic replay retries cleanup */ }
       navigate(`/receipts/${encodeURIComponent(draft.id)}`);
     } catch (caught) { setWorking(false); setError(importErrorMessage(caught)); }

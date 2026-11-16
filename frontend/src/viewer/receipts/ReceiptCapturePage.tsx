@@ -35,16 +35,15 @@ export function ReceiptCapturePage({ navigate }: { navigate: (path: string) => v
     <button className="icon-button" onClick={() => navigate("/receipts")} aria-label="Close"><X /></button></header>
     <section className="receipt-capture" aria-busy={!session && !error}>
       <Camera aria-hidden="true" /><h2>{session ? "Open the receipt scanner" : "Preparing secure scan"}</h2>
-      <p>Take photos or choose them from your library. Recognition stays on your Apple devices. The iPhone saves the scan to your private shared iCloud folder, and your Mac relays it to FinTracka.</p>
+      <p>Take photos or choose them from your library. Photos stay in your private shared iCloud folder. Your iPhone sends only recognized text and the Cloud Pro receipt result so you can assign items now; your Mac verifies it later.</p>
       {!session && !error && <p role="status">Creating a private receipt handoff…</p>}
       {session && <a className="receipt-shortcut-launch" href={buildReceiptShortcutUrl(session)}>
         <ExternalLink aria-hidden="true" />Scan with iPhone</a>}
-      {session && <p role="status">After the scan finishes, return to FinTracka. You can close this page;
-        the receipt stays queued and will appear in the receipt inbox when your Mac relays it.</p>}
+      {session && <p role="status">After the scan finishes, return to FinTracka to assign David, Ariela, or Shared. Matching stays locked until your Mac verifies the saved private package.</p>}
       {error && <><p className="receipt-error" role="alert" tabIndex={-1} ref={errorRef}>{error}</p>
         <button className="secondary-button" onClick={() => setAttempt((value) => value + 1)}><RotateCcw />Try again</button></>}
-      <small className="receipt-session-note">{!session || session.shortcut_version === 4
-        ? "The private handoff remains available for seven days and contains no browser token or upload address."
+      <small className="receipt-session-note">{!session || session.shortcut_version === 5
+        ? "The upload token expires after one use; the private Mac fallback remains available for seven days."
         : "The legacy one-time connection expires in 30 minutes and is never saved in this browser."}</small>
       <details className="receipt-shortcut-help"><summary>Shortcut not installed or out of date?</summary>
         <p>Install version {session?.shortcut_version ?? 2} and name it exactly <strong>{session?.shortcut_name ?? "FinTracka Receipt Scanner"}</strong>. If it still will not open, run it once in the Shortcuts app to accept permissions, return here, and start a new scan.</p>

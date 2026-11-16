@@ -246,15 +246,23 @@ def test_relays_stable_receipt_queue_package_and_deletes_only_after_completion(t
     assert not package.exists()
     assert client.starts == [handoff_id]
     capture = client.captures[0][1]
-    assert capture["contract"] == "receipt_shortcut_capture/v3"
-    assert capture["shortcut_version"] == 3
+    assert capture["contract"] == "receipt_shortcut_capture/v2"
+    assert capture["shortcut_version"] == 2
     assert capture["text"] == "SHOP\nTOTAL 1.00"
-    assert capture["idempotency_key"] == __import__("hashlib").sha256(
-        package_bytes(handoff_id)
-    ).hexdigest()
-    assert [run["model"] for run in capture["runs"]] == [
-        "on_device", "private_cloud_compute",
-    ]
+    assert capture["idempotency_key"] == handoff_id
+    assert capture["model_result"] == MODEL_RESULT
+
+
+def test_relays_cloud_only_package_with_unavailable_on_device_sentinel(tmp_path: Path) -> None:
+    handoff_id = "00000000-0000-4000-8000-000000000119"
+    queue_handoff_package(tmp_path, handoff_id, cloud_only=True)
+    client = QueueClient(frozenset({handoff_id}), [])
+
+    result = process_receipt_queue_handoffs(client, tmp_path)
+
+    assert result == {"found": 1, "completed": 1, "failed": 0, "deferred": 0}
+    capture = client.captures[0][1]
+    assert capture["model_result"] == MODEL_RESULT
 
 
 def test_receipt_queue_defers_incomplete_and_unsettled_icloud_packages(tmp_path: Path) -> None:
@@ -493,17 +501,21 @@ MODEL_RESULT = json.dumps({
 }, separators=(",", ":"))
 
 
-def queue_handoff_package(root: Path, handoff_id: str, *, ocr: str = "SHOP\nTOTAL 1.00") -> Path:
+def queue_handoff_package(
+    root: Path, handoff_id: str, *, ocr: str = "SHOP\nTOTAL 1.00", cloud_only: bool = False,
+) -> Path:
     package = root / "pending" / handoff_id
     package.mkdir(parents=True)
     (package / "page-001.heic").write_bytes(b"image")
     (package / "ocr.txt").write_text(ocr)
-    (package / "on-device.txt").write_text(MODEL_RESULT)
+    (package / "on-device.txt").write_text("UNAVAILABLE\n" if cloud_only else MODEL_RESULT)
     (package / "private-cloud-compute.txt").write_text(MODEL_RESULT)
     (package / "manifest.txt").write_text("\n".join([
         "contract=receipt_queue_capture/v1", f"handoff_id={handoff_id}", "page_count=1",
-        "created_at=2026-11-11T12:00:00Z", "on_device_status=completed",
-        "on_device_duration_ms=1000", "private_cloud_compute_status=completed",
+        "created_at=2026-11-11T12:00:00Z",
+        f"on_device_status={'unavailable' if cloud_only else 'completed'}",
+        f"on_device_duration_ms={0 if cloud_only else 1000}",
+        "private_cloud_compute_status=completed",
         "private_cloud_compute_duration_ms=2000", "",
     ]))
     make_stable(package)

@@ -5,6 +5,9 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createMobileGateway, type MobileGatewayEnv } from "../src/mobileGateway";
 import type { AccessClaims, AccessTokenVerifier } from "../src/mobileIdentity";
+import { ReceiptQueueHandoffStore } from "../src/receiptQueueHandoffStore";
+import { ReceiptStore } from "../src/receiptStore";
+import { ReceiptShortcutStore } from "../src/receiptShortcutStore";
 
 declare global {
   namespace Cloudflare {
@@ -156,6 +159,25 @@ describe("receipt shortcut gateway", () => {
     expect(await summary.json()).toMatchObject({ summary: {
       total: 1, selections: { on_device: 1 },
     } });
+  });
+
+  it("advertises a v5 immediate handoff independently of the model comparison flag", async () => {
+    const gateway = makeGateway();
+    const testEnv = gatewayEnv(true, false, true);
+    const response = await gateway.fetch(userRequest(
+      "/api/v1/mobile/receipt-scan-sessions", json({}),
+    ), testEnv);
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({
+      contract: "receipt_immediate_handoff/v1",
+      shortcut_version: 5,
+      comparison_enabled: false,
+      shortcut_name: "FinTracka Receipt Scanner",
+      handoff_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+      expires_at: "2026-11-09T12:00:00.000Z",
+    });
   });
 
   it("imports the flat native Apple payload end to end even when one model has no result", async () => {
@@ -329,6 +351,38 @@ describe("receipt shortcut gateway", () => {
     expect(text).not.toContain(session.token);
   });
 
+  it("publishes a direct Cloud Pro upload to its queue handoff and links its draft", async () => {
+    const gateway = makeGateway();
+    const testEnv = gatewayEnv(true);
+    const shortcuts = new ReceiptShortcutStore(env.COMMANDS, () => NOW);
+    const session = await shortcuts.createSession(HOUSEHOLD, "member-david");
+    const queue = new ReceiptQueueHandoffStore(env.COMMANDS, () => NOW);
+    const handoff = await queue.create(HOUSEHOLD, "member-david", session.token);
+
+    const first = await gateway.fetch(shortcutRequest(v2Capture(), session.token), testEnv);
+    expect(first.status).toBe(201);
+    const uploaded = await first.json() as { import_id: string };
+    await expect(queue.get(HOUSEHOLD, "member-david", handoff.id)).resolves.toMatchObject({
+      status: "reviewable", importId: uploaded.import_id,
+    });
+
+    const replay = await gateway.fetch(shortcutRequest(v2Capture(), session.token), testEnv);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ import_id: uploaded.import_id });
+
+    const receipt = await new ReceiptStore(env.COMMANDS, () => NOW).create(
+      HOUSEHOLD, "member-david", { idempotency_key: "direct-upload-draft", draft: receiptDraft() },
+    );
+    const linked = await gateway.fetch(userRequest(
+      `/api/v1/mobile/receipt-imports/${uploaded.import_id}/draft`,
+      json({ draft_id: receipt.draft.id }),
+    ), testEnv);
+    expect(linked.status).toBe(200);
+    await expect(queue.get(HOUSEHOLD, "member-david", handoff.id)).resolves.toMatchObject({
+      status: "reviewable", draftId: receipt.draft.id,
+    });
+  });
+
   it("rejects unauthenticated, wrong-method, wrong-type, expired, and oversized uploads safely", async () => {
     let now = NOW;
     const gateway = makeGateway(() => now);
@@ -374,7 +428,7 @@ function makeGateway(clock: () => Date = () => NOW) {
   return createMobileGateway({ verifyAccessToken: verifier, now: clock });
 }
 
-function gatewayEnv(enabled: boolean, comparison = false): MobileGatewayEnv {
+function gatewayEnv(enabled: boolean, comparison = false, advertise = false): MobileGatewayEnv {
   return {
     COMMANDS: env.COMMANDS,
     SNAPSHOTS: {} as R2Bucket,
@@ -386,6 +440,7 @@ function gatewayEnv(enabled: boolean, comparison = false): MobileGatewayEnv {
     FEATURE_RECEIPT_DRAFTS: "true",
     FEATURE_RECEIPT_SHORTCUT: enabled ? "true" : "false",
     FEATURE_RECEIPT_MODEL_COMPARISON: comparison ? "true" : "false",
+    FEATURE_RECEIPT_QUEUE_HANDOFF_ADVERTISE: advertise ? "true" : "false",
   };
 }
 
@@ -405,6 +460,35 @@ function v3Capture() {
       { model: "on_device", status: "completed", duration_ms: 1000, model_result },
       { model: "private_cloud_compute", status: "completed", duration_ms: 2000, model_result },
     ],
+  };
+}
+
+function v2Capture() {
+  return {
+    contract: "receipt_shortcut_capture/v2",
+    idempotency_key: "c".repeat(64),
+    shortcut_version: 2,
+    text: "Synthetic Market\nITEM 10.00\nTOTAL 10.00",
+    model_result: JSON.stringify({
+      merchant: { value: "Synthetic Market", evidence: "Synthetic Market" },
+      date: null, subtotal: null, discounts: [], tax: null, tip: null, fees: [],
+      total: { value_cents: 1000, evidence: "TOTAL 10.00" },
+      lines: [{ description: "ITEM", amount_cents: 1000,
+        description_evidence: "ITEM 10.00", amount_evidence: "ITEM 10.00" }],
+    }),
+  };
+}
+
+function receiptDraft() {
+  return {
+    contract: "receipt_draft/v1" as const, status: "editing" as const,
+    merchant: "Synthetic Market", purchase_date: "2026-11-02", currency: "USD",
+    masked_payment_hint: null, page_count: 1, subtotal_minor: 1000, discount_minor: 0,
+    tax_minor: 0, tip_minor: 0, fees_minor: 0, total_minor: 1000,
+    lines: [{ id: "line-1", order: 0, source_page: 0, description: "ITEM", quantity: "1",
+      unit_amount_minor: 1000, item_total_minor: 1000, line_discount_minor: 0,
+      tax_minor: 0, tip_minor: 0, fees_minor: 0, taxable: true, owner: "Shared" as const,
+      category_id: null, subcategory_id: null, confidence_basis_points: 9000, review_flags: [] }],
   };
 }
 

@@ -1,15 +1,15 @@
-# FinTracka Receipt Scanner v4 setup
+# FinTracka Receipt Scanner v5 setup
 
-This is the only supported receipt Shortcut. It captures receipt pages, runs Apple Vision OCR plus both Apple Intelligence model routes on the iPhone, and saves one private package to a shared iCloud Drive folder. It does not call FinTracka, open a browser, use the clipboard, or put a credential in the Shortcut.
+This is the only supported receipt Shortcut. It captures receipt pages, runs Apple Vision OCR plus one fixed Apple Intelligence **Cloud Pro** route on the iPhone, saves a complete private package to shared iCloud Drive, and then publishes only OCR plus the model result with a one-time FinTracka token. Receipt photos do not leave the shared Apple boundary.
 
-The installable artifact is generated from the inspected source by the trusted signing script. FinTracka deliberately does not track a prebuilt Scanner binary because its contents cannot be reviewed or tied back to the source. The action contract is documented in [receipt-shortcut-v4-actions.md](receipt-shortcut-v4-actions.md).
+The installable artifact is generated from inspected source by the trusted signing script. The action contract is documented in [receipt-shortcut-v5-actions.md](receipt-shortcut-v5-actions.md).
 
 ## Privacy and data flow
 
-1. FinTracka creates an opaque handoff identifier and shows it to the Shortcut as two text lines.
-2. The Shortcut stores receipt photos, OCR, and the two model results only in the private shared iCloud folder.
-3. David's Mac relays the completed package into FinTracka when it is awake. Until then the receipt remains queued.
-4. The FinTracka inbox displays queued, relaying, ready, and failed states. Nothing changes the ledger until a user reviews and matches the receipt.
+1. FinTracka creates an opaque handoff identifier and single-use token and passes them to the Shortcut as three text lines.
+2. The Shortcut stores receipt photos, OCR, and the Cloud Pro result in the private shared iCloud folder, writing `manifest.txt` last.
+3. After that durable save, the Shortcut uploads the same OCR and Cloud Pro result so the draft can be edited immediately.
+4. David or Ariela can assign David, Ariela, or Shared immediately. Matching remains locked until David's Mac verifies the private package against the same canonical digest.
 
 ## One-time shared-folder setup
 
@@ -20,7 +20,7 @@ The installable artifact is generated from the inspected source by the trusted s
 ## Install on each iPhone
 
 1. Delete every old or numbered FinTracka receipt Shortcut. There must be exactly one Shortcut named **FinTracka Receipt Scanner**.
-2. Run `./scripts/sign-receipt-shortcut-v4.sh "$PWD/dist/receipt-shortcut"`, then install the exact `dist/receipt-shortcut/FinTracka Receipt Scanner.shortcut` file it creates.
+2. Run `./scripts/sign-receipt-shortcut-v5.sh "$PWD/dist/receipt-shortcut"`, then install the exact `dist/receipt-shortcut/FinTracka Receipt Scanner.shortcut` file it creates.
 3. During installation, choose the shared **FinTracka Receipt Queue** folder when asked where receipt packages belong.
 4. Allow camera, Photos, iCloud Drive, Extract Text, and Apple Intelligence access when iOS asks. Choose **Always Allow** only for the actions shown inside this trusted signed Shortcut.
 5. Start scans from FinTracka. Do not run the Shortcut tile directly: direct runs have no handoff identifier and correctly stop.
@@ -28,8 +28,9 @@ The installable artifact is generated from the inspected source by the trusted s
 The Shortcut input must be exactly:
 
 ```text
-receipt_queue_handoff/v1
+receipt_immediate_handoff/v1
 <opaque UUID>
+<43-character one-time token>
 ```
 
 It creates:
@@ -52,10 +53,10 @@ FinTracka Receipt Queue/
 1. In FinTracka, open **Transactions → Scan receipt**.
 2. Choose **Scan with iPhone** and select the canonical Shortcut if iOS asks.
 3. Take 1–12 photos in order or choose 1–12 photos from the library.
-4. Wait for the success message. The Shortcut can finish even while the Mac is asleep because the package waits privately in iCloud.
-5. Return to FinTracka. The inbox updates from **Queued on iPhone** to **Waiting for Mac**, **Processing**, and then **Ready to review**.
+4. Wait for the result. A successful upload makes the receipt immediately reviewable even while the Mac is asleep; a failed upload leaves the complete private package queued.
+5. Return to FinTracka, assign David, Ariela, or Shared, and save. Transaction matching unlocks only after the Mac verifies the package.
 
-Apple does not document an action-level catch/continue control for `Use Model`. The Shortcut therefore saves each model response only after that action succeeds and writes `manifest.txt` last. If either model action fails, the Shortcut stops without a manifest and the Mac ignores the incomplete package. The user can retry; FinTracka must not invent missing receipt fields.
+Apple does not document an action-level catch/continue control for `Use Model`. The Shortcut therefore saves the Cloud Pro response only after that action succeeds and writes `manifest.txt` last. If Cloud Pro fails, the Shortcut stops without a manifest and the Mac ignores the incomplete package. The user can retry; FinTracka must not invent missing receipt fields.
 
 ## Mac relay
 
@@ -72,12 +73,12 @@ The processor validates the handoff ID, file names, page count, sizes, UTF-8 tex
 ## Build and verify the Shortcut
 
 ```sh
-python3 scripts/build-receipt-shortcut-v4.py
+python3 scripts/build-receipt-shortcut-v5.py
 plutil -lint "shortcuts/FinTracka Receipt Scanner.plist"
-python3 scripts/verify-receipt-shortcut-v4.py \
+python3 scripts/verify-receipt-shortcut-v5.py \
   "shortcuts/FinTracka Receipt Scanner.plist"
 
-./scripts/sign-receipt-shortcut-v4.sh "$PWD/dist/receipt-shortcut"
+./scripts/sign-receipt-shortcut-v5.sh "$PWD/dist/receipt-shortcut"
 ```
 
 Install only the exact artifact produced in `dist/receipt-shortcut` by that command. The trusted signing script verifies and validates the inspected plist immediately before signing it, replacing any pre-existing output. This avoids treating a checked-in opaque binary or editable hash sidecar as proof of signed content. Its all-platform validator mode is required because Apple's current ToolKit snapshot mislabels the legacy Extract Text action even though that identifier exists in the known physical-iPhone export. The physical acceptance matrix below remains mandatory.
@@ -92,17 +93,19 @@ Run every row on both David's and Ariela's phones before production rollout:
 | Photo library | 1 | Awake | One package, then one populated review |
 | Camera | 2+ | Awake | Page order preserved; no duplicate lines |
 | Photo library | 2+ | Awake | Page order preserved; no duplicate lines |
-| Either | 1+ | Asleep | Package waits, then resumes after Mac wakes |
-| Either | 1+ | Awake | On-device and Private Cloud Compute outputs are shown separately for comparison |
-| Either | 1+ | Awake | Both model actions succeed and the complete package relays; a failed model action leaves no processable manifest and the user retries |
+| Either | 1+ | Asleep | Draft opens immediately; owner saves; matching stays locked |
+| Either | 1+ | Awake | Cloud Pro output produces one populated review |
+| Either | 1+ | Awake | Cloud Pro succeeds and the complete package relays; a failed model action leaves no processable manifest and the user retries |
 
 Also verify:
 
 - Directly running the Shortcut stops with the missing/invalid handoff message and creates no package.
 - Reusing the same handoff ID creates no duplicate receipt.
-- Missing model output never becomes a processable package because `manifest.txt` is absent.
+- Missing Cloud Pro output never becomes a processable package because `manifest.txt` is absent.
 - A malformed or oversized package is rejected without deleting unrelated files.
 - Receipt photos and text never appear in logs, browser storage, or a public Worker response.
+- The one-time token is not saved in iCloud, logs, comments, or browser storage.
+- Mac verification changes verification state only; it never overwrites the saved owner.
 - No receipt affects the ledger until a user explicitly reviews and matches it.
 
 Record only pass/fail and timestamps. Do not record receipt text, photos, tokens, account identifiers, or financial details.

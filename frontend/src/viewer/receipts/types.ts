@@ -124,4 +124,8 @@ export interface ReceiptDraft extends ReceiptDraftV1 {
   created_at: string;
   updated_at: string;
   retention_at: string;
+  verification?: {
+    status: "pending" | "processing" | "verified" | "failed";
+    error_code: string | null;
+  } | null;
 }

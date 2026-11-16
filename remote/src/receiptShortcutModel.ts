@@ -14,6 +14,16 @@ const idempotencyKey = z.preprocess(
   "idempotency key must be a UUID or SHA-256 digest"),
 );
 
+const shortcutNumber = <T extends z.ZodType>(schema: T) => z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const normalized = value.replaceAll(",", "").trim();
+    if (!/^\d+(?:\.\d+)?$/.test(normalized)) return value;
+    return Math.round(Number(normalized));
+  },
+  schema,
+);
+
 export const ReceiptShortcutPageSchema = z.object({
   page_index: z.preprocess(
     (value) => typeof value === "string" && /^(0|[1-9]\d*)$/.test(value) ? Number(value) : value,
@@ -54,7 +64,7 @@ const ReceiptShortcutTextCaptureSchema = ReceiptShortcutCaptureBase.extend({
 export const ReceiptShortcutCaptureV2Schema = z.object({
   contract: z.literal("receipt_shortcut_capture/v2"),
   idempotency_key: ReceiptShortcutCaptureBase.shape.idempotency_key,
-  shortcut_version: z.literal(2),
+  shortcut_version: shortcutNumber(z.literal(2)),
   text: z.string().max(100_000).refine((value) => value.trim().length > 0, "blank receipt"),
   model_result: z.union([z.string().max(100_000), ReceiptInterpretationSchema])
     .transform((value) => typeof value === "string" ? value : JSON.stringify(value)),
@@ -65,15 +75,6 @@ export const ReceiptShortcutCaptureV2Schema = z.object({
 
 const modelRoute = z.enum(["on_device", "private_cloud_compute"]);
 const duration = z.int().min(0).max(3_600_000);
-const shortcutNumber = <T extends z.ZodType>(schema: T) => z.preprocess(
-  (value) => {
-    if (typeof value !== "string") return value;
-    const normalized = value.replaceAll(",", "").trim();
-    if (!/^\d+(?:\.\d+)?$/.test(normalized)) return value;
-    return Math.round(Number(normalized));
-  },
-  schema,
-);
 const safeErrorCode = z.enum(["MODEL_UNAVAILABLE", "MODEL_RATE_LIMITED", "MODEL_FAILED"]);
 const shortcutDuration = z.preprocess(normalizeShortcutDuration, duration);
 const shortcutText = z.preprocess(

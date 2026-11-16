@@ -117,7 +117,13 @@ describe("receipt shortcut store", () => {
     const first = await store.createImport(session.token, capture());
     const replay = await store.createImport(session.token, capture());
     expect(first.replayed).toBe(false);
+    expect(first.sessionTokenDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.bodyDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(replay).toMatchObject({ replayed: true, import: { id: first.import.id } });
+    expect(replay).toMatchObject({
+      sessionTokenDigest: first.sessionTokenDigest,
+      bodyDigest: first.bodyDigest,
+    });
 
     await expect(store.createImport(session.token, {
       ...capture(), idempotency_key: crypto.randomUUID(),

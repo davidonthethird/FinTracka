@@ -16,6 +16,10 @@ export interface PublicReceiptDraft extends ReceiptDraftV1 {
   created_at: string;
   updated_at: string;
   retention_at: string;
+  verification: {
+    status: "pending" | "processing" | "verified" | "failed";
+    error_code: string | null;
+  } | null;
 }
 
 interface DraftRow {
@@ -27,6 +31,8 @@ interface DraftRow {
   created_at: string;
   updated_at: string;
   retention_at: string;
+  verification_status: "pending" | "reviewable" | "processing" | "completed" | "failed" | null;
+  verification_error_code: string | null;
 }
 
 interface RevisionRow {
@@ -134,9 +140,12 @@ export class ReceiptStore {
 
   async list(householdId: string): Promise<PublicReceiptDraft[]> {
     await this.expireAndPrune();
-    const result = await this.database.prepare(`SELECT id, revision, status, body_json, body_digest,
-      created_at, updated_at, retention_at FROM receipt_drafts WHERE household_id = ?
-      ORDER BY updated_at DESC, id DESC LIMIT 100`).bind(householdId).all<DraftRow>();
+    const result = await this.database.prepare(`SELECT draft.id, draft.revision, draft.status,
+      draft.body_json, draft.body_digest, draft.created_at, draft.updated_at, draft.retention_at,
+      handoff.status AS verification_status, handoff.error_code AS verification_error_code
+      FROM receipt_drafts draft LEFT JOIN receipt_queue_handoffs handoff ON handoff.draft_id = draft.id
+      WHERE draft.household_id = ?
+      ORDER BY draft.updated_at DESC, draft.id DESC LIMIT 100`).bind(householdId).all<DraftRow>();
     return result.results.map(toPublic);
   }
 
@@ -182,6 +191,12 @@ export class ReceiptStore {
     commandId: string,
   ): Promise<PublicReceiptDraft> {
     await this.ensureMember(householdId, memberId);
+    const verification = await this.database.prepare(`SELECT status FROM receipt_queue_handoffs
+      WHERE draft_id = ? AND household_id = ?`).bind(id, householdId)
+      .first<{ status: string }>();
+    if (verification && verification.status !== "completed") {
+      throw new ReceiptStoreError("RECEIPT_NOT_VERIFIED");
+    }
     const now = this.clock().toISOString();
     const result = await this.database.prepare(`UPDATE receipt_drafts
       SET status = 'match_pending', selected_transaction_id = ?, selected_split_revision = ?,
@@ -228,8 +243,11 @@ export class ReceiptStore {
   }
 
   private async requireRow(householdId: string, id: string): Promise<DraftRow> {
-    const row = await this.database.prepare(`SELECT id, revision, status, body_json, body_digest,
-      created_at, updated_at, retention_at FROM receipt_drafts WHERE household_id = ? AND id = ?`)
+    const row = await this.database.prepare(`SELECT draft.id, draft.revision, draft.status,
+      draft.body_json, draft.body_digest, draft.created_at, draft.updated_at, draft.retention_at,
+      handoff.status AS verification_status, handoff.error_code AS verification_error_code
+      FROM receipt_drafts draft LEFT JOIN receipt_queue_handoffs handoff ON handoff.draft_id = draft.id
+      WHERE draft.household_id = ? AND draft.id = ?`)
       .bind(householdId, id).first<DraftRow>();
     if (!row) throw new ReceiptStoreError("RECEIPT_NOT_FOUND");
     return row;
@@ -246,7 +264,7 @@ export class ReceiptStore {
     const draft = ReceiptDraftV1Schema.parse(JSON.parse(row.body_json));
     return { draft: { ...draft, id: row.draft_id, revision: row.revision,
       digest: row.body_digest, created_at: row.created_at, updated_at: row.created_at,
-      retention_at: "" }, replayed: true };
+      retention_at: "", verification: null }, replayed: true };
   }
 
   private lineStatements(id: string, draft: ReceiptDraftV1) {
@@ -272,5 +290,11 @@ function toPublic(row: DraftRow): PublicReceiptDraft {
     created_at: row.created_at,
     updated_at: row.updated_at,
     retention_at: row.retention_at,
+    verification: row.verification_status === null ? null : {
+      status: row.verification_status === "completed" ? "verified"
+        : row.verification_status === "reviewable" || row.verification_status === "pending"
+          ? "pending" : row.verification_status,
+      error_code: row.verification_error_code,
+    },
   };
 }

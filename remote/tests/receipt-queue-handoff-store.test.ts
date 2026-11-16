@@ -5,6 +5,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { ReceiptQueueHandoffStore } from "../src/receiptQueueHandoffStore";
 import { ReceiptShortcutStore } from "../src/receiptShortcutStore";
+import { ReceiptStore } from "../src/receiptStore";
 
 declare global {
   namespace Cloudflare {
@@ -52,6 +53,7 @@ describe("receipt queue handoff store", () => {
       id: expect.stringMatching(/^[0-9a-f-]{36}$/),
       status: "pending",
       importId: null,
+      draftId: null,
       errorCode: null,
       createdAt: "2026-11-11T12:00:00.000Z",
       expiresAt: "2026-11-18T12:00:00.000Z",
@@ -101,6 +103,8 @@ describe("receipt queue handoff store", () => {
       .rejects.toMatchObject({ code: "RECEIPT_SCAN_SESSION_EXPIRED" });
 
     const first = await store.complete(handoff.id, capture());
+    expect(first.kind).toBe("import");
+    if (first.kind !== "import") throw new Error("expected a new fallback import");
     const sessionRow = await env.COMMANDS.prepare(`SELECT token_digest, body_digest
       FROM receipt_scan_sessions WHERE consumed_import_id = ?`).bind(first.import.id)
       .first<{ token_digest: string; body_digest: string }>();
@@ -110,7 +114,8 @@ describe("receipt queue handoff store", () => {
     const replay = await store.complete(handoff.id, capture());
     expect(first.replayed).toBe(false);
     expect(first.import.expires_at).toBe("2026-11-18T12:31:00.000Z");
-    expect(replay).toMatchObject({ replayed: true, import: { id: first.import.id } });
+    expect(replay).toEqual({ kind: "verified", replayed: true,
+      importId: first.import.id, draftId: null });
     await expect(store.get(HOUSEHOLD, MEMBER, handoff.id)).resolves.toMatchObject({
       status: "completed", importId: first.import.id, errorCode: null,
     });
@@ -120,6 +125,123 @@ describe("receipt queue handoff store", () => {
     })).rejects.toMatchObject({ code: "RECEIPT_QUEUE_HANDOFF_CHANGED" });
     expect((await env.COMMANDS.prepare("SELECT COUNT(*) AS count FROM receipt_shortcut_imports")
       .first<{ count: number }>())?.count).toBe(1);
+  });
+
+  it("publishes one reviewable import, links one household draft, and starts verification", async () => {
+    const shortcuts = new ReceiptShortcutStore(env.COMMANDS, () => NOW);
+    const session = await shortcuts.createSession(HOUSEHOLD, MEMBER);
+    const store = makeStore();
+    const handoff = await store.create(HOUSEHOLD, MEMBER, session.token);
+    const imported = await shortcuts.createImport(session.token, capture());
+    const sessionRow = await env.COMMANDS.prepare(`SELECT token_digest, body_digest
+      FROM receipt_scan_sessions WHERE consumed_import_id = ?`).bind(imported.import.id)
+      .first<{ token_digest: string; body_digest: string }>();
+
+    const reviewable = await store.markReviewableBySession(
+      sessionRow!.token_digest, imported.import.id, sessionRow!.body_digest,
+    );
+    const replay = await store.markReviewableBySession(
+      sessionRow!.token_digest, imported.import.id, sessionRow!.body_digest,
+    );
+    expect(reviewable).toMatchObject({
+      id: handoff.id, status: "reviewable", importId: imported.import.id, draftId: null,
+    });
+    expect(replay).toEqual(reviewable);
+    await expect(store.listActiveIds()).resolves.toEqual(new Set([handoff.id]));
+
+    const receipt = await new ReceiptStore(env.COMMANDS, () => NOW).create(HOUSEHOLD, MEMBER, {
+      idempotency_key: "queue-link-draft",
+      draft: receiptDraft(),
+    });
+    const linked = await store.linkDraft(HOUSEHOLD, MEMBER, imported.import.id, receipt.draft.id);
+    expect(linked).toMatchObject({ status: "reviewable", draftId: receipt.draft.id });
+    await expect(store.linkDraft(HOUSEHOLD, MEMBER, imported.import.id, receipt.draft.id))
+      .resolves.toEqual(linked);
+    await expect(store.start(handoff.id)).resolves.toMatchObject({
+      status: "processing", importId: imported.import.id, draftId: receipt.draft.id,
+    });
+    const completed = await store.complete(handoff.id, capture());
+    expect(completed).toMatchObject({ kind: "verified", replayed: false,
+      importId: imported.import.id, draftId: receipt.draft.id });
+    await expect(store.get(HOUSEHOLD, MEMBER, handoff.id)).resolves.toMatchObject({
+      status: "completed", importId: imported.import.id, draftId: receipt.draft.id,
+    });
+    await expect(new ReceiptStore(env.COMMANDS, () => NOW).get(HOUSEHOLD, receipt.draft.id))
+      .resolves.toMatchObject({ lines: [{ owner: "Shared" }] });
+    expect((await env.COMMANDS.prepare("SELECT COUNT(*) AS count FROM receipt_shortcut_imports")
+      .first<{ count: number }>())?.count).toBe(1);
+  });
+
+  it("publishes the direct import even when Mac verification starts first", async () => {
+    const shortcuts = new ReceiptShortcutStore(env.COMMANDS, () => NOW);
+    const session = await shortcuts.createSession(HOUSEHOLD, MEMBER);
+    const store = makeStore();
+    const handoff = await store.create(HOUSEHOLD, MEMBER, session.token);
+    await store.start(handoff.id);
+    const imported = await shortcuts.createImport(session.token, capture());
+    const sessionRow = await env.COMMANDS.prepare(`SELECT token_digest, body_digest
+      FROM receipt_scan_sessions WHERE consumed_import_id = ?`).bind(imported.import.id)
+      .first<{ token_digest: string; body_digest: string }>();
+
+    await expect(store.markReviewableBySession(
+      sessionRow!.token_digest, imported.import.id, sessionRow!.body_digest,
+    )).resolves.toMatchObject({ status: "reviewable", importId: imported.import.id });
+    await expect(store.complete(handoff.id, capture())).resolves.toMatchObject({
+      kind: "verified", replayed: false, importId: imported.import.id,
+    });
+  });
+
+  it("fails a changed provisional capture without replacing its import or linked draft", async () => {
+    const shortcuts = new ReceiptShortcutStore(env.COMMANDS, () => NOW);
+    const session = await shortcuts.createSession(HOUSEHOLD, MEMBER);
+    const store = makeStore();
+    const handoff = await store.create(HOUSEHOLD, MEMBER, session.token);
+    const imported = await shortcuts.createImport(session.token, capture());
+    const sessionRow = await env.COMMANDS.prepare(`SELECT token_digest, body_digest
+      FROM receipt_scan_sessions WHERE consumed_import_id = ?`).bind(imported.import.id)
+      .first<{ token_digest: string; body_digest: string }>();
+    await store.markReviewableBySession(
+      sessionRow!.token_digest, imported.import.id, sessionRow!.body_digest,
+    );
+    const receipt = await new ReceiptStore(env.COMMANDS, () => NOW).create(HOUSEHOLD, MEMBER, {
+      idempotency_key: "queue-mismatch-draft", draft: receiptDraft(),
+    });
+    await store.linkDraft(HOUSEHOLD, MEMBER, imported.import.id, receipt.draft.id);
+
+    await expect(store.complete(handoff.id, { ...capture(), text: "CHANGED\nTOTAL 10.00" }))
+      .rejects.toMatchObject({ code: "CAPTURE_MISMATCH" });
+    await expect(store.get(HOUSEHOLD, MEMBER, handoff.id)).resolves.toMatchObject({
+      status: "failed", errorCode: "CAPTURE_MISMATCH", importId: imported.import.id,
+      draftId: receipt.draft.id,
+    });
+    expect((await env.COMMANDS.prepare("SELECT COUNT(*) AS count FROM receipt_shortcut_imports")
+      .first<{ count: number }>())?.count).toBe(1);
+  });
+
+  it("fails closed when a reviewable import, digest, member, or draft changes", async () => {
+    const shortcuts = new ReceiptShortcutStore(env.COMMANDS, () => NOW);
+    const session = await shortcuts.createSession(HOUSEHOLD, MEMBER);
+    const store = makeStore();
+    await store.create(HOUSEHOLD, MEMBER, session.token);
+    const imported = await shortcuts.createImport(session.token, capture());
+    const row = await env.COMMANDS.prepare(`SELECT token_digest, body_digest
+      FROM receipt_scan_sessions WHERE consumed_import_id = ?`).bind(imported.import.id)
+      .first<{ token_digest: string; body_digest: string }>();
+    await store.markReviewableBySession(row!.token_digest, imported.import.id, row!.body_digest);
+
+    await expect(store.markReviewableBySession(row!.token_digest, crypto.randomUUID(), row!.body_digest))
+      .rejects.toMatchObject({ code: "RECEIPT_QUEUE_HANDOFF_CHANGED" });
+    await expect(store.markReviewableBySession(row!.token_digest, imported.import.id, "f".repeat(64)))
+      .rejects.toMatchObject({ code: "RECEIPT_QUEUE_HANDOFF_CHANGED" });
+    await expect(store.linkDraft(HOUSEHOLD, OTHER_MEMBER, imported.import.id, crypto.randomUUID()))
+      .rejects.toMatchObject({ code: "RECEIPT_QUEUE_HANDOFF_NOT_FOUND" });
+    const otherDraft = await new ReceiptStore(env.COMMANDS, () => NOW).create(
+      HOUSEHOLD, OTHER_MEMBER, { idempotency_key: "other-member-draft", draft: receiptDraft() },
+    );
+    await expect(store.linkDraft(HOUSEHOLD, MEMBER, imported.import.id, otherDraft.draft.id))
+      .rejects.toMatchObject({ code: "RECEIPT_DRAFT_NOT_FOUND" });
+    await expect(store.linkDraft(HOUSEHOLD, MEMBER, imported.import.id, crypto.randomUUID()))
+      .rejects.toMatchObject({ code: "RECEIPT_DRAFT_NOT_FOUND" });
   });
 
   it("keeps terminal handoffs recoverable until the Mac confirms local cleanup", async () => {
@@ -188,6 +310,19 @@ function capture() {
       { model: "private_cloud_compute" as const, status: "completed" as const,
         duration_ms: 900, model_result: result },
     ],
+  };
+}
+
+function receiptDraft() {
+  return {
+    contract: "receipt_draft/v1" as const, status: "editing" as const,
+    merchant: "Synthetic Market", purchase_date: "2026-11-11", currency: "USD",
+    masked_payment_hint: null, page_count: 1, subtotal_minor: 1000, discount_minor: 0,
+    tax_minor: 0, tip_minor: 0, fees_minor: 0, total_minor: 1000,
+    lines: [{ id: "line-1", order: 0, source_page: 0, description: "ITEM", quantity: "1",
+      unit_amount_minor: 1000, item_total_minor: 1000, line_discount_minor: 0,
+      tax_minor: 0, tip_minor: 0, fees_minor: 0, taxable: true, owner: "Shared" as const,
+      category_id: null, subcategory_id: null, confidence_basis_points: 9000, review_flags: [] }],
   };
 }
 

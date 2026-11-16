@@ -45,9 +45,11 @@ export function ReceiptQueueHandoffView({ handoffs, onOpen }: {
       const ready = handoff.status === "ready" && handoff.review_path;
       const content = <><span className={`receipt-handoff-icon ${handoff.status}`}>
         {handoff.status === "failed" ? <TriangleAlert aria-hidden="true" /> : <Clock3 aria-hidden="true" />}
-      </span><span><strong>{handoffLabel(handoff.status)}</strong>
-        <small>{handoff.status === "failed" ? "Scan again or check the shared iCloud folder."
-          : handoff.status === "ready" ? "Your receipt is ready to open."
+      </span><span><strong>{handoffLabel(handoff)}</strong>
+        <small>{handoff.status === "failed" ? "Verification failed. The receipt remains available to inspect."
+          : handoff.status === "ready" && handoff.verification_status === "pending"
+            ? "Assign items now; matching waits for Mac verification."
+          : handoff.status === "ready" ? "Verified and ready to open."
             : handoff.status === "processing" ? "Your Mac is preparing this receipt."
               : "Saved privately; your Mac will relay it when available."}</small></span>
         {ready && <ChevronRight aria-hidden="true" />}</>;
@@ -59,9 +61,12 @@ export function ReceiptQueueHandoffView({ handoffs, onOpen }: {
   </section>;
 }
 
-function handoffLabel(status: ReceiptQueueHandoff["status"]): string {
-  return ({ pending: "Waiting for Mac", processing: "Processing", ready: "Ready to review",
-    failed: "Scan needs attention" })[status];
+function handoffLabel(handoff: ReceiptQueueHandoff): string {
+  if (handoff.status === "ready") {
+    return handoff.verification_status === "verified" ? "Verified" : "Ready to assign";
+  }
+  return ({ pending: "Saved privately", processing: "Verifying on Mac",
+    failed: "Verification failed" } as const)[handoff.status];
 }
 
 export function canDismissReceipt(status: ReceiptDraft["status"]): boolean {

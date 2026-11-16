@@ -89,7 +89,7 @@ export function ReceiptReviewForm({ draft, taxonomy, saving, onChange, onSave }:
 
 function toDraft(draft: ReceiptDraft): ReceiptDraftV1 {
   const { id: _id, revision: _revision, digest: _digest, created_at: _created,
-    updated_at: _updated, retention_at: _retention, ...value } = draft;
+    updated_at: _updated, retention_at: _retention, verification: _verification, ...value } = draft;
   return value;
 }
 function cents(value: string) { const parsed = Number(value); return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * 100) : 0; }

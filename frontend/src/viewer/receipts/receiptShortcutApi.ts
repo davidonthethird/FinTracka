@@ -11,11 +11,12 @@ export interface LegacyReceiptScanSession {
 }
 
 export interface QueueReceiptScanSession {
-  contract: "receipt_queue_handoff/v1";
-  shortcut_version: 4;
-  comparison_enabled: true;
+  contract: "receipt_immediate_handoff/v1";
+  shortcut_version: 5;
+  comparison_enabled: false;
   shortcut_name: "FinTracka Receipt Scanner";
   handoff_id: string;
+  token: string;
   expires_at: string;
 }
 
@@ -28,6 +29,7 @@ export type ReceiptScanResult =
 export interface ReceiptQueueHandoff {
   id: string;
   status: "pending" | "processing" | "ready" | "failed";
+  verification_status?: "pending" | "verified";
   created_at: string;
   expires_at: string;
   review_path?: string;
@@ -138,7 +140,7 @@ export function watchReceiptScanSession(
     try {
       const result = typeof session === "string"
         ? await getReceiptScanResult(session)
-        : session.shortcut_version === 4
+        : session.shortcut_version === 5
           ? await getReceiptQueueHandoff(session.handoff_id)
           : await getReceiptScanResult(session.token);
       if (!active) return;
@@ -190,6 +192,17 @@ export async function deleteReceiptImport(id: string): Promise<void> {
   }
 }
 
+export async function linkReceiptImportDraft(importId: string, draftId: string): Promise<void> {
+  try {
+    await mobileJson(`/api/v1/mobile/receipt-imports/${encodeURIComponent(importId)}/draft`, {
+      method: "POST", body: JSON.stringify({ draft_id: draftId }),
+    });
+  } catch (error) {
+    if (error instanceof MobileCommandApiError && error.code === "RECEIPT_QUEUE_HANDOFF_NOT_FOUND") return;
+    throw error;
+  }
+}
+
 export async function retryReceiptImport(id: string): Promise<void> {
   await mobileJson(`/api/v1/mobile/receipt-imports/${encodeURIComponent(id)}/retry`, {
     method: "POST", body: JSON.stringify({}),
@@ -221,8 +234,8 @@ export async function deleteReceiptBenchmarkHistory(): Promise<void> {
 }
 
 export function buildReceiptShortcutUrl(session: ReceiptScanSession): string {
-  const text = session.shortcut_version === 4
-    ? `${session.contract}\n${session.handoff_id}`
+  const text = session.shortcut_version === 5
+    ? `${session.contract}\n${session.handoff_id}\n${session.token}`
     : JSON.stringify(session);
   const query = [
     `name=${encodeURIComponent(session.shortcut_name)}`,

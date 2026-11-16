@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail closed unless the canonical receipt Shortcut matches the v4 contract."""
+"""Fail closed unless the canonical receipt Shortcut matches the v5 contract."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from pathlib import Path
 
 
 FORBIDDEN_IDENTIFIERS = {
-    "is.workflow.actions.downloadurl",
     "is.workflow.actions.openurl",
     "is.workflow.actions.openxcallbackurl",
     "is.workflow.actions.getclipboard",
@@ -31,7 +30,8 @@ EXPECTED_IDENTIFIERS = (
     "is.workflow.actions.conditional", "is.workflow.actions.conditional",
     "is.workflow.actions.showresult", "is.workflow.actions.exit",
     "is.workflow.actions.conditional", "is.workflow.actions.text.split",
-    "is.workflow.actions.getitemfromlist", "is.workflow.actions.comment",
+    "is.workflow.actions.getitemfromlist", "is.workflow.actions.getitemfromlist",
+    "is.workflow.actions.comment",
     "is.workflow.actions.choosefrommenu", "is.workflow.actions.choosefrommenu",
     "is.workflow.actions.ask", "is.workflow.actions.takephoto", "is.workflow.actions.setvariable",
     "is.workflow.actions.choosefrommenu", "is.workflow.actions.selectphoto",
@@ -51,9 +51,7 @@ EXPECTED_IDENTIFIERS = (
     "is.workflow.actions.appendvariable", "is.workflow.actions.repeat.each",
     "is.workflow.actions.getvariable", "is.workflow.actions.text.combine",
     "is.workflow.actions.setitemname", "is.workflow.actions.documentpicker.save",
-    "is.workflow.actions.comment", "is.workflow.actions.date", "is.workflow.actions.askllm",
-    "is.workflow.actions.date", "is.workflow.actions.gettimebetweendates",
-    "is.workflow.actions.math", "is.workflow.actions.round", "is.workflow.actions.comment",
+    "is.workflow.actions.comment", "is.workflow.actions.comment", "is.workflow.actions.gettext",
     "is.workflow.actions.setitemname", "is.workflow.actions.documentpicker.save",
     "is.workflow.actions.date", "is.workflow.actions.askllm", "is.workflow.actions.date",
     "is.workflow.actions.gettimebetweendates", "is.workflow.actions.math",
@@ -61,7 +59,11 @@ EXPECTED_IDENTIFIERS = (
     "is.workflow.actions.setitemname", "is.workflow.actions.documentpicker.save",
     "is.workflow.actions.date", "is.workflow.actions.format.date",
     "is.workflow.actions.gettext", "is.workflow.actions.setitemname",
-    "is.workflow.actions.documentpicker.save", "is.workflow.actions.showresult",
+    "is.workflow.actions.documentpicker.save", "is.workflow.actions.comment",
+    "is.workflow.actions.downloadurl", "is.workflow.actions.getvalueforkey",
+    "is.workflow.actions.comment", "is.workflow.actions.conditional",
+    "is.workflow.actions.showresult", "is.workflow.actions.conditional",
+    "is.workflow.actions.showresult", "is.workflow.actions.conditional",
 )
 REQUIRED_PARAMETERS = {
     "is.workflow.actions.comment": ("WFCommentActionText",),
@@ -90,11 +92,17 @@ REQUIRED_PARAMETERS = {
     "is.workflow.actions.math": ("WFInput", "WFMathOperation", "WFMathOperand"),
     "is.workflow.actions.round": ("WFInput", "WFRoundMode", "WFRoundTo"),
     "is.workflow.actions.format.date": ("WFDate", "WFDateFormatStyle"),
+    "is.workflow.actions.downloadurl": (
+        "WFURL", "WFHTTPMethod", "WFHTTPBodyType", "WFHTTPHeaders", "WFJSONValues",
+    ),
+    "is.workflow.actions.getvalueforkey": (
+        "WFInput", "WFDictionaryKey", "WFGetDictionaryValueType",
+    ),
 }
 
 
 def die(message: str) -> None:
-    raise SystemExit(f"receipt shortcut v4 invalid: {message}")
+    raise SystemExit(f"receipt shortcut v5 invalid: {message}")
 
 
 def flatten(value: object) -> str:
@@ -148,18 +156,25 @@ def main() -> None:
 
     identifiers = [action.get("WFWorkflowActionIdentifier") for action in actions]
     if tuple(identifiers) != EXPECTED_IDENTIFIERS:
-        die("the exact reviewed 80-action inventory changed")
+        die("the exact reviewed 84-action inventory changed")
     forbidden = sorted(set(identifiers) & FORBIDDEN_IDENTIFIERS)
     if forbidden:
         die(f"forbidden actions: {', '.join(forbidden)}")
     all_text = flatten(workflow)
-    if re.search(r"https?://|x-callback|clipboard|bearer|authorization", all_text, re.I):
-        die("URL, callback, clipboard, or persistent credential text is present")
+    endpoint = (
+        "https://fintracka-viewer-production.fintracka-david.workers.dev/"
+        "api/v1/mobile/shortcut/receipt-imports"
+    )
+    urls = re.findall(r"https?://[^\s<]+", all_text, re.I)
+    if urls != [endpoint]:
+        die("the exact one fixed upload endpoint is required")
+    if re.search(r"x-callback|clipboard|CF-Access|service.?token|api.?key", all_text, re.I):
+        die("callback, clipboard, Access credential, service token, or API key text is present")
 
     if "is.workflow.actions.nothing" in identifiers or re.search(
-        r"unavailable|Empty Model Result|File Text", all_text, re.I
+        r"Empty Model Result|File Text", all_text, re.I
     ):
-        die("an empty or unavailable model-result fallback remains")
+        die("an unreviewed empty model-result fallback remains")
 
     action_positions: dict[str, int] = {}
     for index, action in enumerate(actions):
@@ -177,7 +192,9 @@ def main() -> None:
                 die(f"action {index} is missing required parameter {key}")
         mode = parameters.get("WFControlFlowMode")
         if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.conditional" and mode == 0:
-            for key in ("WFCondition", "WFInput", "WFNumberValue"):
+            keys = ("WFCondition", "WFInput") if parameters.get("WFCondition") == 100 \
+                else ("WFCondition", "WFInput", "WFNumberValue")
+            for key in keys:
                 if key not in parameters:
                     die(f"conditional action {index} is missing {key}")
         if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.choosefrommenu":
@@ -220,28 +237,59 @@ def main() -> None:
         if modes[0] != 0 or modes[-1] != 2 or any(mode not in (0, 1, 2) for mode in modes):
             die(f"incomplete {identifier} control-flow group")
 
-    first_model = identifiers.index("is.workflow.actions.askllm")
-    if any(identifier == "is.workflow.actions.conditional"
-           for identifier in identifiers[first_model + 1 :]):
-        die("model output must not be routed through an imported conditional")
-
     model_actions = [
         action.get("WFWorkflowActionParameters", {})
         for action in actions
         if action.get("WFWorkflowActionIdentifier") == "is.workflow.actions.askllm"
     ]
-    if [action.get("WFLLMModel") for action in model_actions] != [
-        "Apple Intelligence on Device",
-        "Private Cloud Compute",
-    ]:
-        die("exactly two fixed Apple model routes are required")
+    if [action.get("WFLLMModel") for action in model_actions] != ["Cloud Pro"]:
+        die("exactly one fixed Cloud Pro model route is required")
     model_indices = [index for index, identifier in enumerate(identifiers)
                      if identifier == "is.workflow.actions.askllm"]
-    for index, filename in zip(model_indices, ("on-device.txt", "private-cloud-compute.txt")):
-        if identifiers[index + 5 : index + 7] != [
-            "is.workflow.actions.comment", "is.workflow.actions.setitemname"
-        ] or filename not in flatten(actions[index + 6 : index + 8]):
-            die(f"{filename} is not saved directly from its successful model action")
+    model_index = model_indices[0]
+    if identifiers[model_index + 5 : model_index + 7] != [
+        "is.workflow.actions.comment", "is.workflow.actions.setitemname"
+    ] or "private-cloud-compute.txt" not in flatten(actions[model_index + 6 : model_index + 8]):
+        die("private-cloud-compute.txt is not saved directly from Cloud Pro")
+    if "on-device.txt" not in flatten(actions[model_index - 5 : model_index]):
+        die("the unavailable on-device compatibility file is missing before Cloud Pro")
+
+    uploads = [
+        (index, action["WFWorkflowActionParameters"])
+        for index, action in enumerate(actions)
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.downloadurl"
+    ]
+    if len(uploads) != 1:
+        die("exactly one direct upload is required")
+    upload_index, upload = uploads[0]
+    if upload.get("WFHTTPMethod") != "POST" or upload.get("WFHTTPBodyType") != "JSON":
+        die("direct upload must be a JSON POST")
+    if endpoint not in flatten(upload.get("WFURL")):
+        die("direct upload does not use the fixed production endpoint")
+    header_text = flatten(upload.get("WFHTTPHeaders"))
+    if "Authorization" not in header_text or "Bearer " not in header_text \
+            or "Content-Type" not in header_text or "application/json" not in header_text:
+        die("direct upload headers are incomplete")
+    body_text = flatten(upload.get("WFJSONValues"))
+    for key in ("contract", "receipt_shortcut_capture/v2", "idempotency_key",
+                "shortcut_version", "text", "model_result"):
+        if key not in body_text:
+            die(f"direct upload JSON is missing {key}")
+    item_actions = [
+        action["WFWorkflowActionParameters"]
+        for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.getitemfromlist"
+    ]
+    handoff_action = next(item for item in item_actions if item.get("WFItemIndex") == 2)
+    token_action = next(item for item in item_actions if item.get("WFItemIndex") == 3)
+    combined_action = next(
+        action["WFWorkflowActionParameters"] for action in actions
+        if action["WFWorkflowActionIdentifier"] == "is.workflow.actions.text.combine"
+    )
+    model_action = model_actions[0]
+    if token_action["UUID"] not in header_text or handoff_action["UUID"] not in body_text \
+            or combined_action["UUID"] not in body_text or model_action["UUID"] not in body_text:
+        die("direct upload does not derive from the validated token and saved capture outputs")
 
     if all_text.count("Repeat Item") < 2 or "Repeat Index" not in all_text:
         die("per-page OCR and page serialization must use Repeat Item/Repeat Index")
@@ -270,6 +318,8 @@ def main() -> None:
     manifest_index = next(index for index, text in saves if "manifest.txt" in text)
     if manifest_index != max(index for index, _ in saves):
         die("manifest.txt must be the final save")
+    if upload_index <= manifest_index:
+        die("direct upload must occur only after manifest.txt is saved")
     if not re.search(r"page-00.*\.heic", all_text) or not re.search(r"page-0.*\.heic", all_text):
         die("padded HEIC page filenames are missing")
 
@@ -288,9 +338,10 @@ def main() -> None:
             die(f"manifest key missing: {key}")
     if "On-Device Result" in manifest_action_text or "Private Cloud Compute Result" in manifest_action_text:
         die("free-form model output must not be interpolated into the manifest")
-    if "on_device_status=completed" not in manifest_action_text or \
+    if "on_device_status=unavailable" not in manifest_action_text or \
+            "on_device_duration_ms=0" not in manifest_action_text or \
             "private_cloud_compute_status=completed" not in manifest_action_text:
-        die("manifest must record only successfully saved model routes")
+        die("manifest must record unavailable on-device and completed Cloud Pro routes")
 
     uuids = list(action_positions)
     if any(value.startswith(("11000000-", "A1000000-")) for value in uuids):
@@ -302,7 +353,7 @@ def main() -> None:
     if questions[0].get("ActionIndex") != folder_indices[0]:
         die("install folder question does not target the create-folder action")
 
-    print(f"receipt shortcut v4 verified: {len(actions)} actions")
+    print(f"receipt shortcut v5 verified: {len(actions)} actions")
 
 
 if __name__ == "__main__":
